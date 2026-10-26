@@ -1,0 +1,12 @@
+{
+  "upstream": "https://github.com/Px-asen/Twilight_Echo",
+  "commit": "65688cccf919cbf36d900e92fd0a06eb4fb557c0",
+  "musicCoreVersion": "1.4.0-perview",
+  "audioCoreVersion": "0.1.0",
+  "protocolVersion": 1,
+  "hostApiVersion": "1.0.0",
+  "nativeAbiVersion": "0.1.0",
+  "bundleFile": "music-core.js",
+  "bundleSha256": "bccc6d8cb78a49e052e7d4144e1afed04fa5c340711f7a4db66d5ba0e5582dad",
+  "bundleBytes": 756214
+}

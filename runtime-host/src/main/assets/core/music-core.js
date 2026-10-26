@@ -1,0 +1,17764 @@
+var TwilightPortableCore = (function(exports) {
+  "use strict";
+  function getTrackSource(track, fallback) {
+    if (track.source || fallback) return (track.source || fallback).trim().toLowerCase();
+    if (/^[a-zA-Z]:[\\/]/.test(track.id) || /^[\\/]/.test(track.id)) return "local";
+    const separator = track.id.indexOf(":");
+    return separator > 0 ? track.id.slice(0, separator).trim().toLowerCase() : "local";
+  }
+  const CORE_PLAYBACK_FIELDS = [
+    "streamTitle",
+    "dspActive",
+    "gaplessBlockedReason",
+    "state",
+    "position",
+    "duration",
+    "volume",
+    "playbackRate",
+    "playMode",
+    "queueIndex",
+    "queueToken",
+    "queueRevision",
+    "upcomingQueueIndex",
+    "requestedConfigRevision",
+    "appliedConfigRevision",
+    "nativePlaybackActive",
+    "codec",
+    "bitrate",
+    "sourceSampleRate",
+    "sourceChannels",
+    "sourceBitDepth",
+    "decodedSampleRate",
+    "decodedBitDepth",
+    "decodedChannels",
+    "decodedSampleFormat",
+    "outputBackend",
+    "actualSampleRate",
+    "actualBitDepth",
+    "actualChannels",
+    "outputPerfect",
+    "sourceExact",
+    "pcmPassthrough",
+    "isDsd",
+    "dsdMode",
+    "dsdRate",
+    "gaplessActive",
+    "preloadReady",
+    "crossfadeActive",
+    "crossfadeSeconds",
+    "crossfadeMixActive",
+    "crossfadeEffectiveSeconds",
+    "crossfadeCurve",
+    "crossfadeBlockedReason",
+    "autoMixMode",
+    "autoMixState",
+    "autoMixDurationSeconds",
+    "autoMixStemEnhanced",
+    "autoMixDecodeMs",
+    "autoMixPrepareMs",
+    "autoMixReason",
+    "autoMixStrategy",
+    "autoMixPlanId",
+    "autoMixOutputSeconds",
+    "autoMixNextSourceSeconds",
+    "renderPerformance",
+    "clipCount"
+  ];
+  const id$2 = (v) => typeof v === "string" && /^[1-9]\d{0,15}$/.test(v);
+  const text$g = (v) => typeof v === "string" && !!v.trim() && v.length <= 2048 && !v.includes("\0");
+  function normalizeNcmFileIdentity(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+    const v = raw;
+    if (!id$2(v.recordingId) || !id$2(v.releaseId) || !text$g(v.title) || !text$g(v.album) || typeof v.durationSeconds !== "number" || !Number.isFinite(v.durationSeconds) || v.durationSeconds <= 0 || !Array.isArray(v.artists) || !v.artists.length || v.artists.length > 64 || !v.artists.every((a) => a && id$2(a.id) && text$g(a.name)) || JSON.stringify(v).length > 16384) return void 0;
+    return {
+      recordingId: v.recordingId,
+      releaseId: v.releaseId,
+      title: v.title,
+      album: v.album,
+      durationSeconds: v.durationSeconds,
+      artists: v.artists.map((a) => ({ id: a.id, name: a.name }))
+    };
+  }
+  function fileArtistCredits(tags) {
+    tags = normalizeTrackIdentityTags(tags);
+    if (!tags || tags.scope !== "audio_file") return [];
+    const values = tags.ncm?.artists.map((artist) => artist.name) ?? (tags.artists?.origin === "audio_tag" ? tags.artists.value : []);
+    return [...new Set(values.map((name) => name.trim()).filter(Boolean))].map((name) => ({ name }));
+  }
+  function normalizeTrackIdentityTags(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+    const input = raw;
+    if (input.version !== 1 || !["audio_file", "cue_track"].includes(String(input.scope)))
+      return void 0;
+    const result = { version: 1, scope: input.scope };
+    const ncm = normalizeNcmFileIdentity(input.ncm);
+    if (ncm) result.ncm = ncm;
+    let remaining = 16384;
+    const text2 = (v) => {
+      if (typeof v !== "string" || !v.trim()) return void 0;
+      const limit = Math.min(2048, remaining);
+      if (v.length > limit) result.truncated = true;
+      const value = v.trim().slice(0, limit);
+      remaining -= value.length;
+      return value || void 0;
+    };
+    const list = (v) => {
+      if (!Array.isArray(v)) return [];
+      if (v.length > 64) result.truncated = true;
+      return v.slice(0, 64).flatMap((item) => {
+        const value = text2(item);
+        return value ? [value] : [];
+      });
+    };
+    for (const key of [
+      "title",
+      "artist",
+      "artists",
+      "album",
+      "albumArtist",
+      "albumArtists",
+      "genres",
+      "durationSeconds",
+      "trackNumber",
+      "trackTotal",
+      "discNumber",
+      "discTotal"
+    ]) {
+      const field = input[key];
+      if (!field || !["audio_tag", "cue", "filename", "manual", "legacy"].includes(field.origin))
+        continue;
+      if (["artists", "albumArtists", "genres"].includes(key)) {
+        const value = list(field.value);
+        if (value.length) Object.assign(result, { [key]: { value, origin: field.origin } });
+      } else if (["title", "artist", "album", "albumArtist"].includes(key)) {
+        const value = text2(field.value);
+        if (value) Object.assign(result, { [key]: { value, origin: field.origin } });
+      } else if (typeof field.value === "number" && Number.isFinite(field.value) && field.value > 0 && (key === "durationSeconds" || Number.isSafeInteger(field.value)))
+        Object.assign(result, { [key]: { value: field.value, origin: field.origin } });
+    }
+    if (input.musicbrainz && typeof input.musicbrainz === "object") {
+      const mb = input.musicbrainz;
+      result.musicbrainz = { artistIds: list(mb.artistIds), albumArtistIds: list(mb.albumArtistIds) };
+      for (const key of ["recordingId", "releaseTrackId", "releaseId", "releaseGroupId"])
+        result.musicbrainz[key] = text2(mb[key]);
+    }
+    result.isrcs = list(input.isrcs);
+    result.barcode = text2(input.barcode);
+    result.catalogNumbers = list(input.catalogNumbers);
+    if (input.truncated === true) result.truncated = true;
+    return result;
+  }
+  function libraryArtistCredits(track) {
+    const artists = Array.isArray(track.artists) ? track.artists.filter((artist) => artist && typeof artist.name === "string" && artist.name.trim()) : void 0;
+    return artists?.length ? [...artists] : fileArtistCredits(track.identityTags);
+  }
+  function libraryTrack(record2) {
+    const fileName = typeof record2.fileName === "string" ? record2.fileName : record2.filePath.split(/[\\/]/).pop() || record2.id;
+    const { queueEntryId: _queueEntryId, ...metadata } = record2;
+    const artists = libraryArtistCredits(record2);
+    return {
+      ...metadata,
+      ...artists.length ? { artists } : {},
+      // Legacy SQL rows have arbitrary IDs (e.g. track:10:2), not provider IDs.
+      source: typeof record2.source === "string" ? getTrackSource({ id: record2.id, source: record2.source }) : "local",
+      title: typeof record2.title === "string" ? record2.title : fileName,
+      artist: typeof record2.artist === "string" ? record2.artist : "未知艺术家",
+      album: typeof record2.album === "string" ? record2.album : "未知专辑",
+      fileName,
+      duration: typeof record2.duration === "number" && Number.isFinite(record2.duration) ? record2.duration : 0,
+      size: typeof record2.size === "number" && Number.isFinite(record2.size) ? record2.size : 0,
+      cover: typeof record2.cover === "string" ? record2.cover : null,
+      lyrics: typeof record2.lyrics === "string" ? record2.lyrics : null
+    };
+  }
+  function libraryQueueTrack(record2, queueEntryId) {
+    return { ...libraryTrack(record2), queueEntryId };
+  }
+  function normalizeCueRange(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const range = value;
+    const startSeconds = range.startSeconds;
+    const endSeconds = range.endSeconds;
+    const pregapSeconds = range.pregapSeconds === void 0 ? 0 : range.pregapSeconds;
+    const virtualPregapSeconds = range.virtualPregapSeconds === void 0 ? 0 : range.virtualPregapSeconds;
+    const sourcePregapSeconds = range.sourcePregapSeconds === void 0 ? 0 : range.sourcePregapSeconds;
+    if (typeof startSeconds !== "number" || typeof endSeconds !== "number" || typeof pregapSeconds !== "number" || typeof virtualPregapSeconds !== "number" || typeof sourcePregapSeconds !== "number" || !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || !Number.isFinite(pregapSeconds) || !Number.isFinite(virtualPregapSeconds) || !Number.isFinite(sourcePregapSeconds) || startSeconds < 0 || endSeconds <= startSeconds || pregapSeconds < 0 || virtualPregapSeconds < 0 || sourcePregapSeconds < 0 || sourcePregapSeconds > startSeconds || endSeconds > Number.MAX_SAFE_INTEGER) {
+      return null;
+    }
+    return {
+      startSeconds,
+      endSeconds,
+      pregapSeconds,
+      virtualPregapSeconds,
+      sourcePregapSeconds
+    };
+  }
+  function trackCueRangePropertyIsValid(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const track = value;
+    return track.cueRange === void 0 || normalizeCueRange(track.cueRange) !== null;
+  }
+  function redactSensitiveText(value) {
+    const text2 = typeof value === "string" ? value : String(value);
+    return text2.replace(/(MUSIC_U=)[^;\s]+/gi, "$1[REDACTED]").replace(/(__csrf=)[^;\s]+/gi, "$1[REDACTED]").replace(/(Authorization\s*:\s*Bearer\s+)[^\s,;]+/gi, "$1[REDACTED]").replace(/((?:X-Api-Key|X-Signature)\s*:\s*)[^\s,;]+/gi, "$1[REDACTED]").replace(
+      /([?&](?:password|captcha|token|cookie|csrf|secret|api[-_]?key|apikey|signature)=)[^&\s]+/gi,
+      "$1[REDACTED]"
+    ).replace(
+      /((?:password|token|cookie|secret|credential|api[-_.:]?key|apikey|bearer|signing[-_.:]?key|client[-_.:]?secret)\s*[:=]\s*)[^\s,;]+/gi,
+      "$1[REDACTED]"
+    );
+  }
+  const string = (value) => typeof value === "string" ? value.slice(0, 32768) : void 0;
+  const number$2 = (value) => typeof value === "number" && Number.isFinite(value) ? value : void 0;
+  const cueRange = (range) => normalizeCueRange(range) ?? void 0;
+  function projectBpm(analysis) {
+    if (!analysis || number$2(analysis.bpm) === void 0 || number$2(analysis.confidence) === void 0 || number$2(analysis.algorithmVersion) === void 0 || typeof analysis.analyzedAt !== "string")
+      return void 0;
+    return {
+      bpm: analysis.bpm,
+      confidence: analysis.confidence,
+      source: "analyzed",
+      analyzedAt: analysis.analyzedAt.slice(0, 128),
+      algorithmVersion: analysis.algorithmVersion,
+      variableTempo: typeof analysis.variableTempo === "boolean" ? analysis.variableTempo : void 0,
+      bpmRange: Array.isArray(analysis.bpmRange) && number$2(analysis.bpmRange[0]) !== void 0 && number$2(analysis.bpmRange[1]) !== void 0 ? [analysis.bpmRange[0], analysis.bpmRange[1]] : void 0
+    };
+  }
+  function projectCoreError(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return redactSensitiveText(
+      message.replace(/\b(?:https?|smb|sftp|ftp):\/\/[^\s"'<>]+/gi, "<media-url>")
+    ).slice(0, 4096);
+  }
+  function projectCoreScan(status) {
+    return status ? { ...status, error: status.error ? projectCoreError(status.error) : "" } : null;
+  }
+  function projectCoreTrack(record2, occurrenceId) {
+    const track = libraryTrack({ ...record2 });
+    return {
+      id: track.id,
+      queueEntryId: occurrenceId ?? (typeof record2.queueEntryId === "string" ? record2.queueEntryId : void 0),
+      title: track.title.slice(0, 32768),
+      artist: track.artist.slice(0, 32768),
+      album: track.album.slice(0, 32768),
+      albumId: string(track.albumId),
+      artists: Array.isArray(track.artists) ? track.artists.slice(0, 128).filter((artist) => artist && typeof artist.name === "string").map((artist) => ({
+        id: typeof artist.id === "number" ? number$2(artist.id) : string(artist.id),
+        name: artist.name.slice(0, 32768)
+      })) : void 0,
+      source: string(track.source),
+      ncmSongId: number$2(track.ncmSongId),
+      duration: track.duration,
+      size: track.size,
+      format: string(track.format),
+      sampleRate: number$2(track.sampleRate),
+      bitrate: number$2(track.bitrate),
+      bitDepth: number$2(track.bitDepth),
+      discNumber: number$2(track.discNumber),
+      trackNumber: number$2(track.trackNumber),
+      releaseDate: string(track.releaseDate),
+      subTrack: string(track.subTrack),
+      genre: track.genre === null ? null : string(track.genre),
+      albumArtist: string(track.albumArtist),
+      addedAt: number$2(track.addedAt),
+      bpm: number$2(track.bpm),
+      bpmAnalysis: projectBpm(track.bpmAnalysis),
+      isrc: string(track.isrc),
+      cueRange: cueRange(track.cueRange),
+      mediaPart: track.mediaPart && typeof track.mediaPart.groupId === "string" && typeof track.mediaPart.groupTitle === "string" && typeof track.mediaPart.title === "string" && number$2(track.mediaPart.index) !== void 0 && number$2(track.mediaPart.count) !== void 0 ? {
+        groupId: track.mediaPart.groupId.slice(0, 32768),
+        groupTitle: track.mediaPart.groupTitle.slice(0, 32768),
+        title: track.mediaPart.title.slice(0, 32768),
+        index: track.mediaPart.index,
+        count: track.mediaPart.count
+      } : void 0
+    };
+  }
+  function projectCorePlayback(info) {
+    const result = Object.fromEntries(CORE_PLAYBACK_FIELDS.map((key) => [key, info[key]]));
+    const next = info.upcomingTrack;
+    return {
+      ...result,
+      streamTitle: info.streamTitle ? projectCoreError(info.streamTitle) : info.streamTitle,
+      gaplessBlockedReason: info.gaplessBlockedReason ? projectCoreError(info.gaplessBlockedReason) : info.gaplessBlockedReason,
+      crossfadeBlockedReason: info.crossfadeBlockedReason ? projectCoreError(info.crossfadeBlockedReason) : info.crossfadeBlockedReason,
+      autoMixReason: info.autoMixReason ? projectCoreError(info.autoMixReason) : info.autoMixReason,
+      naturalBoundaries: info.naturalBoundaries ? {
+        trackSerial: info.naturalBoundaries.trackSerial,
+        queueSerial: info.naturalBoundaries.queueSerial,
+        trackTimeMs: info.naturalBoundaries.trackTimeMs,
+        queueTimeMs: info.naturalBoundaries.queueTimeMs
+      } : void 0,
+      upcomingTrack: next ? {
+        id: next.id,
+        queueEntryId: next.queueEntryId,
+        title: next.title,
+        artist: next.artist,
+        album: next.album,
+        duration: next.duration,
+        cueRange: cueRange(next.cueRange)
+      } : null
+    };
+  }
+  const fields = [
+    "exclusive",
+    "outputReleased",
+    "supportsOutputPerfect",
+    "sourceExact",
+    "outputPerfect",
+    "pcmPassthrough",
+    "resampled",
+    "providerImplementation",
+    "perfectReason",
+    "outputSampleRate",
+    "outputBitDepth",
+    "outputChannels",
+    "outputSampleFormat",
+    "backend",
+    "actualBackend",
+    "deviceName",
+    "actualDeviceName",
+    "actualDeviceId",
+    "driverName",
+    "actualDriverName",
+    "driverVersion",
+    "actualDriverVersion",
+    "actualOutputFormat",
+    "actualSampleRate",
+    "actualBitDepth",
+    "actualChannels",
+    "accessMode",
+    "devicePathKind",
+    "perfectReasonCode",
+    "capabilityReason",
+    "driverDopCapable",
+    "driverNativeDsdCapable",
+    "driverDopCarrierSampleRates",
+    "driverDopCarrierFormats",
+    "driverNativeDsdSampleRates",
+    "nativeDsdRuntimeState",
+    "nativeDsdRequestedRate",
+    "nativeDsdActualRate",
+    "nativeDsdChannels",
+    "nativeDsdExplicitlyCapable",
+    "nativeDsdAdvertisedSampleRates",
+    "nativeDsdRuntimeReason",
+    "bufferSizeFrames",
+    "latencyFrames",
+    "latencyMs",
+    "channelRoutingMode",
+    "deviceRecovered",
+    "recoveryCount",
+    "isDsd",
+    "dsdMode",
+    "dsdRate",
+    "actualDsdRate",
+    "dsdRatePolicy",
+    "dsdConversion",
+    "dsdConversionReason"
+  ];
+  const diagnostics = [
+    "decodeHealthAvailable",
+    "decodeStreamToken",
+    "decodeRunning",
+    "decodeEof",
+    "decodeStopRequested",
+    "decodeBufferedFrames",
+    "decodeProducedFrames",
+    "decodeLastProgressAgeMs",
+    "decodeStage",
+    "liveRenderState",
+    "liveRenderedFrames",
+    "liveRenderCallbackCount",
+    "sessionUnderrunCount",
+    "asioHelperCallbackCount",
+    "asioHelperUnderrunCount",
+    "asioHelperBufferDropCount",
+    "sessionBufferDropCount",
+    "sessionRecoveryCount",
+    "lifetimeUnderrunCount",
+    "lifetimeBufferDropCount",
+    "lifetimeRecoveryCount",
+    "driverRestartCount",
+    "deviceLostCount",
+    "driverXrunCount",
+    "dsdIdleFrameCount",
+    "dsdShortReadCount",
+    "dsdTransport",
+    "dsdSourceBitOrder",
+    "dsdSourcePacking",
+    "requestedWireFormat",
+    "wireLittleEndian",
+    "dopRuntimeEvidence",
+    "quirkRegistryState",
+    "quirkFingerprint",
+    "quirkApplied",
+    "dsdMuteState",
+    "dsdMuteTransition",
+    "dsdMutePreRollFrames",
+    "dsdMutePostRollFrames",
+    "dsdMuteTimeoutFrames",
+    "dsdMuteFallback",
+    "firstBufferSummary",
+    "processArchitecture",
+    "asioBuildEnabled",
+    "asioEnvironmentDisabled",
+    "asioRegisteredDriverCount32",
+    "asioRegisteredDriverCount64",
+    "asioLoadableDriverCount64",
+    "dsdRouteOverrideActive",
+    "dsdRouteBackend",
+    "dsdRouteDevice",
+    "dsdRouteFallbackReason",
+    "lastError"
+  ];
+  const scalar = (value) => typeof value === "string" ? projectCoreError(value) : value;
+  function projectCoreOutput(info) {
+    const result = Object.fromEntries(fields.map((key) => [key, Array.isArray(info[key]) ? info[key].slice(0, 256).map(scalar) : scalar(info[key])]));
+    return {
+      ...result,
+      conversionInfo: {
+        sampleFormatConverted: info.conversionInfo.sampleFormatConverted,
+        sampleRateConverted: info.conversionInfo.sampleRateConverted,
+        channelLayoutConverted: info.conversionInfo.channelLayoutConverted,
+        source: info.conversionInfo.source
+      },
+      latencyInfo: { bufferLatencyMs: info.latencyInfo.bufferLatencyMs, outputLatencyMs: info.latencyInfo.outputLatencyMs, totalLatencyMs: info.latencyInfo.totalLatencyMs },
+      diagnostics: Object.fromEntries(diagnostics.map((key) => [key, scalar(info.diagnostics[key])]))
+    };
+  }
+  (() => {
+    try {
+      const nav = globalThis.navigator;
+      if (nav?.platform && /win/i.test(nav.platform)) return true;
+      if (nav?.userAgent && /windows/i.test(nav.userAgent)) return true;
+    } catch {
+    }
+    return false;
+  })();
+  function normalizeCloudSongId(value, maxLength = 128) {
+    const normalized = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? String(value) : typeof value === "string" ? value.trim() : "";
+    if (!normalized) throw new Error("NCM cloud song id is required");
+    if (normalized.length > maxLength) throw new Error("NCM cloud song id is too long");
+    if (/[^\x21-\x7e]/.test(normalized))
+      throw new Error("NCM cloud song id contains invalid characters");
+    return normalized;
+  }
+  async function executePlaylistProjection(service, request, signal) {
+    switch (request.name) {
+      case "playlists.collection":
+        return service.collection(request.payload, signal);
+      case "playlists.catalog":
+        return service.catalog(
+          request.payload.offset,
+          request.payload.limit,
+          request.payload.revision
+        );
+      case "playlists.state":
+        return service.state();
+      case "playlists.members":
+        return service.members(request.payload);
+      case "playlists.membership":
+        return service.membership(request.payload.id, request.payload.revision, request.payload.ids);
+      case "playlists.export":
+        return service.exportDocument(
+          request.payload.id,
+          request.payload.revision,
+          request.payload.format,
+          signal
+        );
+      case "playlists.importDocument":
+        return service.importDocument(
+          request.payload.id,
+          request.payload.revision,
+          request.payload.fileName,
+          request.payload.contents,
+          signal
+        );
+      case "playlists.flush":
+        return service.flush();
+    }
+  }
+  async function executeLibraryRead(database, request) {
+    switch (request.name) {
+      case "library.collections":
+        return database.queryCollections(request.payload.kind, request.payload.query);
+      case "library.byIds": {
+        const page2 = await database.getTracksByIds(request.payload.ids, request.payload.revision);
+        return { ...page2, tracks: page2.tracks.map((track) => projectCoreTrack(track)) };
+      }
+      case "library.paths.lookup":
+        return database.lookupTracksByPaths(request.payload.paths, request.payload.revision);
+    }
+  }
+  async function executeLibraryArtwork(database, request, present, signal) {
+    const page2 = await database.getTracksByIds(request.ids, request.revision);
+    const items = [];
+    for (const record2 of page2.tracks) {
+      signal.throwIfAborted();
+      const artwork = await present(libraryTrack(record2), signal);
+      items.push({ id: record2.id, cover: artwork.cover });
+    }
+    return { revision: page2.revision, items };
+  }
+  const record$d = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const keys$5 = (v, names) => Object.keys(v).every((key) => names.includes(key));
+  const text$f = (v, max = 32768) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
+  const uint$b = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  const assetId = (v) => typeof v === "string" && /^[a-zA-Z]+:[a-f0-9]{64}$/.test(v);
+  const page = (v) => (v.offset === void 0 || uint$b(v.offset)) && (v.limit === void 0 || uint$b(v.limit) && Number(v.limit) > 0 && Number(v.limit) <= 200);
+  function validCoreDspPayload(name, p) {
+    switch (name) {
+      case "audio.audition":
+        return keys$5(p, []);
+      case "audio.audition.end":
+        return keys$5(p, ["revision"]) && uint$b(p.revision);
+      case "audio.audition.select":
+        return keys$5(p, ["revision", "id", "side"]) && uint$b(p.revision) && text$f(p.id, 128) && (p.side === "a" || p.side === "b");
+      case "audio.audition.measure":
+        return keys$5(p, ["revision", "startSeconds", "endSeconds", "a", "b"]) && uint$b(p.revision) && typeof p.startSeconds === "number" && typeof p.endSeconds === "number" && record$d(p.a) && record$d(p.b);
+      case "audio.dsp":
+      case "audio.dsp.status":
+      case "audio.vst3.chooseDirectory":
+        return keys$5(p, []);
+      case "audio.dsp.assets":
+      case "audio.vst3":
+        return keys$5(p, ["offset", "limit"]) && page(p);
+      case "audio.vst3.parameters":
+        return keys$5(p, ["id", "revision", "offset", "limit"]) && text$f(p.id, 160) && uint$b(p.revision) && page(p);
+      case "audio.dsp.correction":
+        return keys$5(p, ["id"]) && assetId(p.id);
+      case "audio.dsp.assetRemove":
+        return keys$5(p, ["id", "revision"]) && assetId(p.id) && uint$b(p.revision);
+      case "audio.dsp.export":
+        return keys$5(p, ["revision", "name"]) && uint$b(p.revision) && text$f(p.name, 120);
+      case "audio.dsp.import":
+        return keys$5(p, ["revision", "kind"]) && uint$b(p.revision) && [
+          "impulseResponse",
+          "correctionProfile",
+          "vst3Preset",
+          "vst3State",
+          "profile",
+          "frequencyResponse",
+          "impulsePath"
+        ].includes(String(p.kind));
+      case "audio.vst3.edit": {
+        if (!keys$5(p, ["revision", "edit"]) || !uint$b(p.revision) || !record$d(p.edit)) return false;
+        const e = p.edit;
+        switch (e.kind) {
+          case "enabled":
+            return keys$5(e, ["kind", "enabled"]) && typeof e.enabled === "boolean";
+          case "searchPaths":
+            return keys$5(e, ["kind", "paths"]) && Array.isArray(e.paths) && e.paths.length <= 32 && e.paths.every((v) => text$f(v));
+          case "scan":
+            return keys$5(e, ["kind"]);
+          case "clearQuarantine":
+            return keys$5(e, ["kind", "id"]) && text$f(e.id, 160);
+          default:
+            return false;
+        }
+      }
+      case "audio.dsp.edit": {
+        if (!keys$5(p, ["revision", "edit"]) || !uint$b(p.revision) || !record$d(p.edit)) return false;
+        const e = p.edit;
+        switch (e.kind) {
+          case "autoPreamp":
+            return keys$5(e, ["kind", "enabled"]) && typeof e.enabled === "boolean";
+          case "processing":
+          case "outputStage":
+          case "stereoImage":
+            return keys$5(e, ["kind", "settings"]) && record$d(e.settings);
+          case "scenes":
+            return keys$5(e, ["kind", "scenes", "pinnedSceneId"]) && Array.isArray(e.scenes) && e.scenes.every(record$d) && (e.pinnedSceneId === null || text$f(e.pinnedSceneId, 160));
+          case "apply":
+            return keys$5(e, ["kind", "id", "confirmDsdPcmFallback"]) && (e.id === null || text$f(e.id, 160)) && (e.confirmDsdPcmFallback === void 0 || typeof e.confirmDsdPcmFallback === "boolean");
+          default:
+            return false;
+        }
+      }
+      default:
+        return false;
+    }
+  }
+  const EXPERIENCE_MUSIC_OPERATIONS = [
+    "status",
+    "task",
+    "preview",
+    "import",
+    "reconcile",
+    "introductions",
+    "credits",
+    "enrich",
+    "inventory",
+    "history",
+    "history.read",
+    "restore",
+    "cancel",
+    "provenance.list",
+    "provenance.read",
+    "provenance.review"
+  ];
+  function normalizeStartupExperience(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const { pluginId: pluginId2, experienceId } = value;
+    if (typeof pluginId2 !== "string" || pluginId2.length > 255 || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(pluginId2) || typeof experienceId !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(experienceId))
+      return null;
+    return { pluginId: pluginId2, experienceId };
+  }
+  const record$c = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const uint$a = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  const text$e = (v, max) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
+  const optional$1 = (v, check) => v === void 0 || check(v);
+  const keys$4 = (v, allowed) => Object.keys(v).every((key) => allowed.includes(key));
+  const validContext = (v, kind) => {
+    if (!record$c(v)) return false;
+    if (v.type === "collection")
+      return keys$4(v, ["type", "collection", "id"]) && (v.collection === "artists" || v.collection === "albums") && text$e(v.id, 32768);
+    return (v.type === "track" || v.type === "native") && keys$4(v, ["type", "provider", "id"]) && typeof v.provider === "string" && /^[a-z0-9][a-z0-9._-]{0,127}$/.test(v.provider) && text$e(v.id, v.type === "track" ? 8192 : 128) && (v.type !== "native" || v.provider !== "local" && typeof kind === "string" && ["artist", "release", "album_project"].includes(kind));
+  };
+  function validCatalogPayload(name, value) {
+    if (!record$c(value)) return false;
+    const page2 = () => optional$1(value.offset, uint$a) && optional$1(value.limit, (n) => uint$a(n) && Number(n) >= 1 && Number(n) <= 200) && optional$1(value.revision, uint$a);
+    switch (name) {
+      case "catalog.query":
+        return keys$4(value, [
+          "kind",
+          "scope",
+          "source",
+          "search",
+          "artistName",
+          "revision",
+          "offset",
+          "limit",
+          "context"
+        ]) && typeof value.kind === "string" && ["recording", "release", "artist", "album_project"].includes(value.kind) && optional$1(value.scope, (v) => v === "library" || v === "all") && optional$1(value.source, (v) => text$e(v, 128)) && optional$1(
+          value.artistName,
+          (v) => value.kind === "artist" && text$e(v, 32768) && !!String(v).trim()
+        ) && optional$1(
+          value.search,
+          (v) => typeof v === "string" && v.length <= 512 && !v.includes("\0")
+        ) && optional$1(value.context, (v) => validContext(v, value.kind)) && page2();
+      case "catalog.sources":
+        return keys$4(value, ["entityId", "revision", "offset", "limit"]) && text$e(value.entityId, 128) && page2();
+      case "catalog.detail":
+        return keys$4(value, ["id", "revision"]) && text$e(value.id, 128) && optional$1(value.revision, uint$a);
+      case "catalog.play":
+        return keys$4(value, ["sourceId", "revision"]) && text$e(value.sourceId, 128) && uint$a(value.revision);
+      case "catalog.status":
+      case "catalog.refresh":
+      case "catalog.cancel":
+        return keys$4(value, []);
+      default:
+        return false;
+    }
+  }
+  const HEALTH_CATEGORIES = [
+    "track_tags",
+    "track_cover",
+    "track_genre",
+    "artist_identity",
+    "artist_name",
+    "artist_image",
+    "artist_intro",
+    "album_identity",
+    "album_intro",
+    "release_identity"
+  ];
+  const HEALTH_STATES = [
+    "ready",
+    "processing",
+    "review",
+    "unavailable",
+    "blocked",
+    "failed",
+    "manual"
+  ];
+  function validLibraryHealthPayload(name, raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const p = raw;
+    const keys2 = (...allowed) => Object.keys(p).every((k) => allowed.includes(k));
+    const uint2 = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+    const id2 = typeof p.id === "string" && p.id.length > 0 && p.id.length <= 128 && !p.id.includes("\0");
+    const category = p.category === void 0 || HEALTH_CATEGORIES.includes(p.category);
+    if (name === "library.health.start" || name === "library.health.status") return keys2();
+    if (name === "library.health.repair")
+      return keys2("refresh") && p.refresh === true || keys2("id", "category") && id2 && category;
+    return name === "library.health.page" && keys2("id", "category", "state", "offset", "limit") && id2 && category && (p.state === void 0 || HEALTH_STATES.includes(p.state)) && (p.offset === void 0 || uint2(p.offset)) && (p.limit === void 0 || uint2(p.limit) && Number(p.limit) > 0 && Number(p.limit) <= 100);
+  }
+  const MAX_GENRE_ID_LENGTH = 8192;
+  function validGenresPayload(name, raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const v = raw;
+    const text2 = (x, max = 512) => typeof x === "string" && !!x.trim() && x.length <= max && !x.includes("\0");
+    const uint2 = (x) => Number.isSafeInteger(x) && Number(x) >= 0;
+    const keys2 = (names) => Object.keys(v).every((k) => names.includes(k));
+    const page2 = () => (v.offset === void 0 || uint2(v.offset)) && (v.limit === void 0 || uint2(v.limit) && Number(v.limit) >= 1 && Number(v.limit) <= 200) && (v.revision === void 0 || uint2(v.revision));
+    const genreId = (x) => text2(x, MAX_GENRE_ID_LENGTH);
+    const parent = (x) => x === null || genreId(x);
+    const target = (x) => !!x && typeof x === "object" && !Array.isArray(x) && Object.keys(x).every((k) => ["kind", "id"].includes(k)) && ["source", "collection"].includes(String(x.kind)) && text2(x.id, 16384);
+    const create = (x) => !!x && typeof x === "object" && !Array.isArray(x) && Object.keys(x).every((k) => ["name", "nameEn", "parentId"].includes(k)) && text2(x.name) && text2(x.nameEn) && (x.parentId === void 0 || parent(x.parentId));
+    if (name === "genres.tree")
+      return keys2(["parentId", "search", "offset", "limit", "revision"]) && page2() && (v.parentId === void 0 || parent(v.parentId)) && (v.search === void 0 || typeof v.search === "string" && v.search.length <= 512);
+    if (name === "genres.unmapped")
+      return keys2(["provider", "search", "includeIgnored", "offset", "limit", "revision"]) && page2() && (v.provider === void 0 || text2(v.provider, 128)) && (v.search === void 0 || typeof v.search === "string" && v.search.length <= 512) && (v.includeIgnored === void 0 || typeof v.includeIgnored === "boolean");
+    if (name === "genres.evidence")
+      return keys2(["target", "offset", "limit", "revision"]) && page2() && target(v.target);
+    if (name === "genres.override")
+      return keys2(["target", "revision", "genreIds"]) && target(v.target) && uint2(v.revision) && (v.genreIds === null || Array.isArray(v.genreIds) && v.genreIds.length <= 200 && v.genreIds.every(genreId));
+    if (name === "genres.map")
+      return keys2(["revision", "provider", "value", "genreId", "ignored", "create"]) && uint2(v.revision) && text2(v.provider, 128) && text2(v.value, 32768) && (v.ignored === void 0 || typeof v.ignored === "boolean") && (v.create !== void 0 ? create(v.create) && v.genreId === void 0 && !v.ignored : (v.genreId === null || genreId(v.genreId)) && !(v.ignored && v.genreId !== null));
+    if (name !== "genres.edit" || !uint2(v.revision)) return false;
+    if (v.action === "create")
+      return keys2(["action", "revision", "name", "nameEn", "parentId"]) && create({
+        name: v.name,
+        nameEn: v.nameEn,
+        ...v.parentId !== void 0 ? { parentId: v.parentId } : {}
+      });
+    if (v.action === "update")
+      return keys2(["action", "revision", "genreId", "name", "nameEn", "parentId"]) && genreId(v.genreId) && (v.name !== void 0 || v.nameEn !== void 0 || v.parentId !== void 0) && (v.name === void 0 || text2(v.name)) && (v.nameEn === void 0 || text2(v.nameEn)) && (v.parentId === void 0 || parent(v.parentId));
+    return v.action === "delete" && keys2(["action", "revision", "genreId", "replacement"]) && genreId(v.genreId) && parent(v.replacement);
+  }
+  const CLASSIFICATION_DIMENSIONS = [
+    "language",
+    "region",
+    "projectYear",
+    "releaseYear",
+    "albumType",
+    "versionAttribute",
+    "format",
+    "bitDepth",
+    "sampleRate",
+    "management"
+  ];
+  function validClassificationDimension(value) {
+    return typeof value === "string" && CLASSIFICATION_DIMENSIONS.includes(value);
+  }
+  const text$d = (v, max) => typeof v === "string" && !!v.trim() && v.length <= max && !v.includes("\0");
+  const uint$9 = (n) => Number.isSafeInteger(n) && Number(n) >= 0;
+  const object$3 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  function validClassificationFilters(value) {
+    return Array.isArray(value) && value.length <= CLASSIFICATION_DIMENSIONS.length && new Set(value.map((v) => object$3(v) ? v.dimension : void 0)).size === value.length && value.every(
+      (v) => object$3(v) && Object.keys(v).every((k) => ["dimension", "values"].includes(k)) && validClassificationDimension(v.dimension) && Array.isArray(v.values) && v.values.length >= 1 && v.values.length <= 64 && v.values.every((x) => text$d(x, 128)) && new Set(v.values).size === v.values.length
+    );
+  }
+  function validClassificationFacetQuery(value) {
+    return object$3(value) && validClassificationDimension(value.dimension) && (value.facetSearch === void 0 || typeof value.facetSearch === "string" && value.facetSearch.length <= 512 && !value.facetSearch.includes("\0")) && (value.offset === void 0 || uint$9(value.offset)) && (value.limit === void 0 || uint$9(value.limit) && Number(value.limit) >= 1 && Number(value.limit) <= 200);
+  }
+  const record$b = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  const uint$8 = (value) => Number.isSafeInteger(value) && Number(value) >= 0;
+  const text$c = (value, max) => typeof value === "string" && !!value.trim() && value.length <= max && !value.includes("\0");
+  function validGenreBrowseToken(value) {
+    return record$b(value) && Object.keys(value).length === 7 && ["genresRevision", "catalogRevision", "contentRevision", "metadataRevision", "asOf"].every(
+      (key) => uint$8(value[key])
+    ) && (value.expiresAt === null || uint$8(value.expiresAt) && Number(value.expiresAt) > Number(value.asOf)) && text$c(value.contextKey, 4096);
+  }
+  function validGenreBrowsePayload(name, value) {
+    if (!record$b(value) || !["genres.browse", "genres.members", "genres.facets"].includes(name))
+      return false;
+    const fields2 = [
+      "genreId",
+      "includeDescendants",
+      "source",
+      "search",
+      "offset",
+      "limit",
+      "token",
+      "filters",
+      ...name === "genres.facets" ? ["dimension", "facetSearch"] : [],
+      name === "genres.members" ? "entityId" : "kind"
+    ];
+    return Object.keys(value).every((key) => fields2.includes(key)) && (name === "genres.members" ? text$c(value.entityId, 128) : ["recording", "release"].includes(String(value.kind))) && (value.genreId === void 0 || text$c(value.genreId, MAX_GENRE_ID_LENGTH)) && (value.includeDescendants === void 0 || typeof value.includeDescendants === "boolean") && (value.source === void 0 || text$c(value.source, 128)) && (value.search === void 0 || typeof value.search === "string" && value.search.length <= 512 && !value.search.includes("\0")) && (value.offset === void 0 || uint$8(value.offset)) && (value.limit === void 0 || uint$8(value.limit) && Number(value.limit) >= 1 && Number(value.limit) <= 200) && (value.token === void 0 || validGenreBrowseToken(value.token)) && (value.filters === void 0 || validClassificationFilters(value.filters)) && (name !== "genres.facets" || validClassificationFacetQuery(value));
+  }
+  const record$a = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  const text$b = (value, max) => typeof value === "string" && !!value.trim() && value.length <= max && !value.includes("\0");
+  const uint$7 = (value) => Number.isSafeInteger(value) && Number(value) >= 0;
+  function validAlbumBrowseScope(value) {
+    return record$a(value) && Object.keys(value).every((key) => ["entityId", "releaseId", "token"].includes(key)) && text$b(value.entityId, 128) && text$b(value.releaseId, 256) && validGenreBrowseToken(value.token);
+  }
+  function validAlbumBrowsePayload(name, value) {
+    if (!record$a(value) || !["albums.browse", "albums.sources"].includes(name)) return false;
+    const source = name === "albums.sources";
+    return Object.keys(value).every(
+      (key) => ["entityId", "offset", "limit", "token", ...source ? ["releaseId"] : []].includes(key)
+    ) && text$b(value.entityId, 128) && (value.offset === void 0 || uint$7(value.offset)) && (value.limit === void 0 || uint$7(value.limit) && Number(value.limit) >= 1 && Number(value.limit) <= 200) && (source ? text$b(value.releaseId, 256) && validGenreBrowseToken(value.token) : value.token === void 0 || validGenreBrowseToken(value.token));
+  }
+  const record$9 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  const id$1 = (value) => typeof value === "string" && !!value.trim() && value.length <= 128 && !value.includes("\0");
+  function validUnifiedPlaybackPayload(value) {
+    if (!record$9(value)) return false;
+    return Object.keys(value).every(
+      (key) => ["sourceId", "revision", "providerOrder", "scope", "albumScope"].includes(key)
+    ) && id$1(value.sourceId) && Number.isSafeInteger(value.revision) && Number(value.revision) >= 0 && (value.providerOrder === void 0 || Array.isArray(value.providerOrder) && value.providerOrder.length <= 128 && value.providerOrder.every(
+      (provider) => typeof provider === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/.test(provider)
+    ) && new Set(value.providerOrder).size === value.providerOrder.length) && (value.scope === void 0 || record$9(value.scope) && validGenreBrowseToken(value.scope.token) && validGenreBrowsePayload("genres.members", value.scope)) && (value.albumScope === void 0 || validAlbumBrowseScope(value.albumScope)) && !(value.scope && value.albumScope);
+  }
+  const text$a = (v, max) => typeof v === "string" && v.length <= max && !v.includes("\0");
+  const validMetadataProvider = (v) => text$a(v, 118) && /^[a-z0-9][a-z0-9._-]*$/.test(v);
+  const publicMetadataSources = ["vocadb", "theaudiodb", "discogs"];
+  const isPublicMetadataSource = (id2) => publicMetadataSources.some((source) => source === id2);
+  const PERSONAL_MUSIC_ARTWORK_MAX_BYTES = 2 * 1024 * 1024;
+  const maxDimension = 8192;
+  const maxPixels = 32 * 1024 * 1024;
+  function parsePersonalMusicArtwork(value) {
+    if (typeof value !== "string" || value.length > Math.ceil(PERSONAL_MUSIC_ARTWORK_MAX_BYTES / 3) * 4 + 32)
+      return null;
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+    if (!match || match[2].length % 4) return null;
+    let raw;
+    try {
+      raw = atob(match[2]);
+    } catch {
+      return null;
+    }
+    if (!raw.length || raw.length > PERSONAL_MUSIC_ARTWORK_MAX_BYTES || btoa(raw) !== match[2]) return null;
+    const b = (i) => raw.charCodeAt(i);
+    const u16 = (i) => b(i) * 256 + b(i + 1);
+    const u32 = (i) => b(i) * 16777216 + b(i + 1) * 65536 + b(i + 2) * 256 + b(i + 3);
+    const le24 = (i) => b(i) + b(i + 1) * 256 + b(i + 2) * 65536;
+    const le32 = (i) => le24(i) + b(i + 3) * 16777216;
+    let width = 0, height = 0;
+    if (match[1] === "image/png") {
+      if (raw.length < 45 || raw.slice(0, 8) !== "PNG\r\n\n" || u32(8) !== 13 || raw.slice(12, 16) !== "IHDR") return null;
+      width = u32(16);
+      height = u32(20);
+      let offset = 8, complete = false, pixels = false;
+      while (offset + 12 <= raw.length) {
+        const length = u32(offset), type = raw.slice(offset + 4, offset + 8);
+        if (offset + 12 + length > raw.length) return null;
+        if (type === "acTL") return null;
+        if (type === "IDAT" && length > 0) pixels = true;
+        offset += 12 + length;
+        if (type === "IEND") {
+          complete = length === 0 && offset === raw.length;
+          break;
+        }
+      }
+      if (!complete || !pixels) return null;
+    } else if (match[1] === "image/jpeg") {
+      if (raw.length < 12 || b(0) !== 255 || b(1) !== 216 || b(raw.length - 2) !== 255 || b(raw.length - 1) !== 217) return null;
+      let offset = 2, pixels = false;
+      while (offset + 4 < raw.length) {
+        if (b(offset++) !== 255) return null;
+        while (b(offset) === 255) offset++;
+        const marker = b(offset++);
+        if (marker === 218) {
+          const length2 = u16(offset);
+          pixels = length2 >= 6 && offset + length2 < raw.length - 2;
+          break;
+        }
+        if (marker === 217) break;
+        if (marker === 1 || marker >= 208 && marker <= 215) continue;
+        const length = u16(offset);
+        if (length < 2 || offset + length > raw.length) return null;
+        if ([192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207].includes(marker)) {
+          if (length < 8 || width || height) return null;
+          height = u16(offset + 3);
+          width = u16(offset + 5);
+        }
+        offset += length;
+      }
+      if (!pixels) return null;
+    } else {
+      if (raw.length < 30 || raw.slice(0, 4) !== "RIFF" || le32(4) + 8 !== raw.length || raw.slice(8, 12) !== "WEBP") return null;
+      let offset = 12, canvasWidth = 0, canvasHeight = 0;
+      while (offset + 8 <= raw.length) {
+        const type = raw.slice(offset, offset + 4), length = le32(offset + 4), data = offset + 8;
+        if (data + length + length % 2 > raw.length) return null;
+        if (type === "VP8X") {
+          if (length !== 10 || b(data) & 2) return null;
+          canvasWidth = le24(data + 4) + 1;
+          canvasHeight = le24(data + 7) + 1;
+        } else if (type === "VP8L" && length > 5 && b(data) === 47) {
+          if (width || height) return null;
+          width = 1 + b(data + 1) + ((b(data + 2) & 63) << 8);
+          height = 1 + (b(data + 2) >> 6) + (b(data + 3) << 2) + ((b(data + 4) & 15) << 10);
+        } else if (type === "VP8 " && length > 10 && raw.slice(data + 3, data + 6) === "*") {
+          if (width || height) return null;
+          width = b(data + 6) + b(data + 7) * 256 & 16383;
+          height = b(data + 8) + b(data + 9) * 256 & 16383;
+        }
+        offset = data + length + length % 2;
+      }
+      if (offset !== raw.length || canvasWidth && (width !== canvasWidth || height !== canvasHeight)) return null;
+    }
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > maxDimension || height > maxDimension || width * height > maxPixels) return null;
+    return { dataUrl: value, mime: match[1], bytes: raw.length, width, height };
+  }
+  const text$9 = (v, max = 128) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
+  const validMusicBrainzArtistId = (v) => typeof v === "string" && /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v);
+  const validMetadataLanguage = (v) => typeof v === "string" && ["zh-Hans", "zh-Hant", "en"].includes(v);
+  function validEntityMetadataPayload(name, raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const v = raw;
+    const keys2 = (...allowed) => Object.keys(v).every((k) => allowed.includes(k));
+    const uint2 = (n) => Number.isSafeInteger(n) && Number(n) >= 0;
+    switch (name) {
+      case "metadata.entity.policy":
+        return keys2();
+      case "metadata.entity.detail":
+        return keys2("entityId", "language", "sourceProvider", "includeAutomaticArtwork") && text$9(v.entityId) && validMetadataLanguage(v.language) && (v.sourceProvider === void 0 || validMetadataProvider(v.sourceProvider)) && (v.includeAutomaticArtwork === void 0 || typeof v.includeAutomaticArtwork === "boolean");
+      case "metadata.entity.resolve":
+      case "metadata.entity.enrich":
+        return keys2("entityId", "language", "batchId", ...name.endsWith("resolve") ? ["mbid"] : ["provider"]) && text$9(v.entityId) && text$9(v.batchId) && validMetadataLanguage(v.language) && (v.provider === void 0 || v.provider === "musicbrainz-details" || v.provider === "public-artwork" || typeof v.provider === "string" && (isPublicMetadataSource(v.provider) || /^platform\./.test(v.provider) && validMetadataProvider(v.provider.slice(9)))) && (!name.endsWith("resolve") || validMusicBrainzArtistId(v.mbid));
+      case "metadata.entity.decide":
+        return keys2("jobId", "generation", "decision") && text$9(v.jobId) && uint2(v.generation) && ["confirm", "reject"].includes(String(v.decision));
+      case "metadata.entity.detach":
+        return keys2("entityId", "revision") && text$9(v.entityId) && uint2(v.revision);
+      case "metadata.entity.override":
+        return keys2("entityId", "revision", "mode", "value", "language") && text$9(v.entityId) && uint2(v.revision) && validMetadataLanguage(v.language) && ["value", "clear", "reset"].includes(String(v.mode)) && (v.mode === "value" ? text$9(v.value, 2e4) : v.value === void 0);
+      case "metadata.entity.sourcePreference":
+        return keys2("entityId", "revision", "provider", "language") && text$9(v.entityId) && uint2(v.revision) && validMetadataLanguage(v.language) && (v.provider === null || validMetadataProvider(v.provider));
+      case "metadata.entity.artworkOverride":
+        return keys2("entityId", "revision", "mode", "dataUrl", "language") && text$9(v.entityId) && uint2(v.revision) && validMetadataLanguage(v.language) && ["value", "clear", "reset"].includes(String(v.mode)) && (v.mode === "value" ? !!parsePersonalMusicArtwork(v.dataUrl) : v.dataUrl === void 0);
+      case "metadata.entity.jobs":
+        return keys2("entityId", "jobId", "offset", "limit") && (v.entityId === void 0 || text$9(v.entityId)) && (v.jobId === void 0 || text$9(v.jobId)) && (v.offset === void 0 || uint2(v.offset)) && (v.limit === void 0 || uint2(v.limit) && Number(v.limit) >= 1 && Number(v.limit) <= 100);
+      case "metadata.entity.credits":
+        return keys2("entityId", "entityRevision", "offset", "limit", "revision") && text$9(v.entityId) && (v.entityRevision === void 0 || uint2(v.entityRevision)) && (v.offset === void 0 || uint2(v.offset)) && (v.limit === void 0 || uint2(v.limit) && Number(v.limit) >= 1 && Number(v.limit) <= 200) && (v.revision === void 0 || text$9(v.revision, 2048));
+      case "metadata.entity.cancel":
+        return keys2("jobId", "batchId", "generation") && text$9(v.jobId) && text$9(v.batchId) && (v.generation === void 0 || uint2(v.generation));
+      default:
+        return false;
+    }
+  }
+  function validMetadataTasksPayload(name, raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const v = raw;
+    const text2 = (value) => typeof value === "string" && value.length > 0 && value.length <= 128 && !value.includes("\0");
+    const uint2 = (value) => Number.isSafeInteger(value) && Number(value) >= 0;
+    if (name === "metadata.entity.requery")
+      return Object.keys(v).every((k) => ["items", "batchId", "demandId"].includes(k)) && text2(v.demandId) && (v.batchId === void 0 || text2(v.batchId)) && Array.isArray(v.items) && v.items.length > 0 && v.items.length <= 10 && new Set(v.items.map((item) => item?.jobId)).size === v.items.length && v.items.every(
+        (item) => item && typeof item === "object" && !Array.isArray(item) && Object.keys(item).every(
+          (k) => ["jobId", "generation", "entityId", "inputVersion", "linkRevision"].includes(k)
+        ) && text2(item.jobId) && text2(item.entityId) && uint2(item.generation) && item.generation > 0 && uint2(item.linkRevision) && typeof item.inputVersion === "string" && item.inputVersion.length > 0 && item.inputVersion.length <= 32768 && !item.inputVersion.includes("\0")
+      );
+    if (v.offset !== void 0 && !uint2(v.offset)) return false;
+    if (v.limit !== void 0 && (!uint2(v.limit) || Number(v.limit) < 1 || Number(v.limit) > 100))
+      return false;
+    if (name === "metadata.entity.tasks")
+      return Object.keys(v).every((k) => ["filter", "batchId", "offset", "limit"].includes(k)) && (v.filter === void 0 || typeof v.filter === "string" && ["all", "active", "attention"].includes(v.filter)) && (v.batchId === void 0 || text2(v.batchId));
+    if (name === "metadata.entity.demands" || name === "metadata.entity.sources")
+      return Object.keys(v).every((k) => ["jobId", "offset", "limit"].includes(k)) && text2(v.jobId);
+    return false;
+  }
+  const record$8 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const text$8 = (v, max = 128) => typeof v === "string" && !!v.trim() && v.length <= max && !v.includes("\0");
+  const uint$6 = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  const validMusicRatingSteps = (v) => v === null || Number.isInteger(v) && Number(v) >= 1 && Number(v) <= 10;
+  function validMusicRatingsToken(v) {
+    return record$8(v) && Object.keys(v).length === 3 && uint$6(v.ratingsRevision) && uint$6(v.linkRevision) && text$8(v.targetKey, 512);
+  }
+  function validMusicRatingResolution(v) {
+    return record$8(v) && Object.keys(v).length === 2 && uint$6(v.revision) && ["current", "target", "clear"].includes(String(v.choice));
+  }
+  function validTrackContext(v) {
+    return record$8(v) && Object.keys(v).length === 2 && typeof v.provider === "string" && /^[a-z0-9][a-z0-9._-]{0,127}$/.test(v.provider) && typeof v.id === "string" && v.id.length > 0 && v.id.length <= 8192 && !v.id.includes("\0");
+  }
+  function validMusicRatingsPayload(name, raw) {
+    if (!record$8(raw)) return false;
+    const keys2 = (...allowed) => Object.keys(raw).every((k) => allowed.includes(k));
+    switch (name) {
+      case "ratings.detail":
+        return keys2("entityId") && text$8(raw.entityId);
+      case "ratings.set":
+        return keys2("entityId", "token", "steps") && text$8(raw.entityId) && validMusicRatingsToken(raw.token) && validMusicRatingSteps(raw.steps);
+      case "ratings.targets":
+        return keys2("entityId", "offset", "limit", "trackContext") && text$8(raw.entityId) && (raw.trackContext === void 0 || validTrackContext(raw.trackContext)) && (raw.offset === void 0 || uint$6(raw.offset)) && (raw.limit === void 0 || uint$6(raw.limit) && Number(raw.limit) >= 1 && Number(raw.limit) <= 100);
+      case "ratings.history":
+        return keys2("entityId", "offset", "limit") && text$8(raw.entityId) && (raw.offset === void 0 || uint$6(raw.offset)) && (raw.limit === void 0 || uint$6(raw.limit) && Number(raw.limit) >= 1 && Number(raw.limit) <= 100);
+      default:
+        return false;
+    }
+  }
+  const record$7 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const text$7 = (v, max = 128) => typeof v === "string" && !!v.trim() && v.length <= max && !v.includes("\0");
+  const uint$5 = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  const validMusicPreferenceState = (v) => v === "none" || v === "favorite" || v === "ban";
+  function validMusicPreferenceChoice(choice, impact) {
+    if (typeof choice !== "string") return false;
+    if (["current", "target", "clear"].includes(choice)) return true;
+    return choice.startsWith("related:") && text$7(choice.slice(8)) && true;
+  }
+  function validMusicPreferenceResolution(v) {
+    return record$7(v) && Object.keys(v).length === 2 && uint$5(v.revision) && validMusicPreferenceChoice(v.choice);
+  }
+  function validMusicPreferencesPayload(name, raw) {
+    if (!record$7(raw)) return false;
+    const keys2 = (...allowed) => Object.keys(raw).every((k) => allowed.includes(k));
+    const page2 = () => (raw.offset === void 0 || uint$5(raw.offset)) && (raw.limit === void 0 || uint$5(raw.limit) && Number(raw.limit) >= 1 && Number(raw.limit) <= 100);
+    switch (name) {
+      case "preferences.detail":
+        return keys2("entityId") && text$7(raw.entityId);
+      case "preferences.set":
+        return keys2("entityId", "token", "state") && text$7(raw.entityId) && validMusicPreferenceState(raw.state) && record$7(raw.token) && Object.keys(raw.token).length === 3 && uint$5(raw.token.preferencesRevision) && uint$5(raw.token.linkRevision) && text$7(raw.token.targetKey, 512);
+      case "preferences.history":
+        return keys2("entityId", "offset", "limit") && text$7(raw.entityId) && page2();
+      case "preferences.targets":
+        return keys2("entityId", "offset", "limit", "trackContext") && text$7(raw.entityId) && page2() && (raw.trackContext === void 0 || record$7(raw.trackContext) && Object.keys(raw.trackContext).length === 2 && typeof raw.trackContext.provider === "string" && /^[a-z0-9][a-z0-9._-]{0,127}$/.test(raw.trackContext.provider) && text$7(raw.trackContext.id, 8192));
+      default:
+        return false;
+    }
+  }
+  const record$6 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const text$6 = (v, max = 128) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
+  const uint$4 = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  const validIdentificationKind = (v) => ["artist", "recording", "album_project", "release"].includes(String(v));
+  function validIdentificationPayload(name, raw) {
+    if (!record$6(raw)) return false;
+    const keys2 = (...allowed) => Object.keys(raw).every((k) => allowed.includes(k));
+    const review = () => text$6(raw.candidateId) && uint$4(raw.revision) && uint$4(raw.linkRevision);
+    switch (name) {
+      case "identification.status":
+        return keys2();
+      case "identification.start":
+        return keys2("entityId", "batchId") && text$6(raw.entityId) && text$6(raw.batchId);
+      case "identification.detail":
+        return keys2("entityId") && text$6(raw.entityId);
+      case "identification.history":
+        return keys2("entityId", "offset", "limit") && text$6(raw.entityId) && (raw.offset === void 0 || uint$4(raw.offset)) && (raw.limit === void 0 || uint$4(raw.limit) && Number(raw.limit) >= 1 && Number(raw.limit) <= 100);
+      case "identification.restorePreview":
+      case "identification.restore":
+        return keys2("entityId", "historySeq", "linkRevision", "inputVersion", "ratingResolution", "preferenceResolution") && text$6(raw.entityId) && uint$4(raw.historySeq) && Number(raw.historySeq) > 0 && uint$4(raw.linkRevision) && text$6(raw.inputVersion, 16384) && (raw.ratingResolution === void 0 || validMusicRatingResolution(raw.ratingResolution)) && (raw.preferenceResolution === void 0 || validMusicPreferenceResolution(raw.preferenceResolution));
+      case "identification.inbox":
+        return keys2("kind", "state", "unresolvedOnly", "offset", "limit") && (raw.kind === void 0 || validIdentificationKind(raw.kind)) && (raw.state === void 0 || ["candidate", "confirmed", "rejected"].includes(String(raw.state))) && (raw.unresolvedOnly === void 0 || typeof raw.unresolvedOnly === "boolean") && (raw.offset === void 0 || uint$4(raw.offset)) && (raw.limit === void 0 || uint$4(raw.limit) && Number(raw.limit) >= 1 && Number(raw.limit) <= 100);
+      case "identification.candidates":
+        return keys2("entityId", "state", "offset", "limit") && text$6(raw.entityId) && (raw.state === void 0 || ["candidate", "confirmed", "rejected"].includes(String(raw.state))) && (raw.offset === void 0 || uint$4(raw.offset)) && (raw.limit === void 0 || uint$4(raw.limit) && Number(raw.limit) >= 1 && Number(raw.limit) <= 100);
+      case "identification.preview":
+        return keys2("candidateId", "revision", "linkRevision") && review();
+      case "identification.decide":
+        return keys2("candidateId", "revision", "linkRevision", "decision", "attachToCurrent", "ratingResolution", "preferenceResolution") && review() && ["confirm", "reject"].includes(String(raw.decision)) && (raw.attachToCurrent === void 0 || raw.attachToCurrent === true && raw.decision === "confirm" && raw.ratingResolution === void 0 && raw.preferenceResolution === void 0) && (raw.ratingResolution === void 0 || validMusicRatingResolution(raw.ratingResolution)) && (raw.preferenceResolution === void 0 || validMusicPreferenceResolution(raw.preferenceResolution));
+      case "identification.detach":
+        return keys2("linkId", "revision") && text$6(raw.linkId) && uint$4(raw.revision);
+      default:
+        return false;
+    }
+  }
+  const record$5 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const uint$3 = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  const text$5 = (v, max = 128) => typeof v === "string" && !!v.trim() && v.length <= max && !v.includes("\0");
+  const normalizeMusicTagName = (name) => name.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US");
+  const validMusicTagName = (name) => text$5(name, 80) && normalizeMusicTagName(name).length > 0;
+  function validMusicTagsToken(value) {
+    return record$5(value) && Object.keys(value).length === 4 && ["tagsRevision", "catalogRevision", "contentRevision", "linkRevision"].every((k) => uint$3(value[k]));
+  }
+  function validMusicTagsPayload(name, value) {
+    if (!record$5(value)) return false;
+    const keys2 = (...allowed) => Object.keys(value).every((k) => allowed.includes(k));
+    const page2 = () => (value.offset === void 0 || uint$3(value.offset)) && (value.limit === void 0 || uint$3(value.limit) && Number(value.limit) >= 1 && Number(value.limit) <= 100) && (value.token === void 0 || validMusicTagsToken(value.token));
+    switch (name) {
+      case "tags.list":
+        return keys2("search", "offset", "limit", "token") && page2() && (value.search === void 0 || typeof value.search === "string" && value.search.length <= 160 && !value.search.includes("\0"));
+      case "tags.entity":
+        return keys2("entityId", "offset", "limit", "token") && text$5(value.entityId) && page2();
+      case "tags.members":
+      case "tags.recordings":
+        return keys2("tagId", "offset", "limit", "token") && text$5(value.tagId) && page2();
+      case "tags.create":
+        return keys2("name", "tagsRevision") && validMusicTagName(value.name) && uint$3(value.tagsRevision);
+      case "tags.rename":
+        return keys2("tagId", "name", "nameRevision") && text$5(value.tagId) && validMusicTagName(value.name) && uint$3(value.nameRevision);
+      case "tags.delete":
+        return keys2("tagId", "nameRevision", "membersRevision") && text$5(value.tagId) && uint$3(value.nameRevision) && uint$3(value.membersRevision);
+      case "tags.member.set":
+        return keys2("tagId", "entityId", "present", "membersRevision") && text$5(value.tagId) && text$5(value.entityId) && typeof value.present === "boolean" && uint$3(value.membersRevision);
+      case "tags.play":
+        return keys2("tagId", "token", "sourceId") && text$5(value.tagId) && validMusicTagsToken(value.token) && (value.sourceId === void 0 || text$5(value.sourceId));
+      default:
+        return false;
+    }
+  }
+  const record$4 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const uint$2 = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  const text$4 = (v, max = 128) => typeof v === "string" && !!v.trim() && v.length <= max && !v.includes("\0");
+  const keys$3 = (v, ...names) => Object.keys(v).every((k) => names.includes(k));
+  const finite = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= Number.MAX_SAFE_INTEGER;
+  function number$1(v, extra = []) {
+    return record$4(v) && keys$3(v, "eq", "gte", "lte", "exists", ...extra) && ["eq", "gte", "lte", "exists"].some((k) => v[k] !== void 0) && ["eq", "gte", "lte"].every((k) => v[k] === void 0 || finite(v[k])) && (v.exists === void 0 || typeof v.exists === "boolean") && !(v.exists === false && ["eq", "gte", "lte"].some((k) => v[k] !== void 0));
+  }
+  const normalizeMusicFocusName = (v) => v.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US");
+  function validMusicFocusQuery(value) {
+    if (!record$4(value) || !keys$3(value, "version", "entity", "scope", "where", "sort") || value.version !== 1 || !["recording", "release"].includes(String(value.entity)) || value.scope !== void 0 && !["library", "catalog"].includes(String(value.scope))) return false;
+    let leaves = 0, nodes = 0;
+    const node = (v, depth) => {
+      if (++nodes > 512 || depth > 8 || !record$4(v) || Object.keys(v).length !== 1) return false;
+      if ("all" in v || "any" in v) {
+        const children = v.all ?? v.any;
+        return Array.isArray(children) && children.length <= 64 && children.every((c) => node(c, depth + 1));
+      }
+      if ("not" in v) return node(v.not, depth + 1);
+      if (++leaves > 64) return false;
+      if ("genre" in v) return record$4(v.genre) && keys$3(v.genre, "id", "includeDescendants") && text$4(v.genre.id, MAX_GENRE_ID_LENGTH) && (v.genre.includeDescendants === void 0 || typeof v.genre.includeDescendants === "boolean");
+      if ("source" in v) return record$4(v.source) && keys$3(v.source, "provider", "format", "bitDepth", "sampleRate") && Object.keys(v.source).length > 0 && (v.source.provider === void 0 || text$4(v.source.provider)) && (v.source.format === void 0 || text$4(v.source.format, 64)) && (v.source.bitDepth === void 0 || number$1(v.source.bitDepth)) && (v.source.sampleRate === void 0 || number$1(v.source.sampleRate));
+      if ("rating" in v) {
+        const rating = v.rating;
+        return record$4(rating) && keys$3(rating, "target", "mode", "provider", "gteStars", "lteStars", "exists") && rating.target === "self" && ["personal", "base", "effective"].includes(String(rating.mode)) && (rating.provider === void 0 || text$4(rating.provider)) && ["gteStars", "lteStars"].every((k) => rating[k] === void 0 || finite(rating[k]) && Number(rating[k]) <= 5) && (rating.exists === void 0 || typeof rating.exists === "boolean") && ["gteStars", "lteStars", "exists"].some((k) => rating[k] !== void 0) && !(rating.exists === false && (rating.gteStars !== void 0 || rating.lteStars !== void 0));
+      }
+      if ("tag" in v) return record$4(v.tag) && keys$3(v.tag, "id") && text$4(v.tag.id);
+      if ("year" in v) return record$4(v.year) && ["release", "project"].includes(String(v.year.target)) && number$1(v.year, ["target"]);
+      if ("preference" in v) return ["none", "favorite", "ban"].includes(String(v.preference));
+      if ("automaticPlaybackBlocked" in v) return typeof v.automaticPlaybackBlocked === "boolean";
+      if ("lastPlayed" in v) return number$1(v.lastPlayed);
+      if ("notPlayedWithinDays" in v) return finite(v.notPlayedWithinDays) && v.notPlayedWithinDays <= 365e3;
+      if ("classification" in v) return record$4(v.classification) && keys$3(v.classification, "dimension", "values") && validClassificationDimension(v.classification.dimension) && Array.isArray(v.classification.values) && v.classification.values.length >= 1 && v.classification.values.length <= 64 && v.classification.values.every((x) => text$4(x));
+      if ("text" in v) return text$4(v.text, 512);
+      return false;
+    };
+    return (value.where === void 0 || node(value.where, 1)) && (value.sort === void 0 || Array.isArray(value.sort) && value.sort.length >= 1 && value.sort.length <= 5 && value.sort.every((s) => record$4(s) && keys$3(s, "field", "direction") && ["title", "artist", "personalRating", "lastPlayed", "releaseYear"].includes(String(s.field)) && ["asc", "desc"].includes(String(s.direction))) && new Set(value.sort.map((s) => s.field)).size === value.sort.length);
+  }
+  const STATE_KEYS = ["savedRevision", "catalogRevision", "contentRevision", "genresRevision", "metadataRevision", "ratingsRevision", "preferencesRevision", "tagsRevision", "linkRevision", "historyRevision"];
+  function validMusicFocusToken(v) {
+    return record$4(v) && Object.keys(v).length === 14 && STATE_KEYS.every((k) => uint$2(v[k])) && uint$2(v.asOf) && text$4(v.queryKey, 1048576) && text$4(v.contextKey) && (v.expiresAt === null || uint$2(v.expiresAt) && v.expiresAt > v.asOf);
+  }
+  function validMusicFocusPayload(name, v) {
+    if (!record$4(v)) return false;
+    const page2 = () => (v.offset === void 0 || uint$2(v.offset)) && (v.limit === void 0 || uint$2(v.limit) && v.limit >= 1 && v.limit <= 200);
+    const query2 = () => validMusicFocusQuery(v.query) && page2() && (v.token === void 0 || validMusicFocusToken(v.token));
+    const validName = () => text$4(v.name, 80) && !!normalizeMusicFocusName(v.name);
+    switch (name) {
+      case "focus.play.status":
+        return keys$3(v, "requestId", "epoch") && text$4(v.requestId, 256) && text$4(v.epoch, 256);
+      case "focus.query":
+        return keys$3(v, "query", "offset", "limit", "token") && query2();
+      case "focus.facets":
+        return keys$3(v, "query", "offset", "limit", "token", "facet") && query2() && (["genre", "provider", "personalRating", "preference"].includes(String(v.facet)) || validClassificationDimension(v.facet));
+      case "focus.play":
+        return keys$3(v, "query", "token", "sourceId") && validMusicFocusQuery(v.query) && validMusicFocusToken(v.token) && (v.sourceId === void 0 || text$4(v.sourceId));
+      case "focus.saved.list":
+        return keys$3(v, "offset", "limit", "search", "savedRevision") && page2() && (v.savedRevision === void 0 || uint$2(v.savedRevision)) && (v.search === void 0 || typeof v.search === "string" && v.search.length <= 160 && !v.search.includes("\0"));
+      case "focus.saved.create":
+        return keys$3(v, "name", "query", "savedRevision") && validName() && validMusicFocusQuery(v.query) && uint$2(v.savedRevision);
+      case "focus.saved.rename":
+        return keys$3(v, "id", "name", "nameRevision") && text$4(v.id) && validName() && uint$2(v.nameRevision);
+      case "focus.saved.update":
+        return keys$3(v, "id", "query", "queryRevision") && text$4(v.id) && validMusicFocusQuery(v.query) && uint$2(v.queryRevision);
+      case "focus.saved.delete":
+        return keys$3(v, "id", "nameRevision", "queryRevision") && text$4(v.id) && uint$2(v.nameRevision) && uint$2(v.queryRevision);
+      default:
+        return false;
+    }
+  }
+  const kinds = /* @__PURE__ */ new Set(["artist", "work", "performance", "recording", "release", "album_project"]);
+  const relationKinds = /* @__PURE__ */ new Set([
+    "credit",
+    "work_recording",
+    "work_performance",
+    "performance_recording",
+    "part"
+  ]);
+  const roles = /* @__PURE__ */ new Set([
+    "primary_artist",
+    "producer",
+    "arranger",
+    "mix",
+    "mastering",
+    "recording_engineer",
+    "vocal",
+    "instrument",
+    "composer",
+    "lyricist",
+    "conductor",
+    "other"
+  ]);
+  const text$3 = (v, max = 128) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
+  const uint$1 = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  const object$2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const array = (v, allowed, max) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every((x) => typeof x === "string" && allowed.has(x)) && new Set(v).size === v.length;
+  function validMusicExplorationReference(v) {
+    return object$2(v) && Object.keys(v).every((k) => ["provider", "kind", "idType", "value"].includes(k)) && text$3(v.provider, 64) && /^[a-z0-9][a-z0-9._-]*$/.test(v.provider) && kinds.has(String(v.kind)) && text$3(v.idType, 64) && text$3(v.value, 8192);
+  }
+  function validMusicExplorationToken(v) {
+    return object$2(v) && Object.keys(v).length === 7 && ["revision", "catalogRevision", "contentRevision", "metadataRevision", "asOf"].every(
+      (k) => uint$1(v[k])
+    ) && text$3(v.contextKey, 32768) && (v.expiresAt === null || uint$1(v.expiresAt) && v.expiresAt > Number(v.asOf));
+  }
+  function validMusicExplorationPayload(name, raw) {
+    if (!object$2(raw)) return false;
+    const v = raw, keys2 = (...allowed) => Object.keys(v).every((k) => allowed.includes(k));
+    const page2 = () => (v.offset === void 0 || uint$1(v.offset)) && (v.limit === void 0 || uint$1(v.limit) && v.limit >= 1 && v.limit <= 100) && (v.token === void 0 || validMusicExplorationToken(v.token)) && (v.scope === void 0 || ["library", "catalog"].includes(String(v.scope))) && (v.kinds === void 0 || array(v.kinds, kinds, 6));
+    switch (name) {
+      case "exploration.query":
+        return keys2("kinds", "scope", "search", "offset", "limit", "token") && page2() && (v.search === void 0 || typeof v.search === "string" && v.search.length <= 512 && !v.search.includes("\0"));
+      case "exploration.detail":
+        return keys2("entityId", "token") && text$3(v.entityId) && (v.token === void 0 || validMusicExplorationToken(v.token));
+      case "exploration.lookup":
+        return keys2("reference", "token") && validMusicExplorationReference(v.reference) && (v.token === void 0 || validMusicExplorationToken(v.token));
+      case "exploration.relations":
+      case "exploration.participation":
+        return keys2(
+          "entityId",
+          "token",
+          "direction",
+          "relations",
+          "roles",
+          "kinds",
+          "scope",
+          "offset",
+          "limit"
+        ) && text$3(v.entityId) && page2() && (v.direction === void 0 || name === "exploration.relations" && ["outgoing", "incoming", "both"].includes(String(v.direction))) && (v.relations === void 0 || name === "exploration.relations" && array(v.relations, relationKinds, 5)) && (v.roles === void 0 || array(v.roles, roles, 12));
+      case "exploration.performance.save":
+        return keys2("id", "title", "workId", "recordingIds", "revision") && (v.id === void 0 || text$3(v.id)) && text$3(v.title, 512) && !!v.title.trim() && text$3(v.workId) && Array.isArray(v.recordingIds) && v.recordingIds.length >= 1 && v.recordingIds.length <= 200 && v.recordingIds.every((x) => text$3(x)) && uint$1(v.revision);
+      case "exploration.performance.delete":
+        return keys2("id", "revision") && text$3(v.id) && uint$1(v.revision);
+      default:
+        return false;
+    }
+  }
+  function validCoreRemotePayload(name, value) {
+    if (name === "remote.setEnabled")
+      return Object.keys(value).length === 1 && typeof value.enabled === "boolean";
+    return (name === "remote.status" || name === "remote.rotatePin") && !Object.keys(value).length;
+  }
+  const APP_LOCALES = ["zh-CN", "en-US"];
+  const DEFAULT_LANGUAGE_PREFERENCE = "system";
+  function isAppLocale(value) {
+    return typeof value === "string" && APP_LOCALES.includes(value);
+  }
+  function matchSystemLocale(systemLocale) {
+    if (typeof systemLocale !== "string") return null;
+    const normalized = systemLocale.trim().toLowerCase().replace(/_/g, "-");
+    if (!normalized) return null;
+    if (isAppLocale(systemLocale)) return systemLocale;
+    const primary = normalized.split("-", 1)[0];
+    if (primary === "zh") return "zh-CN";
+    if (primary === "en") return "en-US";
+    return null;
+  }
+  function normalizeLanguagePreference(value) {
+    if (value === "system") return "system";
+    if (isAppLocale(value)) return value;
+    const matched = matchSystemLocale(value);
+    return matched ?? DEFAULT_LANGUAGE_PREFERENCE;
+  }
+  function validCoreAudioDiagnosticsPayload(payload) {
+    return Object.keys(payload).length === 1 && isAppLocale(payload.locale);
+  }
+  function validCoreLibraryReadPayload(name, value, query2) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const v = value;
+    const keys2 = (allowed) => Object.keys(v).every((key) => allowed.includes(key));
+    const revision2 = v.revision === void 0 || Number.isSafeInteger(v.revision) && Number(v.revision) >= 0;
+    if (name === "library.recent.resolve") {
+      if (!keys2(["entries", "revision", "versionsRevision"]) || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !Number.isSafeInteger(v.versionsRevision) || Number(v.versionsRevision) < 0 || !Array.isArray(v.entries) || v.entries.length > 30)
+        return false;
+      let encodedBudget = 64 * 1024;
+      const boundedText = (value2, allowEmpty = true) => {
+        if (typeof value2 !== "string" || !allowEmpty && value2.length === 0 || value2.length > 32768 || value2.includes("\0"))
+          return false;
+        encodedBudget += value2.length * 6;
+        return encodedBudget <= 512 * 1024;
+      };
+      return v.entries.every((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+        const item = entry;
+        if (!Object.keys(item).every((key) => ["id", "snapshot", "sourceIds"].includes(key))) return false;
+        if (!boundedText(item.id, false)) return false;
+        if (item.sourceIds !== void 0 && (!Array.isArray(item.sourceIds) || item.sourceIds.length > 200 || !item.sourceIds.every((id2) => boundedText(id2, false))))
+          return false;
+        if (item.snapshot === void 0) return true;
+        const snapshot = item.snapshot;
+        if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+        const value2 = snapshot;
+        if (!Object.keys(value2).every(
+          (key) => [
+            "id",
+            "title",
+            "artist",
+            "album",
+            "filePath",
+            "format",
+            "source",
+            "duration",
+            "bitDepth",
+            "subTrack",
+            "cueRange",
+            "ncmSongId"
+          ].includes(key)
+        ))
+          return false;
+        if (!boundedText(value2.id, false) || !boundedText(value2.title) || !boundedText(value2.artist)) return false;
+        if (!["album", "filePath", "format", "source", "subTrack"].every(
+          (key) => value2[key] === void 0 || boundedText(value2[key])
+        ))
+          return false;
+        if (value2.duration !== void 0 && (typeof value2.duration !== "number" || !Number.isFinite(value2.duration) || value2.duration < 0))
+          return false;
+        if (value2.bitDepth !== void 0 && (typeof value2.bitDepth !== "number" || !Number.isFinite(value2.bitDepth) || value2.bitDepth < 0))
+          return false;
+        if (value2.ncmSongId !== void 0 && (!Number.isSafeInteger(value2.ncmSongId) || Number(value2.ncmSongId) < 0))
+          return false;
+        if (value2.cueRange !== void 0 && (!value2.cueRange || typeof value2.cueRange !== "object" || Array.isArray(value2.cueRange)))
+          return false;
+        if (value2.cueRange !== void 0) {
+          const cueRange2 = value2.cueRange;
+          if (!Object.keys(cueRange2).every(
+            (key) => ["startSeconds", "endSeconds", "pregapSeconds", "virtualPregapSeconds", "sourcePregapSeconds"].includes(key)
+          ) || normalizeCueRange(cueRange2) === null)
+            return false;
+        }
+        return true;
+      });
+    }
+    if (name === "library.collections")
+      return keys2(["kind", "query"]) && ["albums", "artists", "genres", "folders", "playlists"].includes(String(v.kind)) && (v.query === void 0 || query2(v.query));
+    const byId = name === "library.byIds" || name === "library.artwork";
+    const list = byId ? v.ids : v.paths;
+    return (byId || name === "library.paths.lookup") && keys2([byId ? "ids" : "paths", "revision"]) && revision2 && Array.isArray(list) && list.length <= 200 && list.every(
+      (id2) => typeof id2 === "string" && id2.length > 0 && id2.length <= 32768 && !id2.includes("\0")
+    );
+  }
+  function validCorePlaylistSubmitPayload(value, input) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const v = value;
+    const keys2 = (row, allowed) => Object.keys(row).every((key) => allowed.includes(key));
+    const text2 = (value2) => typeof value2 === "string" && value2.length > 0 && value2.length <= 32768 && !value2.includes("\0");
+    const uint2 = (value2) => Number.isSafeInteger(value2) && Number(value2) >= 0;
+    if (v.kind === "begin") {
+      if (!keys2(v, ["kind", "revision", "edit"]) || !uint2(v.revision) || !v.edit || typeof v.edit !== "object" || Array.isArray(v.edit))
+        return false;
+      const edit2 = v.edit;
+      switch (edit2.kind) {
+        case "create":
+          return keys2(edit2, ["kind", "name", "aggregate"]) && text2(edit2.name) && String(edit2.name).length <= 80 && (edit2.aggregate === void 0 || typeof edit2.aggregate === "boolean");
+        case "add":
+          return keys2(edit2, ["kind", "id", "external"]) && text2(edit2.id) && (edit2.external === void 0 || typeof edit2.external === "boolean");
+        case "remove":
+          return keys2(edit2, ["kind", "id"]) && text2(edit2.id);
+        case "move":
+          return keys2(edit2, ["kind", "id", "targetId"]) && text2(edit2.id) && text2(edit2.targetId);
+        case "reorder":
+          return keys2(edit2, ["kind", "id", "target"]) && text2(edit2.id) && uint2(edit2.target);
+        case "favorite":
+          return keys2(edit2, ["kind", "favorite"]) && typeof edit2.favorite === "boolean";
+        default:
+          return false;
+      }
+    }
+    if (v.kind === "abort") return keys2(v, ["kind", "id"]) && text2(v.id);
+    if (v.kind === "commit")
+      return keys2(v, ["kind", "id", "sequence"]) && text2(v.id) && uint2(v.sequence);
+    return v.kind === "append" && keys2(v, ["kind", "id", "sequence", "items"]) && text2(v.id) && uint2(v.sequence) && Array.isArray(v.items) && v.items.length <= 200 && v.items.every(
+      (item) => item && typeof item === "object" && !Array.isArray(item) && keys2(item, ["id", "input"]) && (item.id !== void 0 || item.input !== void 0) && (item.id === void 0 || text2(item.id)) && (item.input === void 0 || input(item.input))
+    );
+  }
+  function validCorePlaylistProjectionPayload(name, value, query2 = () => false) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const v = value;
+    const keys2 = (allowed) => Object.keys(v).every((key) => allowed.includes(key));
+    const text2 = (value2, maximum = 32768) => typeof value2 === "string" && value2.length > 0 && value2.length <= maximum && !value2.includes("\0");
+    const uint2 = (value2) => Number.isSafeInteger(value2) && Number(value2) >= 0;
+    const page2 = () => (v.offset === void 0 || uint2(v.offset)) && (v.limit === void 0 || uint2(v.limit) && Number(v.limit) > 0 && Number(v.limit) <= 200);
+    switch (name) {
+      case "playlists.collection":
+        return keys2(["revision", "versionsRevision", "aggregate", "query"]) && uint2(v.revision) && uint2(v.versionsRevision) && (v.aggregate === void 0 || typeof v.aggregate === "boolean") && (v.query === void 0 || query2(v.query));
+      case "playlists.catalog":
+        return keys2(["revision", "offset", "limit"]) && (v.revision === void 0 || uint2(v.revision)) && page2();
+      case "playlists.state":
+      case "playlists.flush":
+        return keys2([]);
+      case "playlists.members":
+        return keys2(["id", "revision", "offset", "limit", "search", "sort", "anchorId"]) && text2(v.id) && uint2(v.revision) && page2() && (v.search === void 0 || typeof v.search === "string" && v.search.length <= 4096) && (v.sort === void 0 || ["playlist", "title", "artist", "album", "duration"].includes(String(v.sort))) && (v.anchorId === void 0 || text2(v.anchorId));
+      case "playlists.membership":
+        return keys2(["id", "revision", "ids"]) && text2(v.id) && uint2(v.revision) && Array.isArray(v.ids) && v.ids.length <= 200 && v.ids.every((id2) => text2(id2));
+      case "playlists.export":
+        return keys2(["id", "revision", "format"]) && text2(v.id) && uint2(v.revision) && ["m3u", "m3u8", "pls"].includes(String(v.format));
+      case "playlists.importDocument":
+        return keys2(["id", "revision", "fileName", "contents"]) && text2(v.id) && uint2(v.revision) && text2(v.fileName, 512) && typeof v.contents === "string" && new TextEncoder().encode(v.contents).length <= 8 * 1024 * 1024;
+      default:
+        return false;
+    }
+  }
+  const MAX_SETTINGS_BACKUP_BYTES = 2 * 1024 * 1024;
+  function validCoreSettingsBackupPayload(name, payload) {
+    if (name === "settings.backup") return Object.keys(payload).length === 0;
+    return name === "settings.restore" && Object.keys(payload).every((key) => key === "revision" || key === "json") && Number.isSafeInteger(payload.revision) && Number(payload.revision) >= 0 && typeof payload.json === "string" && new TextEncoder().encode(payload.json).byteLength <= MAX_SETTINGS_BACKUP_BYTES;
+  }
+  const record$3 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const keys$2 = (v, allowed) => Object.keys(v).every((key) => allowed.includes(key));
+  const id = (v) => typeof v === "string" && v.length > 0 && v.length <= 160 && !v.includes("\0");
+  const revision = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  function validCoreThemePayload(name, p) {
+    if (name === "themes.list" || name === "themes.bootstrap" || name === "themes.reconcile")
+      return keys$2(p, []);
+    if (name === "themes.import") return keys$2(p, ["revision"]) && revision(p.revision);
+    if (name === "themes.export") return keys$2(p, ["id"]) && id(p.id);
+    if (name === "themes.importAsset")
+      return keys$2(p, ["id", "type"]) && id(p.id) && (p.type === "font" || p.type === "image");
+    if (name === "themes.validateAssets")
+      return keys$2(p, ["id", "assets"]) && id(p.id) && Array.isArray(p.assets) && p.assets.length <= 128 && p.assets.every(record$3);
+    if (name === "themes.copyAssets")
+      return keys$2(p, ["sourceId", "targetId"]) && id(p.sourceId) && id(p.targetId);
+    if (name !== "themes.edit" || !revision(p.revision)) return false;
+    switch (p.kind) {
+      case "save":
+        return keys$2(p, ["revision", "kind", "profile"]) && record$3(p.profile);
+      case "remove":
+        return keys$2(p, ["revision", "kind", "id"]) && id(p.id);
+      case "active":
+        if (!keys$2(p, ["revision", "kind", "selection"]) || !record$3(p.selection)) return false;
+        return p.selection.kind === "plugin" ? keys$2(p.selection, ["kind", "pluginId", "themeId"]) && id(p.selection.pluginId) && id(p.selection.themeId) : (p.selection.kind === "user" || p.selection.kind === "builtin") && keys$2(p.selection, ["kind", "id"]) && id(p.selection.id);
+      case "inheritance":
+        return keys$2(p, ["revision", "kind", "inheritance"]) && record$3(p.inheritance) && keys$2(p.inheritance, ["miniPlayer", "desktopLyrics"]) && typeof p.inheritance.miniPlayer === "boolean" && typeof p.inheritance.desktopLyrics === "boolean";
+      default:
+        return false;
+    }
+  }
+  const CORE_SPECIALIZED_SETTINGS = [
+    "playMode",
+    "softwareVolume",
+    "audioOutput",
+    "audioDevice",
+    "audioExclusiveMode",
+    "audioExclusiveAutoRelease",
+    "audioOutputConfig",
+    "audioDeviceProfiles",
+    "audioProcessing",
+    "audioEqAutoPreamp",
+    "headphoneCompensation",
+    "dspScenes",
+    "dspPinnedSceneId"
+  ];
+  const MAX_QUEUE_OCCURRENCE_ID_LENGTH = 8192;
+  const DEFAULT_LYRICS_MANAGEMENT = {
+    schemaVersion: 1,
+    globalOffsetMs: 0,
+    showOriginal: true,
+    showTranslation: true,
+    showRomanization: false,
+    tracks: {}
+  };
+  const MAX_MANAGED_LYRIC_BYTES = 1024 * 1024;
+  const MAX_MANAGED_LYRIC_TRACKS = 5e3;
+  function isLyricsManagementDocument(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const record2 = value;
+    if (record2.schemaVersion !== 1 || typeof record2.globalOffsetMs !== "number" || typeof record2.showOriginal !== "boolean" || typeof record2.showTranslation !== "boolean" || typeof record2.showRomanization !== "boolean" || !record2.tracks || typeof record2.tracks !== "object" || Array.isArray(record2.tracks)) {
+      return false;
+    }
+    const tracks2 = record2.tracks;
+    if (Object.keys(tracks2).length > MAX_MANAGED_LYRIC_TRACKS) return false;
+    return Object.entries(tracks2).every(([id2, entry]) => isLyricTrackOverride(id2, entry));
+  }
+  function isLyricTrackOverride(id2, value) {
+    if (!id2 || id2.length > 1024 || !value || typeof value !== "object" || Array.isArray(value))
+      return false;
+    const entry = value;
+    return typeof entry.offsetMs === "number" && Number.isFinite(entry.offsetMs) && isLyricSourcePreference(entry.source) && isOptionalLyricLayerSourceSelection(entry.originalSelection) && isOptionalLyricLayerSourceSelection(entry.translationSelection) && isOptionalLyricLayerSourceSelection(entry.romanizationSelection) && isLyricText(entry.original) && isLyricText(entry.translation) && isLyricText(entry.romanization) && typeof entry.updatedAt === "string";
+  }
+  function isLyricSourcePreference(value) {
+    return value === "auto" || value === "local" || value === "provider" || value === "amll" || value === "manual";
+  }
+  function isOptionalLyricLayerSourceSelection(value) {
+    return value === void 0 || value === "automatic" || value === "local" || value === "provider" || value === "amll" || value === "manual";
+  }
+  function isLyricText(value) {
+    return value === null || typeof value === "string" && new TextEncoder().encode(value).byteLength <= MAX_MANAGED_LYRIC_BYTES;
+  }
+  function isHttpOrHttpsUrl(value, maxLength = 2048) {
+    if (typeof value !== "string") return false;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > maxLength || /[\0\r\n]/.test(trimmed)) return false;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+      if (parsed.username || parsed.password) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const PERSONAL_V1_DOMAINS = [
+    "library",
+    "playlists",
+    "queue",
+    "playback",
+    "lyrics",
+    "bookmarks",
+    "radio",
+    "podcasts",
+    "statistics",
+    "versions"
+  ];
+  const PERSONAL_DOMAINS = [...PERSONAL_V1_DOMAINS, "music"];
+  function validPersonalExportOptions(value) {
+    return isRecord$2(value) && Object.keys(value).every((key) => key === "domains") && (value.domains === void 0 || Array.isArray(value.domains) && value.domains.length > 0 && value.domains.length <= PERSONAL_DOMAINS.length && new Set(value.domains).size === value.domains.length && value.domains.every((domain) => PERSONAL_DOMAINS.includes(domain)));
+  }
+  const isRecord$2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const LIBRARY_PAGE_SIZE = 200;
+  const LIBRARY_MAX_PAGE_SIZE = 1e3;
+  const LIBRARY_CACHE_PAGES = 10;
+  function libraryQueueResumeMode(queue, fallback) {
+    return queue.playMode ?? (queue.order === "shuffle" ? "shuffle" : fallback === "shuffle" || fallback === "heart" ? "sequential" : fallback);
+  }
+  function clampNumber$4(value, min, max, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+  }
+  function normalizeChannelRoutingMode(value) {
+    return value === "stereo" || value === "stereo-to-5.1" || value === "stereo-to-7.1" || value === "mono-to-stereo" || value === "mono-to-multichannel" ? value : "auto";
+  }
+  function normalizePcmToDsdMode(value) {
+    return value === "dsd64" || value === "dsd128" || value === "dsd256" || value === "dsd512" ? value : "off";
+  }
+  function normalizeOutputConfig$1(config, preferredBufferSizeMax = 32768) {
+    return {
+      ...normalizeContinuityOutputConfig(config ?? {}),
+      preferredBufferSize: Number.isFinite(config?.preferredBufferSize) ? clampNumber$4(Math.trunc(config?.preferredBufferSize ?? 0), 0, preferredBufferSizeMax, 0) : 0,
+      routingMode: normalizeChannelRoutingMode(config?.routingMode),
+      asioOutputChannelStart: Math.trunc(clampNumber$4(config?.asioOutputChannelStart, 0, 255, 0)),
+      wasapiExclusivePushMode: config?.wasapiExclusivePushMode === true,
+      pcmToDsdMode: normalizePcmToDsdMode(config?.pcmToDsdMode),
+      dsdMutePreRollFrames: clampNumber$4(config?.dsdMutePreRollFrames, 0, 4096, 256),
+      dsdMutePostRollFrames: clampNumber$4(config?.dsdMutePostRollFrames, 0, 4096, 256),
+      dsdMuteTimeoutFrames: clampNumber$4(config?.dsdMuteTimeoutFrames, 1, 4096, 4096),
+      upmixCenterGain: clampNumber$4(config?.upmixCenterGain, 0, 2, 0.7071),
+      upmixLfeGain: clampNumber$4(config?.upmixLfeGain, 0, 2, 0.5),
+      upmixLfeLowpassHz: clampNumber$4(config?.upmixLfeLowpassHz, 20, 500, 120),
+      upmixSurroundGain: clampNumber$4(config?.upmixSurroundGain, 0, 2, 0.5),
+      upmixSideGain: clampNumber$4(config?.upmixSideGain, 0, 2, 0.3),
+      upmixSurroundDelayMs: clampNumber$4(config?.upmixSurroundDelayMs, 0, 100, 0)
+    };
+  }
+  function normalizeContinuityOutputConfig(value) {
+    return {
+      playbackPolicy: value.playbackPolicy === "continuity-first" ? "continuity-first" : "bit-perfect-first",
+      continuitySampleRate: value.continuitySampleRate === 44100 || value.continuitySampleRate === 96e3 ? value.continuitySampleRate : 48e3
+    };
+  }
+  const DEFAULT_SOFTWARE_VOLUME = 0.7;
+  const DEFAULT_DSD_ROUTE = {
+    enabled: false,
+    backend: "",
+    device: "",
+    applyToPcmToDsd: true,
+    strictPassthrough: false
+  };
+  function normalizeDsdRouteSettings(value) {
+    const route = value ?? {};
+    const backend = typeof route.backend === "string" ? route.backend.trim() : "";
+    const device = typeof route.device === "string" ? route.device.trim() : "";
+    return {
+      enabled: route.enabled === true,
+      backend,
+      device,
+      applyToPcmToDsd: route.applyToPcmToDsd !== false,
+      strictPassthrough: route.strictPassthrough === true
+    };
+  }
+  const DSP_GRAPH_VERSION = 2;
+  const DEFAULT_DSP_OUTPUT_STAGE = {
+    targetSampleRate: "device",
+    resamplerQuality: "native",
+    dither: "off",
+    safetyClamp: true
+  };
+  const BUILT_IN_NODE_TYPES = /* @__PURE__ */ new Set([
+    "replayGain",
+    "equalizer",
+    "dynamicEqualizer",
+    "convolver",
+    "crossfeed",
+    "channelMatrix",
+    "channelStrip",
+    "bassManagement",
+    "gate",
+    "compressor",
+    "multibandCompressor",
+    "stereoField",
+    "loudnessContour",
+    "truePeakLimiter",
+    "nativePlugin",
+    "vst3Plugin",
+    "meter"
+  ]);
+  function asRecord$1(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+  function asStringArray(value) {
+    if (!Array.isArray(value)) return void 0;
+    const items = value.filter((item) => typeof item === "string" && item.length > 0);
+    return items.length > 0 ? [...new Set(items)] : void 0;
+  }
+  function normalizeLayout(value) {
+    return value === "mono" || value === "stereo" || value === "5.1" || value === "7.1" ? value : null;
+  }
+  function normalizeVst3Reference(value) {
+    const raw = asRecord$1(value);
+    const catalogId = typeof raw.catalogId === "string" ? raw.catalogId.trim() : "";
+    const classId = typeof raw.classId === "string" ? raw.classId.trim() : "";
+    if (!catalogId || !classId) return void 0;
+    const stateAssetId = typeof raw.stateAssetId === "string" && raw.stateAssetId.trim() ? raw.stateAssetId.trim() : void 0;
+    return { catalogId, classId, ...stateAssetId ? { stateAssetId } : {} };
+  }
+  function normalizeDspOutputStage(value) {
+    const raw = asRecord$1(value);
+    const targetSampleRate = raw.targetSampleRate === "device" ? "device" : typeof raw.targetSampleRate === "number" && Number.isFinite(raw.targetSampleRate) ? Math.max(8e3, Math.min(768e3, Math.trunc(raw.targetSampleRate))) : DEFAULT_DSP_OUTPUT_STAGE.targetSampleRate;
+    const targetSampleRateMode = raw.targetSampleRateMode === "device" || raw.targetSampleRateMode === "fixed" || raw.targetSampleRateMode === "max-pcm" || raw.targetSampleRateMode === "power-of-2" ? raw.targetSampleRateMode : void 0;
+    const resamplerQuality = raw.resamplerQuality === "high" || raw.resamplerQuality === "ultra" || raw.resamplerQuality === "soxrHq" || raw.resamplerQuality === "soxrVhq" ? raw.resamplerQuality : "native";
+    const resamplerPhase = raw.resamplerPhase === "linear" || raw.resamplerPhase === "minimum" || raw.resamplerPhase === "linear-smooth" || raw.resamplerPhase === "minimum-smooth" ? raw.resamplerPhase : void 0;
+    const dither = raw.dither === "tpdf" || raw.dither === "highpassTpdf" || raw.dither === "noiseShaped" ? raw.dither : "off";
+    const headroomEnabled = typeof raw.headroomEnabled === "boolean" ? raw.headroomEnabled : void 0;
+    const headroomGainDb = typeof raw.headroomGainDb === "number" && Number.isFinite(raw.headroomGainDb) ? Math.max(-30, Math.min(0, Math.round(raw.headroomGainDb * 10) / 10)) : void 0;
+    return {
+      targetSampleRate,
+      ...targetSampleRateMode !== void 0 ? { targetSampleRateMode } : {},
+      resamplerQuality,
+      ...resamplerPhase !== void 0 ? { resamplerPhase } : {},
+      dither,
+      ...headroomEnabled !== void 0 ? { headroomEnabled } : {},
+      ...headroomGainDb !== void 0 ? { headroomGainDb } : {},
+      safetyClamp: raw.safetyClamp !== false
+    };
+  }
+  function normalizeNode(value, index) {
+    const raw = asRecord$1(value);
+    const type = raw.type;
+    if (typeof type !== "string" || !BUILT_IN_NODE_TYPES.has(type)) return null;
+    const id2 = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : `${type}-${index + 1}`;
+    const params = asRecord$1(raw.params);
+    const pluginId2 = typeof raw.pluginId === "string" && raw.pluginId.trim() ? raw.pluginId.trim() : void 0;
+    const pluginAbiVersion = raw.pluginAbiVersion === 1 || raw.pluginAbiVersion === 2 ? raw.pluginAbiVersion : void 0;
+    const vst3 = normalizeVst3Reference(raw.vst3);
+    return {
+      id: id2,
+      type,
+      enabled: raw.enabled !== false,
+      params,
+      ...pluginId2 ? { pluginId: pluginId2 } : {},
+      ...pluginAbiVersion ? { pluginAbiVersion } : {},
+      ...vst3 ? { vst3 } : {}
+    };
+  }
+  function normalizeDspGraph(value) {
+    const raw = asRecord$1(value);
+    const nodes = Array.isArray(raw.nodes) ? raw.nodes.map((node, index) => normalizeNode(node, index)).filter((node) => !!node) : [];
+    const seen = /* @__PURE__ */ new Set();
+    const uniqueNodes = nodes.filter((node) => {
+      if (seen.has(node.id)) return false;
+      seen.add(node.id);
+      return true;
+    });
+    return {
+      version: DSP_GRAPH_VERSION,
+      nodes: uniqueNodes,
+      outputStage: normalizeDspOutputStage(raw.outputStage)
+    };
+  }
+  function createLegacyDspGraph(settings = {}) {
+    const dspEnabled = settings.dspEnabled === true;
+    const stereoImage = normalizeDspStereoImage(settings.stereoImage ?? DEFAULT_DSP_STEREO_IMAGE);
+    return {
+      version: DSP_GRAPH_VERSION,
+      outputStage: normalizeDspOutputStage({
+        ...DEFAULT_DSP_OUTPUT_STAGE,
+        ...settings.outputStage ?? {}
+      }),
+      nodes: [
+        {
+          id: "replay-gain",
+          type: "replayGain",
+          enabled: dspEnabled && settings.volumeNormalization !== void 0 && settings.volumeNormalization !== "off",
+          params: {
+            mode: settings.volumeNormalization ?? "off",
+            preampDb: settings.replayGainPreamp ?? 0,
+            fallbackDb: settings.replayGainFallback ?? 0,
+            clip: settings.replayGainClip !== false,
+            targetLufs: settings.loudnormTargetLufs ?? -23,
+            truePeakCeilingDb: settings.loudnormTruePeakCeilingDb ?? -1
+          }
+        },
+        {
+          id: "equalizer",
+          type: "equalizer",
+          enabled: dspEnabled && settings.eqEnabled === true,
+          params: {
+            mode: settings.eqMode ?? "graphic",
+            preampDb: settings.eqPreamp ?? 0,
+            bands: Array.isArray(settings.eqBands) ? settings.eqBands : []
+          }
+        },
+        {
+          id: "convolver",
+          type: "convolver",
+          enabled: dspEnabled && settings.convolverEnabled === true && !!settings.convolverIrPath,
+          params: { impulseResponsePath: settings.convolverIrPath ?? "", wet: 1, dry: 0 }
+        },
+        {
+          id: "crossfeed",
+          type: "crossfeed",
+          enabled: dspEnabled && settings.crossfeedEnabled === true && (settings.crossfeedStrength ?? 0) > 0,
+          params: {
+            algorithm: "custom",
+            strength: settings.crossfeedStrength ?? 0,
+            delayMs: settings.crossfeedDelayMs ?? 0.35,
+            cutoffHz: settings.crossfeedCutoffHz ?? 700
+          }
+        },
+        buildChannelStripNode(stereoImage),
+        { id: "bass-management", type: "bassManagement", enabled: false, params: {} },
+        { id: "gate", type: "gate", enabled: false, params: {} },
+        { id: "compressor", type: "compressor", enabled: false, params: {} },
+        { id: "dynamic-equalizer", type: "dynamicEqualizer", enabled: false, params: { bands: [] } },
+        {
+          id: "multiband-compressor",
+          type: "multibandCompressor",
+          enabled: false,
+          params: { bands: [] }
+        },
+        buildStereoFieldNode(stereoImage),
+        { id: "loudness-contour", type: "loudnessContour", enabled: false, params: {} },
+        {
+          id: "true-peak-limiter",
+          type: "truePeakLimiter",
+          enabled: false,
+          params: { ceilingDb: -0.1 }
+        },
+        { id: "meter", type: "meter", enabled: true, params: {} }
+      ]
+    };
+  }
+  const DEFAULT_DSP_STEREO_IMAGE = {
+    balance: 0,
+    width: 1,
+    midGainDb: 0,
+    sideGainDb: 0,
+    invertLeft: false,
+    invertRight: false,
+    swap: false,
+    mono: false
+  };
+  function clampNumber$3(value, min, max, fallback) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, value));
+  }
+  function normalizeDspStereoImage(value) {
+    const raw = asRecord$1(value);
+    return {
+      balance: clampNumber$3(raw.balance, -1, 1, DEFAULT_DSP_STEREO_IMAGE.balance),
+      width: clampNumber$3(raw.width, 0, 2, DEFAULT_DSP_STEREO_IMAGE.width),
+      midGainDb: clampNumber$3(raw.midGainDb, -24, 24, DEFAULT_DSP_STEREO_IMAGE.midGainDb),
+      sideGainDb: clampNumber$3(raw.sideGainDb, -24, 24, DEFAULT_DSP_STEREO_IMAGE.sideGainDb),
+      invertLeft: raw.invertLeft === true,
+      invertRight: raw.invertRight === true,
+      swap: raw.swap === true,
+      mono: raw.mono === true
+    };
+  }
+  function stereoImageIsActive(image) {
+    const stereo = normalizeDspStereoImage(image);
+    return Math.abs(stereo.balance) > 1e-6 || Math.abs(stereo.width - 1) > 1e-6 || Math.abs(stereo.midGainDb) > 1e-6 || Math.abs(stereo.sideGainDb) > 1e-6 || stereo.invertLeft || stereo.invertRight || stereo.swap || stereo.mono;
+  }
+  function buildStereoFieldNode(image, _dspEnabled) {
+    return {
+      id: "stereo-field",
+      type: "stereoField",
+      enabled: stereoImageIsActive(image),
+      params: {
+        width: image.width,
+        balance: image.balance,
+        midGainDb: image.midGainDb,
+        sideGainDb: image.sideGainDb,
+        swap: image.swap,
+        mono: image.mono,
+        invertLeft: image.invertLeft,
+        invertRight: image.invertRight
+      }
+    };
+  }
+  function buildChannelStripNode(image, _dspEnabled) {
+    const polarityActive = image.invertLeft || image.invertRight;
+    return {
+      id: "channel-strip",
+      type: "channelStrip",
+      enabled: polarityActive,
+      params: {
+        channels: [
+          {
+            gainDb: 0,
+            delayMs: 0,
+            polarityInverted: image.invertLeft,
+            muted: false
+          },
+          {
+            gainDb: 0,
+            delayMs: 0,
+            polarityInverted: image.invertRight,
+            muted: false
+          }
+        ]
+      }
+    };
+  }
+  function normalizeDspSceneRule(value) {
+    const raw = asRecord$1(value);
+    const channelLayouts = Array.isArray(raw.channelLayouts) ? raw.channelLayouts.map(normalizeLayout).filter((item) => !!item) : void 0;
+    const sourceKinds = Array.isArray(raw.sourceKinds) ? raw.sourceKinds.filter((item) => item === "pcm" || item === "dsd") : void 0;
+    const minSampleRate = typeof raw.minSampleRate === "number" && Number.isFinite(raw.minSampleRate) ? Math.max(0, Math.trunc(raw.minSampleRate)) : void 0;
+    const maxSampleRate = typeof raw.maxSampleRate === "number" && Number.isFinite(raw.maxSampleRate) ? Math.max(0, Math.trunc(raw.maxSampleRate)) : void 0;
+    return {
+      ...asStringArray(raw.deviceIds) ? { deviceIds: asStringArray(raw.deviceIds) } : {},
+      ...asStringArray(raw.backends) ? { backends: asStringArray(raw.backends) } : {},
+      ...channelLayouts && channelLayouts.length > 0 ? { channelLayouts: [...new Set(channelLayouts)] } : {},
+      ...sourceKinds && sourceKinds.length > 0 ? { sourceKinds: [...new Set(sourceKinds)] } : {},
+      ...minSampleRate !== void 0 ? { minSampleRate } : {},
+      ...maxSampleRate !== void 0 ? { maxSampleRate: Math.max(minSampleRate ?? 0, maxSampleRate) } : {}
+    };
+  }
+  function normalizeDspScenes(value, legacy = {}) {
+    const rawScenes = Array.isArray(value) ? value : [];
+    const scenes = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (let index = 0; index < rawScenes.length; index += 1) {
+      const raw = asRecord$1(rawScenes[index]);
+      const id2 = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : `scene-${index + 1}`;
+      if (seen.has(id2)) continue;
+      seen.add(id2);
+      scenes.push({
+        id: id2,
+        name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : `DSP Scene ${index + 1}`,
+        enabled: raw.enabled !== false,
+        priority: typeof raw.priority === "number" && Number.isFinite(raw.priority) ? Math.trunc(raw.priority) : 0,
+        rules: normalizeDspSceneRule(raw.rules),
+        graph: normalizeDspGraph(raw.graph),
+        ...raw.allowDsdPcmFallback === true ? { allowDsdPcmFallback: true } : {}
+      });
+    }
+    if (scenes.length > 0) return scenes;
+    return [
+      {
+        id: "default",
+        name: "Default",
+        enabled: true,
+        priority: 0,
+        rules: {},
+        graph: createLegacyDspGraph(legacy)
+      }
+    ];
+  }
+  const MAX_AUDIO_DEVICE_PROFILES = 64;
+  function text$2(value, max) {
+    return typeof value === "string" ? value.trim().slice(0, max) : "";
+  }
+  function volume(value, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
+  }
+  function normalizeDeviceProfileProcessing(value) {
+    const raw = value ?? {};
+    return {
+      dspEnabled: raw.dspEnabled === true && raw.directMode !== true,
+      directMode: raw.directMode === true,
+      eqEnabled: raw.eqEnabled === true,
+      convolverEnabled: raw.convolverEnabled === true,
+      crossfeedEnabled: raw.crossfeedEnabled === true,
+      crossfeedStrength: volume(raw.crossfeedStrength, 0),
+      volumeNormalization: raw.volumeNormalization === "track" || raw.volumeNormalization === "album" || raw.volumeNormalization === "loudnorm" ? raw.volumeNormalization : "off",
+      dsdOutputMode: ["auto", "native", "dop", "pcm"].includes(raw.dsdOutputMode ?? "") ? raw.dsdOutputMode : "auto",
+      dsdRatePolicy: raw.dsdRatePolicy === "downrate" || raw.dsdRatePolicy === "exact" ? raw.dsdRatePolicy : "pcm-fallback",
+      dsdRoute: normalizeDsdRouteSettings(raw.dsdRoute),
+      sacdProgramMode: raw.sacdProgramMode === "stereo" || raw.sacdProgramMode === "multichannel" ? raw.sacdProgramMode : "auto"
+    };
+  }
+  function normalizeAudioDeviceProfile(value) {
+    if (!value || typeof value !== "object") return null;
+    const raw = value;
+    const id2 = text$2(raw.id, 128);
+    const name = text$2(raw.name, 100);
+    const stableDeviceId = text$2(raw.stableDeviceId, 1024);
+    if (raw.version !== 1 || !id2 || !name || !stableDeviceId || /^(auto|default|system)$/i.test(stableDeviceId))
+      return null;
+    if (!["wasapi", "asio", "coreaudio", "alsa"].includes(raw.backend ?? "")) return null;
+    return {
+      version: 1,
+      id: id2,
+      name,
+      stableDeviceId,
+      backend: raw.backend,
+      exclusiveMode: (raw.backend === "wasapi" || raw.backend === "coreaudio") && raw.exclusiveMode === true,
+      outputConfig: normalizeOutputConfig$1(raw.outputConfig),
+      volumeCeiling: volume(raw.volumeCeiling, 0.7),
+      outputStage: normalizeDspOutputStage(raw.outputStage),
+      processing: normalizeDeviceProfileProcessing(raw.processing),
+      dspSceneId: text$2(raw.dspSceneId, 128) || null,
+      autoApply: raw.autoApply === true
+    };
+  }
+  function normalizeAudioDeviceProfileSettings(value) {
+    const raw = value ?? {};
+    const profiles = [];
+    const ids = /* @__PURE__ */ new Set();
+    if (raw.version === 1 && Array.isArray(raw.profiles)) {
+      for (const value2 of raw.profiles.slice(0, MAX_AUDIO_DEVICE_PROFILES)) {
+        const profile = normalizeAudioDeviceProfile(value2);
+        if (!profile || ids.has(profile.id)) continue;
+        ids.add(profile.id);
+        profiles.push(profile);
+      }
+    }
+    return {
+      version: 1,
+      profiles,
+      activeProfileId: typeof raw.activeProfileId === "string" && ids.has(raw.activeProfileId) ? raw.activeProfileId : null,
+      volumeCeiling: volume(raw.volumeCeiling, 1),
+      outputStageOverride: raw.outputStageOverride ? normalizeDspOutputStage(raw.outputStageOverride) : null
+    };
+  }
+  const record$2 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  const keys$1 = (value, names) => Object.keys(value).every((key) => names.includes(key));
+  const text$1 = (value, max) => typeof value === "string" && value.trim().length > 0 && value.length <= max && !value.includes("\0");
+  const CONFIG_FIELDS = {
+    playbackPolicy: true,
+    continuitySampleRate: true,
+    asioOutputChannelStart: true,
+    preferredBufferSize: true,
+    routingMode: true,
+    wasapiExclusivePushMode: true,
+    pcmToDsdMode: true,
+    dsdMutePreRollFrames: true,
+    dsdMutePostRollFrames: true,
+    dsdMuteTimeoutFrames: true,
+    upmixCenterGain: true,
+    upmixLfeGain: true,
+    upmixLfeLowpassHz: true,
+    upmixSurroundGain: true,
+    upmixSideGain: true,
+    upmixSurroundDelayMs: true
+  };
+  function validCoreAudioPayload(name, value) {
+    if (name === "audio.outputTest" || name === "audio.outputTest.stop") return keys$1(value, []);
+    if (name === "audio.outputTest.play")
+      return keys$1(value, ["revision", "exclusive"]) && Number.isSafeInteger(value.revision) && Number(value.revision) >= 0 && typeof value.exclusive === "boolean";
+    if (name === "audio.output" || name === "audio.profiles") return keys$1(value, []);
+    if (!keys$1(value, ["revision", "edit"]) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0 || !record$2(value.edit))
+      return false;
+    const edit2 = value.edit;
+    if (name === "audio.profiles.edit") {
+      if (edit2.kind === "remove" || edit2.kind === "apply")
+        return keys$1(edit2, ["kind", "id"]) && text$1(edit2.id, 128);
+      return edit2.kind === "save" && keys$1(edit2, ["kind", "profile"]) && record$2(edit2.profile) && keys$1(edit2.profile, [
+        "version",
+        "id",
+        "name",
+        "stableDeviceId",
+        "backend",
+        "exclusiveMode",
+        "outputConfig",
+        "volumeCeiling",
+        "outputStage",
+        "processing",
+        "dspSceneId",
+        "autoApply"
+      ]) && text$1(edit2.profile.id, 128) && text$1(edit2.profile.name, 100) && text$1(edit2.profile.stableDeviceId, 1024) && typeof edit2.profile.volumeCeiling === "number" && edit2.profile.volumeCeiling >= 0 && edit2.profile.volumeCeiling <= 1 && !!normalizeAudioDeviceProfile(edit2.profile);
+    }
+    switch (edit2.kind) {
+      case "backend":
+        return keys$1(edit2, ["kind", "output", "device"]) && ["wasapi", "asio", "coreaudio", "alsa"].includes(String(edit2.output)) && (edit2.device === void 0 || text$1(edit2.device, 512));
+      case "device":
+        return keys$1(edit2, ["kind", "device"]) && text$1(edit2.device, 512);
+      case "exclusive":
+      case "autoRelease":
+        return keys$1(edit2, ["kind", "enabled"]) && typeof edit2.enabled === "boolean";
+      case "config":
+        return keys$1(edit2, ["kind", "config"]) && record$2(edit2.config) && Object.keys(edit2.config).every((key) => Object.hasOwn(CONFIG_FIELDS, key)) && Object.entries(edit2.config).every(([key, v]) => {
+          if (key === "routingMode")
+            return [
+              "auto",
+              "stereo",
+              "stereo-to-5.1",
+              "stereo-to-7.1",
+              "mono-to-stereo",
+              "mono-to-multichannel"
+            ].includes(String(v));
+          if (key === "playbackPolicy") return v === "bit-perfect-first" || v === "continuity-first";
+          if (key === "continuitySampleRate") return v === 44100 || v === 48e3 || v === 96e3;
+          if (key === "pcmToDsdMode")
+            return ["off", "dsd64", "dsd128", "dsd256"].includes(String(v));
+          if (key === "wasapiExclusivePushMode") return typeof v === "boolean";
+          return typeof v === "number" && Number.isFinite(v);
+        });
+      default:
+        return false;
+    }
+  }
+  const CORE_STATE_DOMAINS = [
+    "versions",
+    "statistics-tracks",
+    "statistics-days",
+    "inbox",
+    "podcast-preferences",
+    "eq-preferences"
+  ];
+  const CORE_STATE_BATCH_BYTES = 4 * 1024 * 1024;
+  const CORE_STATE_LARGE_ROW_BYTES = 32 * 1024 * 1024;
+  function coreStateBatchByteLimit(domain, rowCount) {
+    return domain === "versions" && rowCount === 1 ? CORE_STATE_LARGE_ROW_BYTES : CORE_STATE_BATCH_BYTES;
+  }
+  function emptyCoreStateCounts() {
+    return Object.fromEntries(CORE_STATE_DOMAINS.map((domain) => [domain, 0]));
+  }
+  function isListeningStatsDay(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+    return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
+  }
+  function isListeningStatsClearRange(range) {
+    return range === null || isListeningStatsDay(range.startDay) && isListeningStatsDay(range.endDay) && range.startDay <= range.endDay;
+  }
+  const TWILIGHT_MEDIA_PROVIDER_METHODS = [
+    "getPlaybackUrl",
+    "getLyrics",
+    "searchSongs",
+    "searchRecordingIdentities",
+    "fetchArtistIdentity",
+    "searchAlbums",
+    "searchPlaylists",
+    "searchArtists",
+    "fetchPlaylistTracks",
+    "fetchPlaylistTracksPage",
+    "readPlaylistImportPage",
+    "createDownload",
+    "getDownloadStatus",
+    "getDownloadFile",
+    "cancelDownload",
+    "checkLogin",
+    "getProfile",
+    "logout",
+    "openOfficialLogin",
+    "sendCaptcha",
+    "loginByPhonePassword",
+    "loginByPhoneCaptcha",
+    "loginByEmailPassword",
+    "loginWithServer",
+    "getQrLogin",
+    "getQrKey",
+    "getQrImage",
+    "checkQrLogin",
+    "fetchUserLibrary",
+    "fetchLikedTracks",
+    "fetchLikedTracksPage",
+    "fetchCloudSongsPage",
+    "prepareCloudUpload",
+    "completeCloudUpload",
+    "getCloudDownloadUrl",
+    "fetchRecommendSongs",
+    "fetchRecommendPlaylists",
+    "fetchPlaylistCategories",
+    "fetchDiscoveryPlaylists",
+    "fetchHighQualityPlaylists",
+    "fetchToplists",
+    "fetchPersonalFm",
+    "fetchPrivateContent",
+    "fetchArtistTopSongs",
+    "fetchArtistAlbums",
+    "fetchSavedAlbums",
+    "fetchSavedArtists",
+    "fetchArtistIntro",
+    "fetchArtistMetadata",
+    "fetchAlbumMetadata",
+    "fetchArtistFollowState",
+    "fetchAlbumTracks",
+    "fetchAlbumIdentity",
+    "fetchArtistPlaylists",
+    "fetchUserPlaylistsByUid",
+    "fetchUserFollows",
+    "fetchUserFolloweds",
+    "fetchPlayRecords",
+    "fetchRecentSongs",
+    "fetchIntelligenceList",
+    "followArtist",
+    "followUser",
+    "likeTrack",
+    "isTrackLiked",
+    "createPlaylist",
+    "deletePlaylist",
+    "addTracksToPlaylist",
+    "removeTracksFromPlaylist"
+  ];
+  function isTwilightMediaProviderMethod(method) {
+    return TWILIGHT_MEDIA_PROVIDER_METHODS.includes(method);
+  }
+  const CORE_HOST_PROVIDER_METHODS = /* @__PURE__ */ new Set([
+    "createDownload",
+    "getDownloadStatus",
+    "getDownloadFile",
+    "cancelDownload"
+  ]);
+  const EXTERNAL_PLAYLIST_MAX_ENTRIES = 2e4;
+  const record$1 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const text = (v, max = 32768) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
+  const uint = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+  const positive = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  const oneOf = (v, values) => values.includes(v);
+  const keys = (v, allowed) => Object.keys(v).every((key) => allowed.includes(key));
+  const optional = (v, check) => v === void 0 || check(v);
+  const strings = (v, count = LIBRARY_MAX_PAGE_SIZE, length = 32768) => Array.isArray(v) && v.length <= count && v.every((s) => text(s, length));
+  const modes = ["sequential", "listLoop", "repeat", "shuffle", "heart"];
+  function queueInput(v) {
+    if (!record$1(v)) return false;
+    const display = (track) => ["title", "artist", "album"].every(
+      (key) => typeof track[key] === "string" && track[key].length <= 8192
+    ) && positive(track.duration);
+    switch (v.kind) {
+      case "occurrence":
+        return keys(v, ["kind", "queueId", "revision", "occurrenceId"]) && text(v.queueId, 128) && uint(v.revision) && text(v.occurrenceId, MAX_QUEUE_OCCURRENCE_ID_LENGTH);
+      case "local":
+        return keys(v, ["kind", "id", "fallback"]) && text(v.id) && optional(
+          v.fallback,
+          (fallback) => record$1(fallback) && keys(fallback, [
+            "filePath",
+            "title",
+            "artist",
+            "album",
+            "duration",
+            "subTrack",
+            "cueRange"
+          ]) && text(fallback.filePath) && display(fallback) && optional(fallback.subTrack, text) && trackCueRangePropertyIsValid(fallback)
+        );
+      case "provider":
+        return keys(v, ["kind", "track"]) && record$1(v.track) && keys(v.track, ["id", "source", "title", "artist", "album", "duration", "ncmSongId"]) && text(v.track.id) && text(v.track.source, 128) && !["local", "network", "radio", "podcast"].includes(v.track.source) && display(v.track) && optional(v.track.ncmSongId, (id2) => uint(id2) && id2 > 0);
+      case "network":
+        return keys(v, ["kind", "revision", "profileId", "entryId"]) && uint(v.revision) && text(v.profileId, 512) && text(v.entryId);
+      case "stream":
+        return keys(v, ["kind", "source", "id"]) && oneOf(v.source, ["radio", "podcast"]) && text(v.id);
+      default:
+        return false;
+    }
+  }
+  function isBoundedCoreJson(value, maxBytes) {
+    let remaining = maxBytes;
+    const ancestors = /* @__PURE__ */ new Set();
+    const encoder = new TextEncoder();
+    function reserve(bytes) {
+      remaining -= bytes;
+      return remaining >= 0;
+    }
+    function string2(value2) {
+      if (value2.length > remaining) return false;
+      return reserve(encoder.encode(JSON.stringify(value2)).length);
+    }
+    function visit(value2, depth) {
+      if (value2 === null) return reserve(4);
+      switch (typeof value2) {
+        case "string":
+          return string2(value2);
+        case "boolean":
+          return reserve(value2 ? 4 : 5);
+        case "number":
+          return Number.isFinite(value2) && reserve(String(value2).length);
+        case "object": {
+          if (depth > 32 || ancestors.has(value2)) return false;
+          const array2 = Array.isArray(value2);
+          if (!array2 && Object.getPrototypeOf(value2) !== Object.prototype && Object.getPrototypeOf(value2) !== null)
+            return false;
+          if (!reserve(2)) return false;
+          ancestors.add(value2);
+          try {
+            const allKeys = Object.keys(value2);
+            if (array2 && (allKeys.length !== value2.length || allKeys.some((key, index) => key !== String(index))))
+              return false;
+            for (const key of allKeys) {
+              const property = Object.getOwnPropertyDescriptor(value2, key);
+              if (!("value" in property)) return false;
+              if (property.value === void 0 && !array2) continue;
+              if (!reserve(1) || !array2 && (!string2(key) || !reserve(1)) || !visit(property.value, depth + 1))
+                return false;
+            }
+            return true;
+          } finally {
+            ancestors.delete(value2);
+          }
+        }
+        default:
+          return false;
+      }
+    }
+    return visit(value, 0);
+  }
+  function query(v) {
+    if (!record$1(v) || !keys(v, [
+      "contentRevision",
+      "playlistView",
+      "playlistEntryId",
+      "aggregate",
+      "anchorId",
+      "search",
+      "searchLiteral",
+      "searchFileName",
+      "folder",
+      "recursive",
+      "artist",
+      "albumId",
+      "genre",
+      "genreSeparators",
+      "collectionGenre",
+      "collectionNamesOnly",
+      "collectionSearchMode",
+      "collectionSort",
+      "collectionCountOnly",
+      "collectionOrder",
+      "ids",
+      "sort",
+      "direction",
+      "historyRevision",
+      "preferredSources",
+      "filters",
+      "offset",
+      "limit"
+    ]))
+      return false;
+    for (const key of ["contentRevision", "historyRevision", "offset"])
+      if (!optional(v[key], uint)) return false;
+    if (!optional(v.limit, (n) => uint(n) && n >= 1 && n <= LIBRARY_MAX_PAGE_SIZE)) return false;
+    for (const key of [
+      "search",
+      "folder",
+      "artist",
+      "albumId",
+      "genre",
+      "genreSeparators",
+      "collectionGenre",
+      "anchorId"
+    ])
+      if (!optional(v[key], (s) => typeof s === "string" && s.length <= 32768)) return false;
+    for (const key of [
+      "searchLiteral",
+      "searchFileName",
+      "recursive",
+      "collectionNamesOnly",
+      "collectionCountOnly"
+    ])
+      if (!optional(v[key], (b) => typeof b === "boolean")) return false;
+    if (!optional(v.playlistView, (s) => text(s, 128)) || !optional(
+      v.playlistEntryId,
+      (s) => text(v.playlistView, 128) && typeof s === "string" && /^(0|[1-9]\d{0,6})$/.test(s)
+    ))
+      return false;
+    if (!optional(
+      v.sort,
+      (s) => oneOf(s, [
+        "title",
+        "artist",
+        "album",
+        "format",
+        "trackNumber",
+        "duration",
+        "sampleRate",
+        "addedAt",
+        "recentlyAdded",
+        "lastPlayed",
+        "playlist",
+        "insertion",
+        "unifiedSearch"
+      ])
+    ) || !optional(v.direction, (s) => oneOf(s, ["asc", "desc"])))
+      return false;
+    if (!optional(v.collectionSearchMode, (s) => oneOf(s, ["albumTerms", "artistName"])) || !optional(v.collectionSort, (s) => oneOf(s, ["trackCount", "label"])))
+      return false;
+    if (!optional(v.ids, strings) || !optional(v.collectionOrder, (s) => strings(s, 1e6)) || !optional(v.preferredSources, (s) => strings(s, 2e4, 8192)))
+      return false;
+    if (v.filters !== void 0) {
+      const f = v.filters;
+      if (!record$1(f) || !keys(f, ["lossless", "dsd", "sampleRate", "bitDepth", "folder", "provider"]))
+        return false;
+      for (const k of ["lossless", "dsd"])
+        if (!optional(f[k], (b) => typeof b === "boolean")) return false;
+      for (const k of ["sampleRate", "bitDepth"])
+        if (!optional(f[k], (n) => positive(n) && n !== 0)) return false;
+      for (const k of ["folder", "provider"])
+        if (!optional(f[k], (s) => typeof s === "string" && s.length <= 32768)) return false;
+    }
+    if (v.aggregate !== void 0) {
+      const a = v.aggregate;
+      if (!record$1(a) || !text(v.playlistView, 128) || !keys(a, ["hiddenSources", "variantPreferences", "variantRow", "sourceCounts"]))
+        return false;
+      if (!optional(a.hiddenSources, (s) => strings(s, 1e6)) || !optional(a.sourceCounts, (b) => typeof b === "boolean"))
+        return false;
+      if (!optional(a.variantRow, (s) => typeof s === "string" && /^(0|[1-9]\d{0,6})$/.test(s)) || a.sourceCounts === true && a.variantRow !== void 0)
+        return false;
+      if (!optional(
+        a.variantPreferences,
+        (p) => record$1(p) && Object.entries(p).every(([id2, source]) => text(id2) && text(source))
+      ))
+        return false;
+      if (!keys(v, [
+        "playlistView",
+        "playlistEntryId",
+        "aggregate",
+        "search",
+        "searchLiteral",
+        "sort",
+        "contentRevision",
+        "offset",
+        "limit",
+        "anchorId"
+      ]) || v.sort !== void 0 && v.sort !== "playlist")
+        return false;
+    }
+    return true;
+  }
+  function edit(v) {
+    if (!record$1(v)) return false;
+    const entry = (v2) => text(v2, MAX_QUEUE_OCCURRENCE_ID_LENGTH);
+    switch (v.kind) {
+      case "undo":
+      case "clear":
+        return keys(v, ["kind"]);
+      case "remove":
+        return keys(v, ["kind", "entryIds"]) && strings(v.entryIds, LIBRARY_MAX_PAGE_SIZE, MAX_QUEUE_OCCURRENCE_ID_LENGTH);
+      case "move":
+        return keys(v, ["kind", "entryId", "beforeEntryId"]) && entry(v.entryId) && (v.beforeEntryId === null || entry(v.beforeEntryId));
+      case "order":
+        return keys(v, ["kind", "order"]) && oneOf(v.order, ["original", "shuffle"]);
+      case "insert": {
+        if (!keys(v, ["kind", "trackIds", "items", "beforeEntryId", "afterEntryId"]) || !optional(v.beforeEntryId, entry) || !optional(v.afterEntryId, entry) || v.beforeEntryId !== void 0 && v.afterEntryId !== void 0)
+          return false;
+        if (v.trackIds === void 0 === (v.items === void 0)) return false;
+        if (v.trackIds !== void 0) return strings(v.trackIds);
+        return Array.isArray(v.items) && v.items.length <= LIBRARY_MAX_PAGE_SIZE && v.items.every(
+          (item) => record$1(item) && keys(item, ["id", "snapshot"]) && text(item.id) && optional(
+            item.snapshot,
+            (s) => record$1(s) && s.id === item.id && text(s.filePath) && isBoundedCoreJson(s, 512 * 1024)
+          )
+        );
+      }
+      default:
+        return false;
+    }
+  }
+  function validCorePayload(name, payload) {
+    const budget = name === "providers.call" || name === "extensions.execute" || name === "settings.edit" ? 512 * 1024 : name === "audio.dsp.edit" ? 4 * 1024 * 1024 : name.startsWith("audio.") ? 128 * 1024 : name === "migration.stage" ? CORE_STATE_LARGE_ROW_BYTES + 64 * 1024 : name === "queue.edit" ? 8 * 1024 * 1024 + 64 * 1024 : 32 * 1024 * 1024;
+    if (!isBoundedCoreJson(payload, budget) || !record$1(payload)) return false;
+    const p = payload;
+    switch (name) {
+      case "opra.search":
+        return keys(p, ["query"]) && typeof p.query === "string" && p.query.length <= 256 && !p.query.includes("\0");
+      case "opra.profile":
+        return keys(p, ["id"]) && typeof p.id === "string" && p.id.length <= 128 && !p.id.includes("\0");
+      case "opra.status":
+      case "opra.refresh":
+        return keys(p, []);
+      case "audio.diagnostics":
+        return validCoreAudioDiagnosticsPayload(p);
+      case "playlists.submit":
+        return validCorePlaylistSubmitPayload(p, queueInput);
+      case "player.presentation":
+      case "player.lyrics":
+      case "playback.diagnostics":
+        return keys(p, []);
+      case "playback.favorite":
+        return keys(p, ["trackId", "occurrenceId"]) && text(p.trackId) && (p.occurrenceId === null || text(p.occurrenceId, MAX_QUEUE_OCCURRENCE_ID_LENGTH));
+      case "playback.control":
+        switch (p.type) {
+          case "toggle-play":
+          case "play":
+          case "pause":
+          case "previous":
+          case "next":
+          case "cycle-play-mode":
+          case "toggle-favorite":
+          case "stop":
+            return keys(p, ["type"]);
+          case "seek":
+          case "set-volume":
+            return keys(p, ["type", "value"]) && positive(p.value) && (p.type !== "set-volume" || p.value <= 1);
+          case "set-play-mode":
+            return keys(p, ["type", "value"]) && oneOf(p.value, modes);
+          case "volume-step":
+            return keys(p, ["type", "direction"]) && oneOf(p.direction, ["volumeUp", "volumeDown"]);
+          case "queue-jump":
+            return keys(p, ["type", "id", "revision", "index", "occurrenceId"]) && text(p.id, 128) && uint(p.revision) && uint(p.index) && text(p.occurrenceId, MAX_QUEUE_OCCURRENCE_ID_LENGTH);
+          default:
+            return false;
+        }
+      case "queue.locate":
+        return keys(p, ["id", "revision", "occurrenceId"]) && text(p.id, 128) && uint(p.revision) && text(p.occurrenceId, MAX_QUEUE_OCCURRENCE_ID_LENGTH);
+      case "queue.insert":
+        return keys(p, ["id", "revision", "items", "afterEntryId", "beforeEntryId"]) && text(p.id, 128) && uint(p.revision) && Array.isArray(p.items) && p.items.length > 0 && p.items.length <= 200 && p.items.every(queueInput) && optional(p.afterEntryId, (id2) => text(id2, MAX_QUEUE_OCCURRENCE_ID_LENGTH)) && optional(p.beforeEntryId, (id2) => text(id2, MAX_QUEUE_OCCURRENCE_ID_LENGTH)) && !(p.afterEntryId !== void 0 && p.beforeEntryId !== void 0);
+      case "playlists.saveQueue":
+        return keys(p, ["name", "revision", "queue"]) && text(p.name, 120) && uint(p.revision) && record$1(p.queue) && keys(p.queue, ["id", "revision"]) && text(p.queue.id, 128) && uint(p.queue.revision);
+      case "playlists.addQueueEntries":
+        return keys(p, ["id", "revision", "queue", "occurrenceIds"]) && text(p.id, 128) && uint(p.revision) && record$1(p.queue) && keys(p.queue, ["id", "revision"]) && text(p.queue.id, 128) && uint(p.queue.revision) && Array.isArray(p.occurrenceIds) && p.occurrenceIds.length > 0 && p.occurrenceIds.length <= 200 && p.occurrenceIds.every((id2) => text(id2, MAX_QUEUE_OCCURRENCE_ID_LENGTH));
+      case "themes.list":
+      case "themes.bootstrap":
+      case "themes.edit":
+      case "themes.import":
+      case "themes.export":
+      case "themes.importAsset":
+      case "themes.validateAssets":
+      case "themes.copyAssets":
+      case "themes.reconcile":
+        return isBoundedCoreJson(p, 2 * 1024 * 1024) && validCoreThemePayload(name, p);
+      case "visualization.unsubscribe":
+        return keys(p, ["subscriptionId"]) && text(p.subscriptionId, 128);
+      case "visualization.subscribe":
+        return keys(p, ["subscriptionId", "options"]) && text(p.subscriptionId, 128) && optional(
+          p.options,
+          (options) => record$1(options) && keys(options, [
+            "spectrumPoints",
+            "waveformPoints",
+            "spectrogramFrames",
+            "oscilloscopePoints",
+            "visualizerBarCount"
+          ]) && Object.entries(options).every(
+            ([key, value]) => uint(value) && value <= (key === "spectrogramFrames" ? 64 : key === "visualizerBarCount" ? 256 : 4096)
+          )
+        );
+      case "automix.install.start":
+        return keys(p, ["enableAfterInstall"]) && typeof p.enableAfterInstall === "boolean";
+      case "automix.install.cancel":
+      case "automix.install.status":
+        return keys(p, []);
+      case "settings.restore":
+      case "settings.backup":
+        return validCoreSettingsBackupPayload(name, p);
+      case "ncm.cloud.chooseUploadFiles":
+      case "ncm.cloud.state":
+        return keys(p, []);
+      case "ncm.cloud.upload":
+        return keys(p, ["handle"]) && text(p.handle, 128);
+      case "ncm.cloud.cancel":
+        return keys(p, ["id"]) && text(p.id, 128);
+      case "ncm.cloud.download":
+        return keys(p, ["cloudSongId", "fileName"]) && text(p.fileName, 255) && (typeof p.cloudSongId === "string" && /^[\x21-\x7e]{1,128}$/.test(p.cloudSongId.trim()) || uint(p.cloudSongId) && p.cloudSongId > 0);
+      case "ncm.cloud.page":
+        return keys(p, ["revision", "offset", "limit"]) && uint(p.revision) && optional(p.offset, uint) && optional(p.limit, (v) => uint(v) && v > 0 && v <= 200);
+      case "library.inbox.refresh":
+        return keys(p, ["duplicatesId"]) && optional(p.duplicatesId, (v) => text(v, 128));
+      case "library.health.start":
+      case "library.health.status":
+      case "library.health.page":
+      case "library.health.repair":
+        return validLibraryHealthPayload(name, p);
+      case "library.inbox.mark":
+        return keys(p, ["id", "revision", "indexes", "status"]) && text(p.id, 128) && uint(p.revision) && Array.isArray(p.indexes) && p.indexes.length > 0 && p.indexes.length <= 128 && p.indexes.every(uint) && oneOf(p.status, ["pending", "ignored", "done"]);
+      case "library.inbox.page":
+        return keys(p, ["id", "revision", "kind", "status", "offset", "limit"]) && text(p.id, 128) && uint(p.revision) && optional(p.kind, (v) => oneOf(v, ["cover", "tags", "enrichment", "duplicate"])) && optional(p.status, (v) => oneOf(v, ["pending", "ignored", "done"])) && optional(p.offset, uint) && optional(p.limit, (v) => uint(v) && v > 0 && v <= 200);
+      case "library.loudness.prepare":
+        return keys(p, ["selection", "mode"]) && oneOf(p.mode, ["track", "album"]) && validCorePayload("library.selection.open", p.selection);
+      case "library.loudness.start":
+      case "library.loudness.cancel":
+      case "library.loudness.clear":
+        return keys(p, ["id"]) && text(p.id, 128);
+      case "library.loudness.state":
+        return Object.keys(p).length === 0;
+      case "library.loudness.page":
+        return keys(p, ["id", "offset", "limit"]) && text(p.id, 128) && optional(p.offset, uint) && optional(p.limit, (v) => uint(v) && v > 0 && v <= 200);
+      case "library.loudness.result":
+        return keys(p, ["id", "index"]) && text(p.id, 128) && uint(p.index);
+      case "analysis.request":
+        return keys(p, ["kind", "id", "version"]) && oneOf(p.kind, ["bpm", "loudness"]) && text(p.id, 8192) && uint(p.version);
+      case "analysis.cache.clear":
+      case "analysis.cache.size":
+        return keys(p, ["kind"]) && oneOf(p.kind, ["bpm", "loudness"]);
+      case "analysis.loudness.status":
+        return Object.keys(p).length === 0;
+      case "backup.export":
+        return validPersonalExportOptions(p);
+      case "backup.preview":
+      case "backup.recover":
+      case "backup.chooseFolder":
+        return Object.keys(p).length === 0;
+      case "backup.repreview":
+      case "backup.stage": {
+        const options = p.options;
+        return keys(p, ["id", "options"]) && text(p.id, 128) && record$1(options) && keys(options, ["domains", "conflict", "mappings"]) && oneOf(options.conflict, ["keep-local", "use-backup"]) && Array.isArray(options.domains) && options.domains.length > 0 && options.domains.length <= PERSONAL_DOMAINS.length && new Set(options.domains).size === options.domains.length && options.domains.every((domain) => oneOf(domain, PERSONAL_DOMAINS)) && Array.isArray(options.mappings) && options.mappings.length <= 100 && options.mappings.every(
+          (mapping) => record$1(mapping) && keys(mapping, ["from", "to"]) && text(mapping.from, 4095) && text(mapping.to, 4095)
+        );
+      }
+      case "library.duplicates.start":
+      case "library.duplicates.status":
+        return Object.keys(p).length === 0;
+      case "library.duplicates.cancel":
+        return keys(p, ["id"]) && text(p.id, 128);
+      case "library.duplicates.groups":
+      case "library.duplicates.items":
+      case "library.duplicates.unavailable":
+        return keys(p, [
+          "id",
+          "offset",
+          "limit",
+          ...name === "library.duplicates.items" ? ["group"] : []
+        ]) && text(p.id, 128) && optional(p.offset, uint) && optional(p.limit, (v) => uint(v) && Number(v) > 0 && Number(v) <= 200) && (name !== "library.duplicates.items" || uint(p.group));
+      case "playlists.repair":
+        return keys(p, ["id", "revision", "folder"]) && text(p.id, 128) && uint(p.revision) && text(p.folder, 32768);
+      case "playlists.repair.status":
+        return Object.keys(p).length === 0;
+      case "library.selection.open": {
+        const scope = p.query, total = p.total;
+        if (!keys(p, ["query", "total", "ranges"]) || !query(scope) || !record$1(scope) || !uint(scope.contentRevision) || !uint(total) || !Array.isArray(p.ranges) || p.ranges.length > 4096 || ["offset", "limit", "anchorId", "playlistEntryId", "aggregate"].some(
+          (key) => scope[key] !== void 0
+        ) || scope.sort === "lastPlayed" && !uint(scope.historyRevision))
+          return false;
+        let previous = -1;
+        return p.ranges.every((range) => {
+          if (!Array.isArray(range) || range.length !== 2 || !range.every(uint) || range[0] <= previous || range[1] <= range[0] || range[1] > total)
+            return false;
+          previous = range[1];
+          return true;
+        });
+      }
+      case "library.selection.close":
+        return keys(p, ["id"]) && text(p.id, 128);
+      case "library.selection.page":
+        return keys(p, ["id", "cursor", "projection"]) && text(p.id, 128) && optional(p.cursor, uint) && optional(p.projection, (v) => oneOf(v, ["tracks", "files"]));
+      case "library.remove":
+        return keys(p, ["selectionId", "mode"]) && text(p.selectionId, 128) && oneOf(p.mode, ["library", "trash"]);
+      case "library.reset":
+        return keys(p, ["revision"]) && uint(p.revision);
+      case "library.exclusions.clear":
+        return keys(p, ["revision", "paths"]) && uint(p.revision) && strings(p.paths, 256, 4096);
+      case "library.tags.restore":
+        return keys(p, ["selectionId", "fromJournal"]) && (p.fromJournal === true ? p.selectionId === void 0 : text(p.selectionId, 128) && p.fromJournal === void 0);
+      case "library.tags.write":
+        return keys(p, ["selectionId", "patch", "items"]) && text(p.selectionId, 128) && (p.patch !== void 0 || p.items !== void 0) && optional(p.patch, tagPatch) && optional(
+          p.items,
+          (items) => Array.isArray(items) && items.length > 0 && items.length <= 1e3 && items.every(
+            (item) => record$1(item) && keys(item, ["id", "patch"]) && text(item.id, 4096) && tagPatch(item.patch)
+          )
+        );
+      case "automix.capabilities":
+        return keys(p, ["refresh"]) && optional(p.refresh, (v) => typeof v === "boolean");
+      case "settings.state":
+      case "sleep.state":
+        return keys(p, []);
+      case "sleep.configure":
+        return keys(p, ["revision", "mode", "minutes"]) && uint(p.revision) && oneOf(p.mode, ["minutes", "trackEnd", "queueEnd"]) && optional(p.minutes, (v) => uint(v) && Number(v) >= 1 && Number(v) <= 720);
+      case "sleep.cancel":
+        return keys(p, ["revision"]) && uint(p.revision);
+      case "settings.edit":
+        return keys(p, ["revision", "patch"]) && uint(p.revision) && record$1(p.patch) && Object.keys(p.patch).every(
+          (key) => !CORE_SPECIALIZED_SETTINGS.includes(key)
+        );
+      case "remote.status":
+      case "remote.setEnabled":
+      case "remote.rotatePin":
+        return validCoreRemotePayload(name, p);
+      case "cast.state":
+      case "cast.discover":
+        return keys(p, []);
+      case "cast.devices":
+        return keys(p, ["offset", "limit"]) && uint(p.offset) && uint(p.limit) && p.limit > 0 && p.limit <= 100;
+      case "cast.end":
+        return keys(p, ["revision"]) && uint(p.revision);
+      case "cast.start":
+        return keys(p, ["revision", "deviceId", "queue"]) && uint(p.revision) && text(p.deviceId, 512) && record$1(p.queue) && keys(p.queue, ["id", "revision", "occurrenceId"]) && text(p.queue.id, 512) && uint(p.queue.revision) && text(p.queue.occurrenceId, MAX_QUEUE_OCCURRENCE_ID_LENGTH);
+      case "audio.audition":
+      case "audio.audition.measure":
+      case "audio.audition.select":
+      case "audio.audition.end":
+      case "audio.dsp":
+      case "audio.dsp.status":
+      case "audio.dsp.assets":
+      case "audio.dsp.correction":
+      case "audio.dsp.edit":
+      case "audio.dsp.import":
+      case "audio.dsp.export":
+      case "audio.dsp.assetRemove":
+      case "audio.vst3":
+      case "audio.vst3.parameters":
+      case "audio.vst3.edit":
+      case "audio.vst3.chooseDirectory":
+        return validCoreDspPayload(name, p);
+      case "audio.output":
+      case "audio.outputTest":
+      case "audio.outputTest.play":
+      case "audio.outputTest.stop":
+      case "audio.profiles":
+      case "audio.output.edit":
+      case "audio.profiles.edit":
+        return validCoreAudioPayload(name, p);
+      case "liked.play":
+        return keys(p, ["selectedId", "play"]) && optional(p.selectedId, text) && optional(p.play, (value) => typeof value === "boolean");
+      case "personalized.start":
+        return keys(p, ["providerId", "key", "selectedId", "play"]) && text(p.providerId, 128) && /^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(p.providerId) && oneOf(p.key, ["fm", "radar"]) && optional(p.selectedId, text) && optional(p.play, (value) => typeof value === "boolean");
+      case "heart.refill":
+      case "personalized.refill":
+        return keys(p, ["id", "revision"]) && text(p.id, 128) && uint(p.revision);
+      case "downloads.state":
+        return keys(p, []);
+      case "downloads.page":
+        return keys(p, ["revision", "offset", "limit"]) && uint(p.revision) && optional(p.offset, uint) && optional(p.limit, (v) => uint(v) && Number(v) > 0 && Number(v) <= 200);
+      case "downloads.cancel":
+      case "downloads.retry":
+      case "downloads.reveal":
+      case "downloads.indexed":
+        return keys(p, ["id"]) && text(p.id, 128);
+      case "downloads.result":
+        return keys(p, ["id", "addToLibrary"]) && text(p.id, 128) && typeof p.addToLibrary === "boolean";
+      case "downloads.play":
+        return keys(p, ["id", "play"]) && text(p.id, 128) && optional(p.play, (v) => typeof v === "boolean");
+      case "downloads.create":
+        return keys(p, ["providerId", "track", "quality", "targetRoot"]) && text(p.providerId, 128) && oneOf(p.quality, ["aac", "lossless", "hi-res"]) && optional(p.targetRoot, text) && record$1(p.track) && isBoundedCoreJson(p.track, 64 * 1024) && (text(p.track.id, 8192) || typeof p.track.id === "number" && Number.isFinite(p.track.id)) && text(p.track.title, 300) && text(p.track.artist, 300) && optional(p.track.album, (v) => typeof v === "string" && v.length <= 300) && optional(p.track.cover, (v) => typeof v === "string" && v.length <= 32768);
+      case "network.state":
+      case "cache.info":
+      case "cache.clear":
+      case "network.cacheInfo":
+      case "network.clearCache":
+        return keys(p, []);
+      case "network.test":
+        return keys(p, ["profileId"]) && text(p.profileId, 128);
+      case "network.cover":
+        return keys(p, ["profileId", "entryId"]) && text(p.profileId, 128) && text(p.entryId, 128);
+      case "network.profiles":
+      case "network.library":
+      case "network.directory":
+        return keys(p, [
+          "revision",
+          "offset",
+          "limit",
+          ...name === "network.directory" ? ["profileId", "path", "token"] : name === "network.library" ? ["profileId", "query"] : []
+        ]) && uint(p.revision) && optional(p.offset, uint) && optional(p.limit, (v) => uint(v) && Number(v) > 0 && Number(v) <= 200) && (name !== "network.directory" || text(p.profileId, 128) && text(p.path, 4096) && optional(p.token, (v) => text(v, 128))) && (name !== "network.library" || optional(p.profileId, (v) => text(v, 128)) && optional(p.query, (v) => typeof v === "string" && v.length <= 256));
+      case "network.profiles.edit":
+        if (!uint(p.revision)) return false;
+        switch (p.kind) {
+          case "create":
+            return keys(p, ["revision", "kind", "input"]) && networkProfile(p.input, false);
+          case "update":
+            return keys(p, ["revision", "kind", "id", "patch"]) && text(p.id, 128) && networkProfile(p.patch, true);
+          case "delete":
+            return keys(p, ["revision", "kind", "id"]) && text(p.id, 128);
+          default:
+            return false;
+        }
+      case "network.job":
+        if (!uint(p.revision)) return false;
+        return p.kind === "scan" ? keys(p, ["revision", "kind", "profileId", "path"]) && text(p.profileId, 128) && text(p.path, 4096) : p.kind === "enrich" ? keys(p, ["revision", "kind", "profileId"]) && text(p.profileId, 128) : p.kind === "cancel" && keys(p, ["revision", "kind", "id"]) && text(p.id, 128);
+      case "network.removeEntry":
+      case "network.play":
+        return keys(p, [
+          "revision",
+          "profileId",
+          "entryId",
+          ...name === "network.play" ? ["play"] : []
+        ]) && uint(p.revision) && text(p.profileId, 128) && text(p.entryId, 128) && optional(p.play, (v) => typeof v === "boolean");
+      case "streams.state":
+        return keys(p, []);
+      case "radio.stations":
+      case "podcasts.subscriptions":
+      case "podcasts.episodes":
+        return keys(
+          p,
+          name === "podcasts.episodes" ? ["revision", "offset", "limit", "id"] : ["revision", "offset", "limit"]
+        ) && uint(p.revision) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= 200) && (name !== "podcasts.episodes" || text(p.id, 128));
+      case "radio.directory":
+        return keys(p, ["query", "offset", "limit"]) && typeof p.query === "string" && p.query.length <= 120 && !p.query.includes("\0") && optional(p.offset, (n) => uint(n) && n <= 1e4) && optional(p.limit, (n) => uint(n) && n > 0 && n <= 50);
+      case "radio.edit": {
+        if (!keys(p, ["revision", "edit"]) || !uint(p.revision) || !record$1(p.edit)) return false;
+        const e = p.edit;
+        switch (e.kind) {
+          case "remove":
+            return keys(e, ["kind", "id"]) && text(e.id, 128);
+          case "add":
+            return keys(e, [
+              "kind",
+              "name",
+              "streamUrl",
+              "homepage",
+              "favicon",
+              "tags",
+              "allowInsecureHttp"
+            ]) && text(e.name, 120) && text(e.streamUrl, 2048) && isHttpOrHttpsUrl(e.streamUrl) && optional(e.homepage, (v) => text(v, 2048) && isHttpOrHttpsUrl(v)) && optional(e.favicon, (v) => text(v, 2048) && isHttpOrHttpsUrl(v)) && optional(e.tags, (v) => strings(v, 16, 40)) && optional(e.allowInsecureHttp, (v) => typeof v === "boolean");
+          case "import":
+            return keys(e, ["kind", "text", "fileNameHint", "allowInsecureHttp"]) && text(e.text, 2 * 1024 * 1024) && new TextEncoder().encode(e.text).length <= 2 * 1024 * 1024 && optional(e.fileNameHint, (v) => text(v, 255)) && optional(e.allowInsecureHttp, (v) => typeof v === "boolean");
+          default:
+            return false;
+        }
+      }
+      case "podcasts.subscribe":
+        return keys(p, ["revision", "feedUrl"]) && uint(p.revision) && text(p.feedUrl, 2048) && isHttpOrHttpsUrl(p.feedUrl);
+      case "podcasts.edit": {
+        if (!keys(p, ["revision", "edit"]) || !uint(p.revision) || !record$1(p.edit)) return false;
+        const e = p.edit;
+        return e.kind === "unsubscribe" ? keys(e, ["kind", "id"]) && text(e.id, 128) : e.kind === "restore" && keys(e, ["kind", "token"]) && text(e.token, 128);
+      }
+      case "podcasts.refresh":
+        return keys(p, ["revision", "id"]) && uint(p.revision) && optional(p.id, (v) => text(v, 128));
+      case "podcasts.defaultRate":
+      case "playback.rate":
+        return keys(p, name === "podcasts.defaultRate" ? ["revision", "rate"] : ["rate"]) && (name !== "podcasts.defaultRate" || uint(p.revision)) && typeof p.rate === "number" && Number.isFinite(p.rate) && p.rate >= 0.5 && p.rate <= 2;
+      case "streams.play":
+        return keys(
+          p,
+          p.kind === "podcast" ? ["kind", "id", "guid", "revision", "play", "resume"] : ["kind", "id", "revision", "play"]
+        ) && oneOf(p.kind, ["radio", "podcast"]) && text(p.id, 128) && uint(p.revision) && optional(p.play, (v) => typeof v === "boolean") && (p.kind !== "podcast" || text(p.guid, 512) && optional(p.resume, (v) => typeof v === "boolean"));
+      case "workspace.state":
+        return keys(p, []);
+      case "workspace.sessions":
+      case "workspace.history":
+        return keys(p, ["revision", "contentRevision", "offset", "limit"]) && uint(p.revision) && uint(p.contentRevision) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= LIBRARY_PAGE_SIZE);
+      case "workspace.edit": {
+        if (!keys(p, ["revision", "edit"]) || !uint(p.revision) || !record$1(p.edit)) return false;
+        const edit2 = p.edit;
+        switch (edit2.kind) {
+          case "saveCurrent":
+            return keys(edit2, ["kind", "name", "id"]) && text(edit2.name, 120) && optional(edit2.id, (v) => text(v, 128));
+          case "rename":
+            return keys(edit2, ["kind", "name", "id"]) && text(edit2.name, 120) && text(edit2.id, 128);
+          case "remove":
+            return keys(edit2, ["kind", "id"]) && text(edit2.id, 128);
+          default:
+            return false;
+        }
+      }
+      case "workspace.restore":
+        return keys(p, ["revision", "id", "play"]) && uint(p.revision) && text(p.id, 128) && optional(p.play, (v) => typeof v === "boolean");
+      case "lyrics.state":
+      case "lyrics.current":
+      case "lyrics.importDraft":
+        return keys(p, []);
+      case "lyrics.entry":
+        return keys(p, ["trackId"]) && text(p.trackId, 1024);
+      case "lyrics.search":
+      case "lyrics.reload":
+        return keys(p, ["trackId", "occurrenceId"]) && text(p.trackId, 1024) && (p.occurrenceId === null || text(p.occurrenceId, MAX_QUEUE_OCCURRENCE_ID_LENGTH));
+      case "lyrics.exportDraft":
+        return keys(p, ["contents"]) && typeof p.contents === "string" && new TextEncoder().encode(p.contents).length <= MAX_MANAGED_LYRIC_BYTES;
+      case "lyrics.edit": {
+        if (!keys(p, ["revision", "edit"]) || !uint(p.revision) || !record$1(p.edit)) return false;
+        const edit2 = p.edit;
+        switch (edit2.kind) {
+          case "globalOffset":
+            return keys(edit2, ["kind", "offsetMs"]) && typeof edit2.offsetMs === "number" && Number.isFinite(edit2.offsetMs);
+          case "visibility":
+            return keys(edit2, ["kind", "patch"]) && record$1(edit2.patch) && keys(edit2.patch, ["showOriginal", "showTranslation", "showRomanization"]) && Object.values(edit2.patch).every((value) => typeof value === "boolean");
+          case "track":
+            return keys(edit2, ["kind", "trackId", "patch"]) && text(edit2.trackId, 1024) && record$1(edit2.patch) && keys(edit2.patch, [
+              "offsetMs",
+              "source",
+              "originalSelection",
+              "translationSelection",
+              "romanizationSelection",
+              "original",
+              "translation",
+              "romanization"
+            ]) && isLyricsManagementDocument({
+              ...DEFAULT_LYRICS_MANAGEMENT,
+              tracks: {
+                [edit2.trackId]: {
+                  offsetMs: 0,
+                  source: "auto",
+                  original: null,
+                  translation: null,
+                  romanization: null,
+                  updatedAt: "",
+                  ...edit2.patch
+                }
+              }
+            });
+          default:
+            return false;
+        }
+      }
+      case "bookmarks.state":
+        return keys(p, []);
+      case "bookmarks.page":
+        return keys(p, ["revision", "scope", "offset", "limit"]) && uint(p.revision) && oneOf(p.scope, ["all", "current"]) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= LIBRARY_PAGE_SIZE);
+      case "bookmarks.seek":
+        return keys(p, ["id", "revision", "current"]) && text(p.id, 128) && uint(p.revision) && validBookmarkCurrent(p.current);
+      case "bookmarks.edit": {
+        if (!keys(p, ["revision", "edit"]) || !uint(p.revision) || !record$1(p.edit)) return false;
+        const edit2 = p.edit;
+        switch (edit2.kind) {
+          case "addCurrent":
+            return keys(edit2, ["kind", "current", "label"]) && validBookmarkCurrent(edit2.current) && optional(edit2.label, (s) => typeof s === "string" && s.length <= 120);
+          case "remove":
+            return keys(edit2, ["kind", "id"]) && text(edit2.id, 128);
+          case "rename":
+            return keys(edit2, ["kind", "id", "label"]) && text(edit2.id, 128) && typeof edit2.label === "string" && edit2.label.length <= 120;
+          case "threshold":
+            return keys(edit2, ["kind", "seconds"]) && positive(edit2.seconds);
+          case "dismissOffer":
+            return keys(edit2, ["kind", "current"]) && validBookmarkCurrent(edit2.current);
+          default:
+            return false;
+        }
+      }
+      case "imports.previewStart":
+        return keys(p, ["link", "credentials"]) && text(p.link, 4096) && optional(
+          p.credentials,
+          (v) => record$1(v) && keys(v, ["accessToken", "developerToken", "userToken", "country"]) && ["accessToken", "developerToken", "userToken"].every(
+            (key) => optional(v[key], (s) => text(s, 16384) && !/[\r\n]/.test(s))
+          ) && optional(v.country, (s) => typeof s === "string" && /^[a-zA-Z]{2}$/.test(s))
+        );
+      case "imports.previewConfigure":
+        return keys(p, ["id", "revision", "name", "playlistIndex", "columns"]) && text(p.id, 128) && uint(p.revision) && optional(p.name, (s) => text(s, 80)) && optional(p.playlistIndex, uint) && optional(
+          p.columns,
+          (v) => record$1(v) && keys(v, ["title", "artist", "album", "duration", "isrc", "location"]) && Object.values(v).every((n) => optional(n, uint))
+        );
+      case "imports.previewBind":
+      case "imports.bind":
+        return keys(p, ["id", "revision", "entryId", "input"]) && text(p.id, 128) && uint(p.revision) && text(p.entryId, 128) && (p.input === null || queueInput(p.input));
+      case "playlists.replaceSource":
+        return keys(p, ["revision", "oldTrackId", "input"]) && uint(p.revision) && text(p.oldTrackId) && queueInput(p.input);
+      case "playlists.rematch":
+        return keys(p, ["revision", "input"]) && uint(p.revision) && queueInput(p.input);
+      case "library.reveal":
+        return keys(p, ["id", "version"]) && text(p.id) && optional(p.version, uint);
+      case "imports.previewSave":
+        return keys(p, ["id", "revision", "playlistsRevision", "target"]) && text(p.id, 128) && uint(p.revision) && uint(p.playlistsRevision) && optional(
+          p.target,
+          (v) => record$1(v) && keys(v, ["id", "generation", "overwrite"]) && text(v.id, 128) && text(v.generation, 128) && optional(v.overwrite, (b) => typeof b === "boolean")
+        );
+      case "imports.previewDiscard":
+        return keys(p, ["id", "revision"]) && text(p.id, 128) && uint(p.revision);
+      case "imports.previews":
+        return keys(p, ["offset", "limit"]) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= LIBRARY_PAGE_SIZE);
+      case "imports.previewPage":
+        return keys(p, ["id", "revision", "offset", "limit"]) && text(p.id, 128) && uint(p.revision) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= LIBRARY_PAGE_SIZE);
+      case "imports.previewChoices":
+        return keys(p, ["id", "revision", "kind", "offset", "limit"]) && text(p.id, 128) && uint(p.revision) && oneOf(p.kind, ["columns", "playlists"]) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= LIBRARY_PAGE_SIZE);
+      case "imports.preview":
+        return keys(p, ["id"]) && text(p.id, 128);
+      case "imports.retry":
+        return keys(p, ["id", "force", "entries"]) && text(p.id, 128) && optional(p.force, (b) => typeof b === "boolean") && optional(p.entries, (s) => strings(s, EXTERNAL_PLAYLIST_MAX_ENTRIES, 128));
+      case "imports.cancel":
+      case "imports.status":
+        return keys(p, ["id"]) && text(p.id, 128);
+      case "playlists.view":
+        return keys(p, [
+          "id",
+          "revision",
+          "versionsRevision",
+          "contentRevision",
+          "offset",
+          "limit",
+          "search",
+          "anchorId",
+          "preserveSources",
+          "includeHiddenSources",
+          "variantRow",
+          "sourceCounts",
+          "query"
+        ]) && text(p.id, 128) && uint(p.revision) && uint(p.versionsRevision) && optional(p.contentRevision, uint) && optional(p.includeHiddenSources, (b) => typeof b === "boolean") && optional(p.query, query) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= LIBRARY_PAGE_SIZE) && optional(p.search, (s) => typeof s === "string" && s.length <= 32768) && optional(p.anchorId, (s) => text(s, 128)) && optional(p.preserveSources, (b) => typeof b === "boolean") && optional(p.sourceCounts, (b) => typeof b === "boolean") && optional(p.variantRow, (s) => typeof s === "string" && /^(0|[1-9]\d{0,6})$/.test(s)) && !(p.sourceCounts === true && p.variantRow !== void 0);
+      case "identification.start":
+      case "identification.status":
+      case "identification.detail":
+      case "identification.candidates":
+      case "identification.history":
+      case "identification.restorePreview":
+      case "identification.restore":
+      case "identification.inbox":
+      case "identification.preview":
+      case "identification.decide":
+      case "identification.detach":
+        return validIdentificationPayload(name, p);
+      case "metadata.entity.sources":
+      case "metadata.entity.requery":
+      case "metadata.entity.tasks":
+      case "metadata.entity.demands":
+        return validMetadataTasksPayload(name, p);
+      case "metadata.entity.policy":
+      case "metadata.entity.detail":
+      case "metadata.entity.jobs":
+      case "metadata.entity.credits":
+      case "metadata.entity.resolve":
+      case "metadata.entity.enrich":
+      case "metadata.entity.decide":
+      case "metadata.entity.detach":
+      case "metadata.entity.override":
+      case "metadata.entity.sourcePreference":
+      case "metadata.entity.artworkOverride":
+      case "metadata.entity.cancel":
+        return validEntityMetadataPayload(name, p);
+      case "genres.browse":
+      case "genres.members":
+      case "genres.facets":
+        return validGenreBrowsePayload(name, p);
+      case "genres.tree":
+      case "genres.unmapped":
+      case "genres.evidence":
+      case "genres.edit":
+      case "genres.map":
+      case "genres.override":
+        return validGenresPayload(name, p);
+      case "ratings.detail":
+      case "ratings.targets":
+      case "ratings.history":
+      case "ratings.set":
+        return validMusicRatingsPayload(name, p);
+      case "preferences.detail":
+      case "preferences.targets":
+      case "preferences.history":
+      case "preferences.set":
+        return validMusicPreferencesPayload(name, p);
+      case "exploration.query":
+      case "exploration.lookup":
+      case "exploration.detail":
+      case "exploration.relations":
+      case "exploration.participation":
+      case "exploration.performance.save":
+      case "exploration.performance.delete":
+        return validMusicExplorationPayload(name, p);
+      case "focus.query":
+      case "focus.play.status":
+      case "focus.facets":
+      case "focus.saved.list":
+      case "focus.saved.create":
+      case "focus.saved.rename":
+      case "focus.saved.update":
+      case "focus.saved.delete":
+      case "focus.play":
+        return validMusicFocusPayload(name, p);
+      case "tags.list":
+      case "tags.entity":
+      case "tags.members":
+      case "tags.recordings":
+      case "tags.create":
+      case "tags.rename":
+      case "tags.delete":
+      case "tags.member.set":
+      case "tags.play":
+        return validMusicTagsPayload(name, p);
+      case "albums.browse":
+      case "albums.sources":
+        return validAlbumBrowsePayload(name, p);
+      case "catalog.playUnified":
+        return validUnifiedPlaybackPayload(p);
+      case "catalog.query":
+      case "catalog.detail":
+      case "catalog.sources":
+      case "catalog.status":
+      case "catalog.refresh":
+      case "catalog.cancel":
+      case "catalog.play":
+        return validCatalogPayload(name, p);
+      case "versions.catalog":
+        return keys(p, ["scope", "revision", "contentRevision", "playlistsRevision", "offset", "limit", "search", "key", "trackId"]) && optional(p.key, (s) => text(s, 8192)) && optional(p.trackId, text) && optional(p.scope, (s) => oneOf(s, ["tracks", "albums"])) && optional(p.revision, uint) && optional(p.contentRevision, uint) && optional(p.playlistsRevision, uint) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= 200) && optional(p.search, (s) => typeof s === "string" && s.length <= 4096);
+      case "playlists.favorites":
+        return keys(p, ["revision", "items"]) && uint(p.revision) && Array.isArray(p.items) && p.items.length <= 200 && p.items.every(queueInput);
+      case "versions.page":
+        return keys(p, ["revision", "scope", "kind", "offset", "limit"]) && uint(p.revision) && oneOf(p.scope, ["tracks", "albums"]) && oneOf(p.kind, ["versions", "families"]) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= 128);
+      case "versions.edit":
+        return keys(p, ["revision", "scope", "operation", "keys", "label"]) && uint(p.revision) && oneOf(p.scope, ["tracks", "albums"]) && oneOf(p.operation, [
+          "sources",
+          "family",
+          "split",
+          "reset",
+          "label",
+          "prefer-source",
+          "prefer-version",
+          "clear-preference"
+        ]) && strings(p.keys, 4e4, 8192) && Array.isArray(p.keys) && p.keys.length > 0 && typeof p.label === "string" && p.label.length <= 100;
+      case "playlists.list":
+        return keys(p, ["offset", "limit", "revision"]) && optional(p.offset, uint) && optional(p.revision, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= LIBRARY_PAGE_SIZE);
+      case "playlists.entries":
+        return keys(p, ["id", "offset", "limit", "revision"]) && text(p.id, 128) && uint(p.revision) && optional(p.offset, uint) && optional(p.limit, (n) => uint(n) && n > 0 && n <= LIBRARY_PAGE_SIZE);
+      case "playlists.edit":
+        return keys(p, ["revision", "edit"]) && uint(p.revision) && validPlaylistEdit(p.edit);
+      case "search.collections":
+        return keys(p, [
+          "kind",
+          "query",
+          "scope",
+          "providerId",
+          "limit",
+          "offset",
+          "contentRevision",
+          "playlistsRevision"
+        ]) && oneOf(p.kind, ["albums", "artists", "playlists"]) && typeof p.query === "string" && p.query.length <= 4096 && optional(p.scope, (v) => oneOf(v, ["all", "local"])) && optional(p.providerId, (v) => text(v, 128)) && !(p.providerId && p.scope === "local") && optional(p.limit, (n) => uint(n) && n >= 1 && n <= 100) && optional(p.offset, uint) && optional(p.contentRevision, uint) && optional(p.playlistsRevision, uint);
+      case "search.songs":
+        return keys(p, [
+          "query",
+          "scope",
+          "limit",
+          "offset",
+          "contentRevision",
+          "versionsRevision",
+          "networkRevision"
+        ]) && typeof p.query === "string" && p.query.length <= 4096 && optional(p.scope, (v) => oneOf(v, ["all", "local"])) && optional(p.limit, (n) => uint(n) && n >= 1 && n <= 100) && optional(p.offset, uint) && optional(p.contentRevision, uint) && optional(p.versionsRevision, uint) && optional(p.networkRevision, uint);
+      case "providers.call":
+        return keys(payload, ["providerId", "method", "args", "idempotencyKey"]) && text(payload.providerId, 128) && /^[a-z0-9][a-z0-9._:-]*$/.test(payload.providerId) && typeof payload.method === "string" && isTwilightMediaProviderMethod(payload.method) && !CORE_HOST_PROVIDER_METHODS.has(payload.method) && Array.isArray(payload.args) && payload.args.length <= 16 && optional(
+          payload.idempotencyKey,
+          (key) => text(key, 128) && /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(key)
+        );
+      case "plugins.index.list":
+      case "plugins.index.status":
+      case "plugins.index.refresh":
+      case "plugins.list":
+      case "providers.list":
+      case "extensions.experiences":
+      case "extensions.list":
+        return keys(payload, []);
+      case "extensions.preferences":
+      case "extensions.document":
+      case "plugins.index.install":
+      case "plugins.enable":
+      case "plugins.disable":
+      case "plugins.log":
+      case "plugins.showLog":
+        return keys(payload, ["id"]) && pluginId(payload.id);
+      case "plugins.uninstall":
+        return keys(payload, ["id", "removeData"]) && pluginId(payload.id) && optional(payload.removeData, (v) => typeof v === "boolean");
+      case "plugins.install":
+        return keys(payload, ["kind"]) && oneOf(payload.kind, ["package", "directory"]);
+      case "plugins.dspParameters":
+        return keys(payload, ["id", "parameters"]) && pluginId(payload.id) && record$1(payload.parameters) && Object.keys(payload.parameters).length <= 128 && Object.entries(payload.parameters).every(
+          ([key, value]) => /^[a-zA-Z0-9_.:-]{1,128}$/.test(key) && typeof value === "number" && Number.isFinite(value)
+        );
+      case "plugins.installSource":
+        return keys(p, ["path"]) && text(p.path, 32768);
+      case "extensions.resource":
+        return keys(p, ["url"]) && text(p.url, 8192) && p.url.startsWith("plugin-ui://");
+      case "extensions.stylesheet":
+        return keys(p, ["pluginId", "themeId"]) && pluginId(p.pluginId) && text(p.themeId, 128);
+      case "extensions.preferences.edit":
+        return keys(p, ["id", "value"]) && pluginId(p.id) && record$1(p.value) && isBoundedCoreJson(p.value, 64 * 1024);
+      case "extensions.document.edit":
+        return keys(p, ["id", "update"]) && pluginId(p.id) && record$1(p.update) && keys(p.update, ["revision", "value"]) && uint(p.update.revision) && record$1(p.update.value) && isBoundedCoreJson(p.update.value, 16 * 1024 * 1024);
+      case "extensions.music":
+        return keys(p, ["id", "operation", "args"]) && pluginId(p.id) && oneOf(p.operation, EXPERIENCE_MUSIC_OPERATIONS) && record$1(p.args) && isBoundedCoreJson(p.args, 16 * 1024 * 1024);
+      case "extensions.export":
+        return keys(p, ["id", "name", "content"]) && pluginId(p.id) && typeof p.name === "string" && /^[a-zA-Z0-9_.-]{1,100}\.(md|json|txt)$/.test(p.name) && typeof p.content === "string" && new TextEncoder().encode(p.content).length <= 4 * 1024 * 1024;
+      case "extensions.execute":
+        return keys(payload, ["command", "args"]) && text(payload.command, 256) && Array.isArray(payload.args) && payload.args.length <= 16;
+      case "extensions.pluginRequest":
+        return keys(p, ["id", "request"]) && pluginId(p.id) && isBoundedCoreJson(p.request, 256 * 1024);
+      case "state.snapshot":
+      case "imports.previewFile":
+      case "statistics.summary":
+      case "statistics.overview":
+      case "library.metadata":
+      case "migration.status":
+      case "scan.status":
+      case "scan.watchers":
+      case "metadata.start":
+      case "metadata.cancel":
+      case "metadata.status":
+      case "playback.pause":
+      case "playback.stop":
+      case "playback.next":
+      case "playback.previous":
+      case "lifecycle.flush":
+      case "queue.refresh":
+        return keys(p, []);
+      case "metadata.candidates":
+      case "metadata.clear":
+        return keys(p, ["id", "version"]) && text(p.id, 512) && uint(p.version);
+      case "metadata.apply":
+        return keys(p, ["token", "index"]) && text(p.token, 128) && uint(p.index) && p.index < 100;
+      case "statistics.tracks":
+        return keys(p, ["sort", "offset", "limit", "revision"]) && optional(p.sort, (sort) => oneOf(sort, ["recent", "plays", "seconds"])) && optional(p.offset, uint) && optional(p.revision, uint) && optional(p.limit, (n) => uint(n) && n >= 1 && n <= 128);
+      case "statistics.clear":
+      case "statistics.previewClear":
+        return keys(p, ["range", "revision"]) && uint(p.revision) && (p.range === null || record$1(p.range) && keys(p.range, ["startDay", "endDay"]) && typeof p.range.startDay === "string" && typeof p.range.endDay === "string" && isListeningStatsClearRange(p.range));
+      case "playback.play":
+        return keys(p, ["position"]) && optional(p.position, positive);
+      case "playback.seek":
+        return keys(p, ["position"]) && positive(p.position);
+      case "playback.volume":
+        return keys(p, ["volume"]) && positive(p.volume) && p.volume <= 1;
+      case "playback.mute":
+        return keys(p, ["muted"]) && optional(p.muted, (value) => typeof value === "boolean");
+      case "playback.abLoop":
+        return keys(p, ["revision", "occurrenceId", "action", "position"]) && uint(p.revision) && text(p.occurrenceId, MAX_QUEUE_OCCURRENCE_ID_LENGTH) && oneOf(p.action, ["a", "b", "toggle", "clear"]) && optional(p.position, positive);
+      case "playback.mode":
+        return keys(p, ["mode"]) && oneOf(p.mode, modes);
+      case "scan.start":
+        return keys(p, ["mode", "roots", "restoreExcluded"]) && oneOf(p.mode, ["startup", "full", "watch"]) && optional(p.roots, (r) => strings(r, 128) && r.length > 0) && optional(p.restoreExcluded, (v) => typeof v === "boolean");
+      case "scan.pause":
+      case "scan.resume":
+      case "scan.cancel":
+        return keys(p, ["jobId"]) && text(p.jobId, 128);
+      case "library.tracks":
+        return query(p);
+      case "library.recent.resolve":
+      case "library.collections":
+      case "library.byIds":
+      case "library.artwork":
+      case "library.paths.lookup":
+        return validCoreLibraryReadPayload(name, p, query);
+      case "playlists.catalog":
+      case "playlists.collection":
+      case "playlists.members":
+      case "playlists.membership":
+      case "playlists.state":
+      case "playlists.export":
+      case "playlists.importDocument":
+      case "playlists.flush":
+        return validCorePlaylistProjectionPayload(name, p, query);
+      case "queue.fromQuery":
+        return keys(p, ["query", "selectedId", "play", "position", "randomStart", "playMode"]) && query(p.query) && optional(p.selectedId, text) && optional(p.play, (b) => typeof b === "boolean") && optional(p.position, positive) && optional(p.randomStart, (b) => typeof b === "boolean") && optional(
+          p.playMode,
+          (mode) => oneOf(
+            mode,
+            modes.filter((m) => m !== "heart")
+          )
+        );
+      case "queue.submit":
+        if (!isBoundedCoreJson(p, 2 * 1024 * 1024)) return false;
+        switch (p.kind) {
+          case "begin":
+            return keys(p, ["kind", "selectedIndex", "position", "play"]) && uint(p.selectedIndex) && optional(p.position, positive) && optional(p.play, (v) => typeof v === "boolean");
+          case "append":
+            return keys(p, ["kind", "id", "sequence", "items"]) && text(p.id, 128) && uint(p.sequence) && p.sequence > 0 && Array.isArray(p.items) && p.items.length > 0 && p.items.length <= 200 && p.items.every(queueInput);
+          case "commit":
+            return keys(p, ["kind", "id", "sequence"]) && text(p.id, 128) && uint(p.sequence) && p.sequence > 0;
+          case "abort":
+            return keys(p, ["kind", "id"]) && text(p.id, 128);
+          default:
+            return false;
+        }
+      case "queue.page":
+        return keys(p, ["id", "revision", "offset", "limit", "search"]) && optional(p.search, (s) => typeof s === "string" && s.length <= 32768) && text(p.id, 128) && uint(p.revision) && uint(p.offset) && optional(p.limit, (n) => uint(n) && n >= 1 && n <= LIBRARY_MAX_PAGE_SIZE);
+      case "queue.select":
+        return keys(p, ["id", "revision", "index", "occurrenceId"]) && text(p.id, 128) && uint(p.revision) && uint(p.index) && text(p.occurrenceId, MAX_QUEUE_OCCURRENCE_ID_LENGTH);
+      case "queue.undo":
+        return keys(p, ["id", "revision"]) && text(p.id, 128) && uint(p.revision);
+      case "queue.edit":
+        return keys(p, ["id", "revision", "edit"]) && text(p.id, 128) && uint(p.revision) && edit(p.edit);
+      case "migration.abort":
+      case "migration.commit":
+        return keys(p, ["id"]) && text(p.id, 128);
+      case "migration.begin": {
+        const m = p.manifest;
+        return keys(p, ["id", "manifest"]) && text(p.id, 128) && record$1(m) && keys(m, ["version", "counts"]) && m.version === 1 && record$1(m.counts) && keys(m.counts, [...CORE_STATE_DOMAINS]) && CORE_STATE_DOMAINS.every(
+          (d) => uint(m.counts[d]) && Number(m.counts[d]) <= 1e5
+        );
+      }
+      case "migration.stage":
+        return keys(p, ["id", "batch", "domain", "rows"]) && text(p.id, 128) && uint(p.batch) && oneOf(p.domain, CORE_STATE_DOMAINS) && Array.isArray(p.rows) && p.rows.length >= 1 && p.rows.length <= 128 && p.rows.every(
+          (r) => record$1(r) && keys(r, ["key", "value"]) && text(r.key) && Object.hasOwn(r, "value") && r.value !== void 0
+        ) && new Set(p.rows.map((r) => r.key)).size === p.rows.length && new TextEncoder().encode(JSON.stringify(p.rows)).length <= coreStateBatchByteLimit(p.domain, p.rows.length);
+    }
+  }
+  function tagPatch(value) {
+    if (!record$1(value) || !Object.keys(value).length || !keys(value, [
+      "title",
+      "artist",
+      "album",
+      "albumArtist",
+      "track",
+      "disc",
+      "year",
+      "genre",
+      "coverBase64"
+    ]))
+      return false;
+    return Object.entries(value).every(
+      ([key, value2]) => ["track", "disc", "year"].includes(key) ? uint(value2) && value2 >= 1 && value2 <= 9999 : key === "coverBase64" ? typeof value2 === "string" && value2.length > 0 && value2.length <= 11184812 && value2.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(value2) : typeof value2 === "string" && value2.length <= 1024
+    );
+  }
+  function pluginId(value) {
+    return text(value, 128) && /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(value);
+  }
+  function validBookmarkCurrent(v) {
+    return record$1(v) && keys(v, ["trackId", "occurrenceId"]) && text(v.trackId) && (v.occurrenceId === null || text(v.occurrenceId, MAX_QUEUE_OCCURRENCE_ID_LENGTH));
+  }
+  function validPlaylistEdit(value) {
+    if (!record$1(value)) return false;
+    const v = value;
+    const id2 = () => text(v.id, 128);
+    const ids = () => strings(v.ids, LIBRARY_PAGE_SIZE, 128);
+    const tracks2 = () => Array.isArray(v.tracks) && v.tracks.length <= LIBRARY_PAGE_SIZE && v.tracks.every(
+      (t) => record$1(t) && text(t.id, 128) && typeof t.title === "string" && typeof t.artist === "string" && typeof t.album === "string" && typeof t.filePath === "string"
+    );
+    switch (v.kind) {
+      case "importCreate":
+        return keys(v, ["kind", "document"]) && validImportDocument(v.document);
+      case "importRefresh":
+        return keys(v, ["kind", "id", "document", "overwrite"]) && id2() && validImportDocument(v.document) && optional(v.overwrite, (b) => typeof b === "boolean");
+      case "importBind":
+        return keys(v, ["kind", "id", "entryId", "track"]) && id2() && text(v.entryId, 128) && (v.track === null || record$1(v.track) && text(v.track.id, 128) && typeof v.track.title === "string" && typeof v.track.artist === "string" && typeof v.track.album === "string" && typeof v.track.filePath === "string");
+      case "importRemove":
+        return keys(v, ["kind", "id", "entryIds"]) && id2() && strings(v.entryIds, LIBRARY_PAGE_SIZE, 128);
+      case "create":
+        return keys(v, ["kind", "name", "aggregate"]) && text(v.name, 80) && optional(v.aggregate, (b) => typeof b === "boolean");
+      case "rename":
+      case "copy":
+        return keys(v, ["kind", "id", "name"]) && id2() && text(v.name, 80);
+      case "delete":
+        return keys(v, ["kind", "id"]) && id2();
+      case "cover":
+        return keys(v, ["kind", "id", "cover"]) && id2() && (v.cover === null || text(v.cover, 8 * 1024 * 1024));
+      case "pin":
+        return keys(v, ["kind", "id", "pinned"]) && id2() && typeof v.pinned === "boolean";
+      case "hiddenSources":
+        return keys(v, ["kind", "id", "sources"]) && id2() && strings(v.sources, 128, 128);
+      case "variant":
+        return keys(v, ["kind", "id", "anchorId", "source"]) && id2() && text(v.anchorId, 128) && (v.source === null || text(v.source, 128));
+      case "add":
+        return keys(v, ["kind", "id", "tracks"]) && id2() && tracks2();
+      case "remove":
+        return keys(v, ["kind", "id", "ids"]) && id2() && ids();
+      case "reorder":
+        return keys(v, ["kind", "id", "ids", "target"]) && id2() && ids() && uint(v.target);
+      case "move":
+        return keys(v, ["kind", "id", "ids", "targetId"]) && id2() && ids() && text(v.targetId, 128);
+      case "favorite":
+        return keys(v, ["kind", "tracks", "favorite"]) && tracks2() && typeof v.favorite === "boolean";
+      default:
+        return false;
+    }
+  }
+  function validImportDocument(value) {
+    if (!record$1(value) || !text(value.name, 80) || !Array.isArray(value.songs) || value.songs.length > EXTERNAL_PLAYLIST_MAX_ENTRIES || !record$1(value.source) || !oneOf(value.source.kind, ["file", "platform"]) || typeof value.source.label !== "string" || typeof value.complete !== "boolean")
+      return false;
+    return value.songs.every(
+      (song) => record$1(song) && ["title", "artist", "album", "isrc", "platformId", "unavailableReason"].every(
+        (k) => optional(song[k], (s) => typeof s === "string" && s.length <= 32768)
+      ) && optional(song.duration, positive) && optional(song.locations, (s) => strings(s, 200))
+    );
+  }
+  function networkProfile(value, patch) {
+    if (!record$1(value) || !keys(value, [
+      "protocol",
+      "name",
+      "host",
+      "port",
+      "rootPath",
+      "webdavScheme",
+      "username",
+      "keyPath",
+      "auth",
+      "readOnly",
+      "bookmarks"
+    ]) || !isBoundedCoreJson(value, 16 * 1024))
+      return false;
+    const check = (key, valid) => patch && value[key] === void 0 || valid(value[key]);
+    if (!check(
+      "protocol",
+      (v) => oneOf(v, ["webdav", "ftp", "ftps", "sftp", "scp", "smb", "nfs", "dlna"])
+    ) || !check("name", (v) => text(v, 64)) || !check("host", (v) => text(v, 260)) || !check("rootPath", (v) => text(v, 4096)))
+      return false;
+    if (!optional(value.port, (v) => v === null || uint(v) && Number(v) > 0 && Number(v) <= 65535) || !optional(value.webdavScheme, (v) => oneOf(v, ["http", "https"])) || !optional(value.username, (v) => typeof v === "string" && v.length <= 128) || !optional(value.keyPath, (v) => text(v, 512)) || !optional(value.readOnly, (v) => typeof v === "boolean") || !optional(value.bookmarks, (v) => strings(v, 50, 4096)))
+      return false;
+    const auth = value.auth;
+    if (patch && auth === void 0) return true;
+    if (!record$1(auth)) return false;
+    return auth.kind === "anonymous" ? keys(auth, ["kind"]) : auth.kind === "password" ? keys(auth, ["kind", "password"]) && typeof auth.password === "string" && auth.password.length <= 512 : auth.kind === "privateKey" && keys(auth, ["kind", "keyPath", "passphrase"]) && text(auth.keyPath, 512) && optional(auth.passphrase, (v) => typeof v === "string" && v.length <= 512);
+  }
+  const CORE_PROTOCOL_VERSION = 1;
+  const OPERATIONS = {
+    "opra.search": { kind: "query", permission: "settings:read" },
+    "opra.profile": { kind: "query", permission: "settings:read" },
+    "opra.status": { kind: "query", permission: "settings:read" },
+    "opra.refresh": { kind: "command", permission: "settings:write" },
+    "player.presentation": { kind: "query", permission: "playback:read" },
+    "player.lyrics": { kind: "query", permission: "playback:read" },
+    "playback.diagnostics": { kind: "query", permission: "settings:read" },
+    "audio.diagnostics": { kind: "query", permission: "settings:read" },
+    "playlists.submit": { kind: "command", permission: "library:write" },
+    "playback.control": { kind: "command", permission: "playback:write" },
+    "playback.favorite": { kind: "command", permission: "playback:write" },
+    "queue.locate": { kind: "query", permission: "playback:read" },
+    "queue.insert": { kind: "command", permission: "playback:write" },
+    "playlists.saveQueue": { kind: "command", permission: "library:write" },
+    "playlists.addQueueEntries": { kind: "command", permission: "library:write" },
+    "themes.list": { kind: "query", permission: "settings:read" },
+    "themes.bootstrap": { kind: "query", permission: "settings:read" },
+    "themes.edit": { kind: "command", permission: "settings:write" },
+    "themes.import": { kind: "command", permission: "settings:write" },
+    "themes.export": { kind: "command", permission: "settings:read" },
+    "themes.importAsset": { kind: "command", permission: "settings:write" },
+    "themes.validateAssets": { kind: "command", permission: "settings:read" },
+    "themes.copyAssets": { kind: "command", permission: "settings:write" },
+    "themes.reconcile": { kind: "command", permission: "settings:write" },
+    "visualization.subscribe": { kind: "command", permission: "playback:read" },
+    "visualization.unsubscribe": { kind: "command", permission: "playback:read" },
+    "automix.install.start": { kind: "command", permission: "settings:write" },
+    "automix.install.cancel": { kind: "command", permission: "settings:write" },
+    "automix.install.status": { kind: "query", permission: "settings:read" },
+    "settings.restore": { kind: "command", permission: "settings:write" },
+    "settings.backup": { kind: "query", permission: "settings:read" },
+    "ncm.cloud.chooseUploadFiles": { kind: "command", permission: "providers:call" },
+    "ncm.cloud.upload": { kind: "command", permission: "providers:call" },
+    "ncm.cloud.download": { kind: "command", permission: "downloads:write" },
+    "ncm.cloud.cancel": { kind: "command", permission: "downloads:write" },
+    "ncm.cloud.state": { kind: "query", permission: "downloads:read" },
+    "ncm.cloud.page": { kind: "query", permission: "downloads:read" },
+    "backup.export": { kind: "command", permission: "settings:read" },
+    "library.inbox.refresh": { kind: "command", permission: "library:read" },
+    "library.inbox.mark": { kind: "command", permission: "library:write" },
+    "library.inbox.page": { kind: "query", permission: "library:read" },
+    "library.health.start": { kind: "command", permission: "library:read" },
+    "library.health.repair": { kind: "command", permission: "library:write" },
+    "library.health.status": { kind: "query", permission: "library:read" },
+    "library.health.page": { kind: "query", permission: "library:read" },
+    "library.loudness.prepare": { kind: "command", permission: "library:read" },
+    "library.loudness.start": { kind: "command", permission: "library:read" },
+    "library.loudness.cancel": { kind: "command", permission: "library:read" },
+    "library.loudness.clear": { kind: "command", permission: "settings:write" },
+    "library.loudness.state": { kind: "query", permission: "library:read" },
+    "library.loudness.page": { kind: "query", permission: "library:read" },
+    "library.loudness.result": { kind: "query", permission: "library:read" },
+    "analysis.request": { kind: "command", permission: "library:write" },
+    "analysis.cache.clear": { kind: "command", permission: "settings:write" },
+    "analysis.cache.size": { kind: "query", permission: "settings:read" },
+    "analysis.loudness.status": { kind: "query", permission: "settings:read" },
+    "backup.preview": { kind: "command", permission: "settings:write" },
+    "backup.recover": { kind: "command", permission: "settings:write" },
+    "backup.repreview": { kind: "command", permission: "settings:write" },
+    "backup.chooseFolder": { kind: "command", permission: "settings:write" },
+    "backup.stage": { kind: "command", permission: "settings:write" },
+    "library.duplicates.start": { kind: "command", permission: "library:read" },
+    "library.duplicates.cancel": { kind: "command", permission: "library:read" },
+    "library.duplicates.status": { kind: "query", permission: "library:read" },
+    "library.duplicates.groups": { kind: "query", permission: "library:read" },
+    "library.duplicates.items": { kind: "query", permission: "library:read" },
+    "library.duplicates.unavailable": { kind: "query", permission: "library:read" },
+    "playlists.repair": { kind: "command", permission: "library:write" },
+    "playlists.repair.status": { kind: "query", permission: "library:read" },
+    "library.selection.open": { kind: "command", permission: "library:read" },
+    "library.selection.close": { kind: "command", permission: "library:read" },
+    "library.selection.page": { kind: "query", permission: "library:read" },
+    "library.remove": { kind: "command", permission: "library:write" },
+    "library.reset": { kind: "command", permission: "library:write" },
+    "library.exclusions.clear": { kind: "command", permission: "library:write" },
+    "library.tags.write": { kind: "command", permission: "library:write" },
+    "library.tags.restore": { kind: "command", permission: "library:write" },
+    "settings.state": { kind: "query", permission: "settings:read" },
+    "sleep.state": { kind: "query", permission: "playback:read" },
+    "automix.capabilities": { kind: "query", permission: "settings:read" },
+    "sleep.configure": { kind: "command", permission: "playback:write" },
+    "sleep.cancel": { kind: "command", permission: "playback:write" },
+    "settings.edit": { kind: "command", permission: "settings:write" },
+    "cast.state": { kind: "query", permission: "playback:read" },
+    "remote.status": { kind: "query", permission: "settings:read" },
+    "remote.setEnabled": { kind: "command", permission: "settings:write" },
+    "remote.rotatePin": { kind: "command", permission: "settings:write" },
+    "cast.devices": { kind: "query", permission: "playback:read" },
+    "cast.discover": { kind: "command", permission: "playback:write" },
+    "cast.start": { kind: "command", permission: "playback:write" },
+    "cast.end": { kind: "command", permission: "playback:write" },
+    "audio.outputTest": { kind: "query", permission: "settings:read" },
+    "audio.outputTest.play": { kind: "command", permission: "settings:write" },
+    "audio.outputTest.stop": { kind: "command", permission: "settings:write" },
+    "audio.audition": { kind: "query", permission: "settings:read" },
+    "audio.audition.measure": { kind: "command", permission: "settings:write" },
+    "audio.audition.select": { kind: "command", permission: "settings:write" },
+    "audio.audition.end": { kind: "command", permission: "settings:write" },
+    "audio.dsp": { kind: "query", permission: "settings:read" },
+    "audio.dsp.status": { kind: "query", permission: "settings:read" },
+    "audio.dsp.assets": { kind: "query", permission: "settings:read" },
+    "audio.dsp.correction": { kind: "query", permission: "settings:read" },
+    "audio.vst3": { kind: "query", permission: "settings:read" },
+    "audio.vst3.parameters": { kind: "query", permission: "settings:read" },
+    "audio.dsp.edit": { kind: "command", permission: "settings:write" },
+    "audio.dsp.import": { kind: "command", permission: "settings:write" },
+    "audio.dsp.export": { kind: "command", permission: "settings:write" },
+    "audio.dsp.assetRemove": { kind: "command", permission: "settings:write" },
+    "audio.vst3.edit": { kind: "command", permission: "settings:write" },
+    "audio.vst3.chooseDirectory": { kind: "command", permission: "settings:write" },
+    "audio.output": { kind: "query", permission: "settings:read" },
+    "audio.profiles": { kind: "query", permission: "settings:read" },
+    "audio.output.edit": { kind: "command", permission: "settings:write" },
+    "audio.profiles.edit": { kind: "command", permission: "settings:write" },
+    "cache.info": { kind: "query", permission: "settings:read" },
+    "cache.clear": { kind: "command", permission: "settings:write" },
+    "search.songs": { kind: "query", permission: "library:read" },
+    "search.collections": { kind: "query", permission: "library:read" },
+    "downloads.state": { kind: "query", permission: "downloads:read" },
+    "downloads.page": { kind: "query", permission: "downloads:read" },
+    "downloads.create": { kind: "command", permission: "downloads:write" },
+    "downloads.cancel": { kind: "command", permission: "downloads:write" },
+    "downloads.retry": { kind: "command", permission: "downloads:write" },
+    "downloads.result": { kind: "command", permission: "downloads:write" },
+    "downloads.reveal": { kind: "command", permission: "downloads:read" },
+    "downloads.indexed": { kind: "query", permission: "downloads:read" },
+    "downloads.play": { kind: "command", permission: "playback:write" },
+    "network.state": { kind: "query", permission: "library:read" },
+    "network.profiles": { kind: "query", permission: "library:write" },
+    "network.directory": { kind: "query", permission: "library:read" },
+    "network.library": { kind: "query", permission: "library:read" },
+    "network.test": { kind: "query", permission: "library:write" },
+    "network.cover": { kind: "query", permission: "library:read" },
+    "network.cacheInfo": { kind: "query", permission: "library:read" },
+    "network.clearCache": { kind: "command", permission: "library:write" },
+    "liked.play": { kind: "command", permission: "playback:write" },
+    "heart.refill": { kind: "command", permission: "playback:write" },
+    "personalized.start": { kind: "command", permission: "playback:write" },
+    "personalized.refill": { kind: "command", permission: "playback:write" },
+    "network.profiles.edit": { kind: "command", permission: "library:write" },
+    "network.job": { kind: "command", permission: "library:write" },
+    "network.removeEntry": { kind: "command", permission: "library:write" },
+    "network.play": { kind: "command", permission: "playback:write" },
+    "streams.state": { kind: "query", permission: "library:read" },
+    "radio.stations": { kind: "query", permission: "library:read" },
+    "radio.directory": { kind: "query", permission: "library:read" },
+    "radio.edit": { kind: "command", permission: "library:write" },
+    "podcasts.subscriptions": { kind: "query", permission: "library:read" },
+    "podcasts.episodes": { kind: "query", permission: "library:read" },
+    "podcasts.subscribe": { kind: "command", permission: "library:write" },
+    "podcasts.edit": { kind: "command", permission: "library:write" },
+    "podcasts.refresh": { kind: "command", permission: "library:write" },
+    "podcasts.defaultRate": { kind: "command", permission: "library:write" },
+    "streams.play": { kind: "command", permission: "playback:write" },
+    "playback.rate": { kind: "command", permission: "playback:write" },
+    "workspace.edit": { kind: "command", permission: "library:write" },
+    "workspace.restore": { kind: "command", permission: "playback:write" },
+    "workspace.state": { kind: "query", permission: "library:read" },
+    "workspace.sessions": { kind: "query", permission: "library:read" },
+    "workspace.history": { kind: "query", permission: "library:read" },
+    "lyrics.edit": { kind: "command", permission: "library:write" },
+    "lyrics.reload": { kind: "command", permission: "library:write" },
+    "lyrics.importDraft": { kind: "command", permission: "library:write" },
+    "lyrics.exportDraft": { kind: "command", permission: "library:write" },
+    "lyrics.state": { kind: "query", permission: "library:read" },
+    "lyrics.current": { kind: "query", permission: "library:read" },
+    "lyrics.entry": { kind: "query", permission: "library:read" },
+    "lyrics.search": { kind: "query", permission: "library:read" },
+    "bookmarks.edit": { kind: "command", permission: "library:write" },
+    "bookmarks.seek": { kind: "command", permission: "playback:write" },
+    "bookmarks.state": { kind: "query", permission: "library:read" },
+    "bookmarks.page": { kind: "query", permission: "library:read" },
+    "imports.previewStart": { kind: "command", permission: "library:write" },
+    "imports.previewFile": { kind: "command", permission: "library:write" },
+    "imports.previewConfigure": { kind: "command", permission: "library:write" },
+    "imports.previewBind": { kind: "command", permission: "library:write" },
+    "imports.bind": { kind: "command", permission: "library:write" },
+    "playlists.replaceSource": { kind: "command", permission: "library:write" },
+    "playlists.rematch": { kind: "command", permission: "library:write" },
+    "library.reveal": { kind: "command", permission: "library:read" },
+    "imports.previewSave": { kind: "command", permission: "library:write" },
+    "imports.previewDiscard": { kind: "command", permission: "library:write" },
+    "imports.previews": { kind: "query", permission: "library:read" },
+    "imports.preview": { kind: "query", permission: "library:read" },
+    "imports.previewPage": { kind: "query", permission: "library:read" },
+    "imports.previewChoices": { kind: "query", permission: "library:read" },
+    "imports.retry": { kind: "command", permission: "library:write" },
+    "imports.cancel": { kind: "command", permission: "library:write" },
+    "imports.status": { kind: "query", permission: "library:read" },
+    "versions.edit": { kind: "command", permission: "library:write" },
+    "identification.history": { kind: "query", permission: "library:read" },
+    "identification.restorePreview": { kind: "query", permission: "library:read" },
+    "identification.restore": { kind: "command", permission: "library:write" },
+    "metadata.entity.sources": { kind: "query", permission: "library:read" },
+    "metadata.entity.requery": { kind: "command", permission: "library:write" },
+    "metadata.entity.resolve": { kind: "command", permission: "library:write" },
+    "identification.start": { kind: "command", permission: "library:write" },
+    "identification.status": { kind: "query", permission: "library:read" },
+    "identification.decide": { kind: "command", permission: "library:write" },
+    "identification.detach": { kind: "command", permission: "library:write" },
+    "identification.detail": { kind: "query", permission: "library:read" },
+    "identification.candidates": { kind: "query", permission: "library:read" },
+    "identification.inbox": { kind: "query", permission: "library:read" },
+    "identification.preview": { kind: "query", permission: "library:read" },
+    "metadata.entity.enrich": { kind: "command", permission: "library:write" },
+    "metadata.entity.decide": { kind: "command", permission: "library:write" },
+    "metadata.entity.detach": { kind: "command", permission: "library:write" },
+    "metadata.entity.override": { kind: "command", permission: "library:write" },
+    "metadata.entity.sourcePreference": { kind: "command", permission: "library:write" },
+    "metadata.entity.artworkOverride": { kind: "command", permission: "library:write" },
+    "metadata.entity.cancel": { kind: "command", permission: "library:write" },
+    "metadata.entity.policy": { kind: "query", permission: "library:read" },
+    "metadata.entity.detail": { kind: "query", permission: "library:read" },
+    "metadata.entity.jobs": { kind: "query", permission: "library:read" },
+    "metadata.entity.tasks": { kind: "query", permission: "library:read" },
+    "metadata.entity.demands": { kind: "query", permission: "library:read" },
+    "metadata.entity.credits": { kind: "query", permission: "library:read" },
+    "catalog.refresh": { kind: "command", permission: "library:write" },
+    "catalog.cancel": { kind: "command", permission: "library:write" },
+    "catalog.play": { kind: "command", permission: "playback:write" },
+    "catalog.playUnified": { kind: "command", permission: "playback:write" },
+    "albums.browse": { kind: "query", permission: "library:read" },
+    "ratings.detail": { kind: "query", permission: "library:read" },
+    "ratings.targets": { kind: "query", permission: "library:read" },
+    "ratings.history": { kind: "query", permission: "library:read" },
+    "ratings.set": { kind: "command", permission: "library:write" },
+    "preferences.detail": { kind: "query", permission: "library:read" },
+    "preferences.targets": { kind: "query", permission: "library:read" },
+    "preferences.history": { kind: "query", permission: "library:read" },
+    "preferences.set": { kind: "command", permission: "library:write" },
+    "tags.list": { kind: "query", permission: "library:read" },
+    "tags.entity": { kind: "query", permission: "library:read" },
+    "tags.members": { kind: "query", permission: "library:read" },
+    "tags.recordings": { kind: "query", permission: "library:read" },
+    "tags.create": { kind: "command", permission: "library:write" },
+    "tags.rename": { kind: "command", permission: "library:write" },
+    "tags.delete": { kind: "command", permission: "library:write" },
+    "tags.member.set": { kind: "command", permission: "library:write" },
+    "tags.play": { kind: "command", permission: "playback:write" },
+    "focus.query": { kind: "query", permission: "library:read" },
+    "exploration.query": { kind: "query", permission: "library:read" },
+    "exploration.lookup": { kind: "query", permission: "library:read" },
+    "exploration.detail": { kind: "query", permission: "library:read" },
+    "exploration.relations": { kind: "query", permission: "library:read" },
+    "exploration.participation": { kind: "query", permission: "library:read" },
+    "exploration.performance.save": { kind: "command", permission: "library:write" },
+    "exploration.performance.delete": { kind: "command", permission: "library:write" },
+    "focus.play.status": { kind: "query", permission: "playback:read" },
+    "focus.facets": { kind: "query", permission: "library:read" },
+    "focus.saved.list": { kind: "query", permission: "library:read" },
+    "focus.saved.create": { kind: "command", permission: "library:write" },
+    "focus.saved.rename": { kind: "command", permission: "library:write" },
+    "focus.saved.update": { kind: "command", permission: "library:write" },
+    "focus.saved.delete": { kind: "command", permission: "library:write" },
+    "focus.play": { kind: "command", permission: "playback:write" },
+    "albums.sources": { kind: "query", permission: "library:read" },
+    "genres.tree": { kind: "query", permission: "library:read" },
+    "genres.browse": { kind: "query", permission: "library:read" },
+    "genres.members": { kind: "query", permission: "library:read" },
+    "genres.facets": { kind: "query", permission: "library:read" },
+    "genres.unmapped": { kind: "query", permission: "library:read" },
+    "genres.evidence": { kind: "query", permission: "library:read" },
+    "genres.edit": { kind: "command", permission: "library:write" },
+    "genres.map": { kind: "command", permission: "library:write" },
+    "genres.override": { kind: "command", permission: "library:write" },
+    "catalog.query": { kind: "query", permission: "library:read" },
+    "catalog.detail": { kind: "query", permission: "library:read" },
+    "catalog.sources": { kind: "query", permission: "library:read" },
+    "catalog.status": { kind: "query", permission: "library:read" },
+    "versions.page": { kind: "query", permission: "library:read" },
+    "versions.catalog": { kind: "query", permission: "library:read" },
+    "playlists.edit": { kind: "command", permission: "library:write" },
+    "playlists.list": { kind: "query", permission: "library:read" },
+    "playlists.entries": { kind: "query", permission: "library:read" },
+    "playlists.view": { kind: "query", permission: "library:read" },
+    "providers.call": { kind: "command", permission: "providers:call" },
+    "plugins.list": { kind: "query", permission: "plugins:read" },
+    "plugins.index.list": { kind: "query", permission: "plugins:read" },
+    "plugins.index.status": { kind: "query", permission: "plugins:read" },
+    "plugins.index.refresh": { kind: "command", permission: "plugins:manage" },
+    "plugins.index.install": { kind: "command", permission: "plugins:manage" },
+    "providers.list": { kind: "query", permission: "plugins:read" },
+    "extensions.list": { kind: "query", permission: "plugins:read" },
+    "extensions.experiences": { kind: "query", permission: "plugins:read" },
+    "extensions.resource": { kind: "query", permission: "plugins:resources" },
+    "plugins.installSource": { kind: "command", permission: "plugins:resources" },
+    "extensions.stylesheet": { kind: "query", permission: "plugins:read" },
+    "extensions.preferences": { kind: "query", permission: "plugins:read" },
+    "extensions.preferences.edit": { kind: "command", permission: "extensions:execute" },
+    "extensions.document": { kind: "query", permission: "library:read" },
+    "extensions.document.edit": { kind: "command", permission: "library:write" },
+    "extensions.music": { kind: "command", permission: "library:write" },
+    "extensions.export": { kind: "command", permission: "library:read" },
+    "extensions.pluginRequest": { kind: "command", permission: "extensions:execute" },
+    "plugins.log": { kind: "query", permission: "plugins:manage" },
+    "plugins.enable": { kind: "command", permission: "plugins:manage" },
+    "plugins.disable": { kind: "command", permission: "plugins:manage" },
+    "plugins.uninstall": { kind: "command", permission: "plugins:manage" },
+    "plugins.install": { kind: "command", permission: "plugins:manage" },
+    "plugins.showLog": { kind: "command", permission: "plugins:manage" },
+    "plugins.dspParameters": { kind: "command", permission: "plugins:manage" },
+    "extensions.execute": { kind: "command", permission: "extensions:execute" },
+    "statistics.summary": { kind: "query", permission: "statistics:read" },
+    "statistics.overview": { kind: "query", permission: "statistics:read" },
+    "statistics.previewClear": { kind: "query", permission: "statistics:read" },
+    "statistics.tracks": { kind: "query", permission: "statistics:read" },
+    "statistics.clear": { kind: "command", permission: "statistics:write" },
+    "scan.start": { kind: "command", permission: "library:write" },
+    "metadata.start": { kind: "command", permission: "library:write" },
+    "metadata.cancel": { kind: "command", permission: "library:write" },
+    "metadata.apply": { kind: "command", permission: "library:write" },
+    "metadata.clear": { kind: "command", permission: "library:write" },
+    "metadata.status": { kind: "query", permission: "library:read" },
+    "metadata.candidates": { kind: "query", permission: "library:read" },
+    "scan.pause": { kind: "command", permission: "library:write" },
+    "scan.resume": { kind: "command", permission: "library:write" },
+    "scan.cancel": { kind: "command", permission: "library:write" },
+    "scan.status": { kind: "query", permission: "library:read" },
+    "scan.watchers": { kind: "query", permission: "library:read" },
+    "state.snapshot": { kind: "query", permission: "playback:read" },
+    "library.metadata": { kind: "query", permission: "library:read" },
+    "library.recent.resolve": { kind: "query", permission: "library:read" },
+    "library.tracks": { kind: "query", permission: "library:read" },
+    "library.collections": { kind: "query", permission: "library:read" },
+    "library.byIds": { kind: "query", permission: "library:read" },
+    "library.artwork": { kind: "query", permission: "library:read" },
+    "library.paths.lookup": { kind: "query", permission: "library:read" },
+    "playlists.catalog": { kind: "query", permission: "library:read" },
+    "playlists.collection": { kind: "query", permission: "library:read" },
+    "playlists.members": { kind: "query", permission: "library:read" },
+    "playlists.membership": { kind: "query", permission: "library:read" },
+    "playlists.favorites": { kind: "query", permission: "library:read" },
+    "playlists.state": { kind: "query", permission: "library:read" },
+    "playlists.export": { kind: "query", permission: "library:read" },
+    "playlists.importDocument": { kind: "command", permission: "library:write" },
+    "playlists.flush": { kind: "command", permission: "library:write" },
+    "playback.play": { kind: "command", permission: "playback:write" },
+    "playback.pause": { kind: "command", permission: "playback:write" },
+    "playback.stop": { kind: "command", permission: "playback:write" },
+    "playback.seek": { kind: "command", permission: "playback:write" },
+    "playback.next": { kind: "command", permission: "playback:write" },
+    "playback.previous": { kind: "command", permission: "playback:write" },
+    "playback.volume": { kind: "command", permission: "playback:write" },
+    "playback.mute": { kind: "command", permission: "playback:write" },
+    "playback.abLoop": { kind: "command", permission: "playback:write" },
+    "playback.mode": { kind: "command", permission: "playback:write" },
+    "queue.select": { kind: "command", permission: "playback:write" },
+    "queue.fromQuery": { kind: "command", permission: "playback:write" },
+    "queue.submit": { kind: "command", permission: "playback:write" },
+    "queue.edit": { kind: "command", permission: "playback:write" },
+    "queue.undo": { kind: "command", permission: "playback:write" },
+    "queue.refresh": { kind: "command", permission: "playback:write" },
+    "queue.page": { kind: "query", permission: "playback:read" },
+    "migration.status": { kind: "query", permission: "migration:write" },
+    "migration.begin": { kind: "command", permission: "migration:write" },
+    "migration.stage": { kind: "command", permission: "migration:write" },
+    "migration.commit": { kind: "command", permission: "migration:write" },
+    "migration.abort": { kind: "command", permission: "migration:write" },
+    "lifecycle.flush": { kind: "command", permission: "playback:write" }
+  };
+  function coreOperation(value) {
+    return typeof value === "string" && Object.hasOwn(OPERATIONS, value) ? OPERATIONS[value] : null;
+  }
+  function isCoreRequest(value) {
+    if (!value || typeof value !== "object") return false;
+    const r = value;
+    const operation = coreOperation(r.name);
+    return !!operation && operation.kind === r.kind && Object.keys(r).every(
+      (key) => ["kind", "name", "payload", "requestId", "epoch"].includes(key)
+    ) && typeof r.requestId === "string" && r.requestId.length > 0 && r.requestId.length <= 128 && typeof r.epoch === "string" && r.epoch.length > 0 && r.epoch.length <= 128 && validCorePayload(r.name, r.payload);
+  }
+  class CoreApplication {
+    clients = /* @__PURE__ */ new Map();
+    phase = "starting";
+    sequence = 0;
+    pluginsRevision = 0;
+    pluginsChanged = () => {
+      this.pluginsRevision++;
+      this.changed();
+    };
+    pluginNotice = (notice) => {
+      for (const client of this.clients.values()) {
+        if (client.identity.permissions.includes("plugins:read"))
+          client.send({ kind: "plugin-notice", epoch: this.dependencies.epoch, notice });
+      }
+    };
+    pluginExperienceEvent = (event) => {
+      for (const client of this.clients.values()) {
+        if (client.identity.permissions.includes("extensions:execute"))
+          client.send({
+            kind: "plugin-experience",
+            epoch: this.dependencies.epoch,
+            pluginId: event.pluginId,
+            event: event.event,
+            value: event.value
+          });
+      }
+    };
+    migrationRequired = true;
+    active = 0;
+    initialized = false;
+    readiness = null;
+    shuttingDown = false;
+    work = /* @__PURE__ */ new Set();
+    dependencies;
+    constructor(dependencies) {
+      this.dependencies = dependencies;
+      dependencies.plugins?.on("changed", this.pluginsChanged);
+      dependencies.plugins?.on("notice", this.pluginNotice);
+      dependencies.plugins?.on("experience-event", this.pluginExperienceEvent);
+    }
+    async initialize() {
+      this.migrationRequired = !(await this.dependencies.state.coreStateStatus()).complete;
+      await this.dependencies.bookmarks?.initialize();
+      await this.dependencies.lyrics?.initialize();
+      await this.dependencies.workspace?.initialize();
+      await this.dependencies.streams?.initialize();
+      await this.dependencies.network?.initialize();
+      await this.dependencies.dsp?.initialize();
+      await this.dependencies.playback.initialize();
+      await this.dependencies.visualization?.initialize();
+      await this.dependencies.scan.initialize();
+      await this.dependencies.libraryMaintenance?.initialize();
+      this.initialized = true;
+      await this.checkReady();
+    }
+    async checkReady() {
+      if (!this.initialized || this.migrationRequired || this.phase === "ready") return;
+      return this.readiness ??= (async () => {
+        await this.dependencies.personalBackup?.initialize();
+        await this.dependencies.statistics.initialize();
+        if (this.shuttingDown) return;
+        await this.dependencies.recordingVersions?.initialize();
+        await this.dependencies.inbox?.initialize();
+        await this.dependencies.playlists?.initialize();
+        await this.dependencies.plugins?.initialize();
+        await this.dependencies.themes?.reconcile();
+        await this.dependencies.settings?.initialize();
+        await this.dependencies.dsp?.activate();
+        this.dependencies.autoMix?.activate();
+        this.dependencies.analysis?.activate();
+        this.dependencies.sleepTimer?.activate();
+        await this.dependencies.streams?.activate();
+        if (this.shuttingDown || this.phase === "stopped") return;
+        this.phase = "ready";
+        this.dependencies.scan.activate();
+        this.dependencies.libraryBackground?.activate();
+        this.dependencies.catalog?.activate();
+        this.dependencies.genres?.activate();
+        this.dependencies.metadata?.activate();
+        this.dependencies.lyrics?.activate();
+        this.dependencies.imports?.activate();
+        this.changed();
+        this.dependencies.ready();
+        await this.dependencies.plugins?.broadcastEvent("app:ready", {});
+      })().finally(() => {
+        this.readiness = null;
+      });
+    }
+    snapshot(identity) {
+      const catalogRevisions = [
+        this.dependencies.catalog?.getRevision(),
+        this.dependencies.exploration?.getCatalogRevision()
+      ].filter((revision2) => revision2 != null);
+      return structuredClone({
+        libraryRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.libraryRevision?.() ?? null : null,
+        catalogRevision: !identity || identity.permissions.includes("library:read") ? catalogRevisions.length ? Math.max(...catalogRevisions) : null : null,
+        genresRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.genres?.getRevision() ?? null : null,
+        classificationMetadataRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.genres?.getMetadataRevision() ?? null : null,
+        ratingsRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.ratings?.getRevision() ?? null : null,
+        preferencesRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.preferences?.getRevision() ?? null : null,
+        explorationRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.exploration?.getRevision() ?? null : null,
+        focusRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.focus?.getRevision() ?? null : null,
+        focusHistoryRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.focus?.getHistoryRevision() ?? null : null,
+        tagsRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.tags?.getRevision() ?? null : null,
+        tagsLinkRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.tags?.getLinkRevision() ?? null : null,
+        entityMetadataRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.metadata?.entities?.getRevision() ?? null : null,
+        pluginsRevision: !identity || identity.permissions.includes("plugins:read") ? this.pluginsRevision : null,
+        presentationRevision: !identity || identity.permissions.includes("playback:read") ? this.dependencies.presentation?.getRevision() ?? null : null,
+        modelPack: !identity || identity.permissions.includes("settings:read") ? this.dependencies.modelPack?.state() ?? null : null,
+        cloudTransfers: !identity || identity.permissions.includes("downloads:read") ? this.dependencies.cloudTransfers?.state() ?? null : null,
+        inbox: !identity || identity.permissions.includes("library:read") ? this.dependencies.inbox?.state() ?? null : null,
+        libraryLoudness: !identity || identity.permissions.includes("library:read") ? this.dependencies.libraryLoudness?.state() ?? null : null,
+        loudness: !identity || identity.permissions.includes("settings:read") ? this.dependencies.analysis?.status() ?? null : null,
+        protocolVersion: CORE_PROTOCOL_VERSION,
+        epoch: this.dependencies.epoch,
+        sequence: this.sequence,
+        phase: this.phase,
+        migrationRequired: this.migrationRequired,
+        audioRevision: !identity || identity.permissions.includes("settings:read") ? this.dependencies.output?.getRevision() ?? null : null,
+        settingsRevision: !identity || identity.permissions.includes("settings:read") ? this.dependencies.settings?.getRevision() ?? null : null,
+        personalBackupRecovery: !identity || identity.permissions.includes("settings:read") ? this.dependencies.personalBackup?.recoveryAvailable() ?? false : null,
+        sleepTimer: !identity || identity.permissions.includes("playback:read") ? this.dependencies.sleepTimer?.state() ?? null : null,
+        downloads: !identity || identity.permissions.includes("downloads:read") ? this.dependencies.downloads?.state() ?? null : null,
+        playlistsRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.playlists?.getRevision() ?? null : null,
+        versionsRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.recordingVersions?.getRevision() ?? null : null,
+        bookmarksRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.bookmarks?.getRevision() ?? null : null,
+        lyricsRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.lyrics?.getRevision() ?? null : null,
+        lyricsContentRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.lyrics?.getContentRevision() ?? null : null,
+        statisticsRevision: !identity || identity.permissions.includes("statistics:read") ? this.dependencies.statistics.getRevision() : null,
+        workspaceRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.workspace?.getRevision() ?? null : null,
+        workspaceContentRevision: !identity || identity.permissions.includes("library:read") ? this.dependencies.workspace?.getContentRevision() ?? null : null,
+        streams: !identity || identity.permissions.includes("library:read") ? this.dependencies.streams?.state() ?? null : null,
+        network: !identity || identity.permissions.includes("library:read") ? this.dependencies.network?.state() ?? null : null,
+        cast: !identity || identity.permissions.includes("playback:read") ? this.dependencies.cast?.state() ?? null : null,
+        scan: !identity || identity.permissions.includes("library:read") ? projectCoreScan(this.dependencies.scan.snapshot()) : null,
+        ...this.dependencies.playback.snapshot(),
+        ...identity && !identity.permissions.includes("playback:read") ? {
+          playback: null,
+          track: null,
+          queue: null,
+          error: null,
+          personalized: null,
+          heart: null,
+          loading: false,
+          isStreamBuffering: false,
+          abLoop: null,
+          mute: null
+        } : {}
+      });
+    }
+    connect(identity, send) {
+      if (this.clients.has(identity.id)) throw new Error("Core client already connected");
+      this.clients.set(identity.id, {
+        identity: structuredClone(identity),
+        send,
+        requests: /* @__PURE__ */ new Map(),
+        seen: /* @__PURE__ */ new Set()
+      });
+      this.sendState(this.clients.get(identity.id));
+    }
+    disconnect(clientId) {
+      const client = this.clients.get(clientId);
+      if (!client) return;
+      this.clients.delete(clientId);
+      void this.dependencies.visualization?.disconnect(clientId).catch((error) => console.error("[core.visualization]", error));
+      this.dependencies.cloudTransfers?.disconnect(clientId);
+      void this.dependencies.queueSubmission?.disconnect(clientId);
+      void this.dependencies.playlistSubmission?.disconnect(clientId);
+      for (const controller of client.requests.values())
+        controller.abort(new Error("Core client disconnected"));
+    }
+    changed() {
+      this.sequence++;
+      for (const client of this.clients.values()) this.sendState(client);
+    }
+    sendVisualization(clientId, event) {
+      const client = this.clients.get(clientId);
+      if (event.epoch === this.dependencies.epoch && client?.identity.permissions.includes("playback:read"))
+        client.send(event);
+    }
+    sendState(client) {
+      if (!client.identity.permissions.includes("playback:read")) return;
+      client.send({
+        kind: "state",
+        epoch: this.dependencies.epoch,
+        sequence: this.sequence,
+        snapshot: this.snapshot(client.identity)
+      });
+    }
+    cancel(clientId, requestId, epoch) {
+      if (epoch === this.dependencies.epoch)
+        this.clients.get(clientId)?.requests.get(requestId)?.abort(new Error("Core request cancelled"));
+    }
+    request(clientId, raw) {
+      const work = this.handleRequest(clientId, raw);
+      this.work.add(work);
+      void work.then(
+        () => this.work.delete(work),
+        () => this.work.delete(work)
+      );
+      return work;
+    }
+    async handleRequest(clientId, raw) {
+      const client = this.clients.get(clientId);
+      if (!client) return;
+      const reply = (result) => {
+        if (this.clients.get(clientId) !== client) return;
+        client.send({
+          kind: "response",
+          requestId: typeof raw?.requestId === "string" ? raw.requestId : "",
+          epoch: this.dependencies.epoch,
+          ...result
+        });
+      };
+      let controller = null;
+      try {
+        if (!isCoreRequest(raw))
+          throw failure("INVALID_REQUEST", "Unknown or malformed Core operation");
+        if (raw.epoch !== this.dependencies.epoch)
+          throw failure("STALE_EPOCH", "Core restarted; read a fresh snapshot");
+        const operation = coreOperation(raw.name);
+        if (!client.identity.permissions.includes(operation.permission))
+          throw failure("FORBIDDEN", "Core capability is not granted");
+        if (client.seen.has(raw.requestId))
+          throw failure(
+            "OUTCOME_UNKNOWN",
+            "Request was already dispatched; refresh state instead of replaying it"
+          );
+        if (this.active >= 128 || client.requests.size >= 16)
+          throw failure("BUSY", "Core request capacity exceeded");
+        if (this.phase !== "ready" && !raw.name.startsWith("migration.") && raw.name !== "state.snapshot")
+          throw failure("NOT_READY", "Core initialization or browser migration is incomplete");
+        if (this.phase === "stopped" || this.shuttingDown)
+          throw failure("NOT_READY", "Core is shutting down");
+        controller = new AbortController();
+        client.requests.set(raw.requestId, controller);
+        client.seen.add(raw.requestId);
+        if (client.seen.size > 1024) client.seen.delete(client.seen.values().next().value);
+        this.active++;
+        const value = await this.dispatch(raw, controller.signal, client.identity);
+        reply({ ok: true, value });
+      } catch (error) {
+        const e = error;
+        reply({ ok: false, error: { code: e?.code ?? "FAILED", message: projectCoreError(error) } });
+      } finally {
+        if (controller) {
+          client.requests.delete(raw.requestId);
+          this.active--;
+        }
+      }
+    }
+    async dispatch(request, signal, identity) {
+      const playback = this.dependencies.playback;
+      if (request.name === "liked.play" || request.name === "heart.refill" || request.name === "playback.mode" && request.payload.mode === "heart") {
+        if (!identity.permissions.includes("providers:call"))
+          throw failure("FORBIDDEN", "Heart provider access is not granted");
+        if (request.name === "liked.play") return playback.startLiked(request.payload, signal);
+        if (request.name === "heart.refill") return playback.refillHeart(request.payload);
+      }
+      if (request.name === "personalized.start" || request.name === "personalized.refill") {
+        if (!identity.permissions.includes("providers:call"))
+          throw failure("FORBIDDEN", "Personalized provider access is not granted");
+        return request.name === "personalized.start" ? playback.startPersonalized(request.payload, signal) : playback.refillPersonalized(request.payload);
+      }
+      if (request.name.startsWith("playlists.")) {
+        await this.dependencies.playlists?.waitForPending();
+        signal.throwIfAborted();
+      }
+      switch (request.name) {
+        case "exploration.query":
+        case "exploration.lookup":
+        case "exploration.detail":
+        case "exploration.relations":
+        case "exploration.participation":
+        case "exploration.performance.save":
+        case "exploration.performance.delete": {
+          const service = this.dependencies.exploration;
+          if (!service) throw failure("NOT_READY", "人物作品探索尚未就绪");
+          switch (request.name) {
+            case "exploration.query":
+              return service.query(request.payload);
+            case "exploration.lookup":
+              return service.lookup(request.payload);
+            case "exploration.detail":
+              return service.detail(request.payload);
+            case "exploration.relations":
+              return service.relations(request.payload);
+            case "exploration.participation":
+              return service.participation(request.payload);
+            case "exploration.performance.save":
+              return service.performanceSave(request.payload);
+            case "exploration.performance.delete":
+              return service.performanceDelete(request.payload);
+          }
+          break;
+        }
+        case "focus.query":
+        case "focus.play.status":
+        case "focus.facets":
+        case "focus.saved.list":
+        case "focus.saved.create":
+        case "focus.saved.rename":
+        case "focus.saved.update":
+        case "focus.saved.delete":
+        case "focus.play": {
+          const focus = this.dependencies.focus;
+          if (!focus) throw failure("NOT_READY", "Focus is unavailable");
+          switch (request.name) {
+            case "focus.play.status": {
+              if (!identity.permissions.includes("library:read")) throw failure("FORBIDDEN", "Library access is not granted");
+              return focus.playStatus(request.payload, identity.id, this.dependencies.epoch);
+            }
+            case "focus.query":
+              return focus.query(request.payload);
+            case "focus.facets":
+              return focus.facets(request.payload);
+            case "focus.saved.list":
+              return focus.savedList(request.payload);
+            case "focus.saved.create":
+              return focus.savedCreate(request.payload);
+            case "focus.saved.rename":
+              return focus.savedRename(request.payload);
+            case "focus.saved.update":
+              return focus.savedUpdate(request.payload);
+            case "focus.saved.delete":
+              return focus.savedDelete(request.payload);
+            case "focus.play": {
+              if (!identity.permissions.includes("library:read")) throw failure("FORBIDDEN", "Library access is not granted");
+              return focus.play(request.payload, signal, async (track, preparation) => {
+                preparation.throwIfAborted();
+                if (getTrackSource(track) === "local") return track;
+                if (!identity.permissions.includes("providers:call")) throw failure("FORBIDDEN", "Provider access is not granted");
+                const resolve = this.dependencies.resolvePlaylistInputs;
+                if (!resolve) throw failure("NOT_READY", "Provider resolution is unavailable");
+                const tracks2 = await resolve([{ kind: "provider", track: {
+                  id: track.id,
+                  source: getTrackSource(track),
+                  ncmSongId: track.ncmSongId,
+                  title: track.title,
+                  artist: track.artist,
+                  album: track.album,
+                  duration: track.duration
+                } }], preparation);
+                preparation.throwIfAborted();
+                if (!tracks2[0]) throw failure("FAILED", "来源不可用");
+                return tracks2[0];
+              }, { requestId: request.requestId, epoch: this.dependencies.epoch, owner: identity.id });
+            }
+          }
+          break;
+        }
+        case "tags.list":
+        case "tags.entity":
+        case "tags.members":
+        case "tags.recordings":
+        case "tags.create":
+        case "tags.rename":
+        case "tags.delete":
+        case "tags.member.set":
+        case "tags.play": {
+          const tags = this.dependencies.tags;
+          if (!tags) throw failure("NOT_READY", "Music tags are unavailable");
+          switch (request.name) {
+            case "tags.list":
+              return tags.list(request.payload);
+            case "tags.entity":
+              return tags.entity(request.payload);
+            case "tags.members":
+              return tags.members(request.payload);
+            case "tags.recordings":
+              return tags.recordings(request.payload);
+            case "tags.create":
+              return tags.create(request.payload);
+            case "tags.rename":
+              return tags.rename(request.payload);
+            case "tags.delete":
+              return tags.delete(request.payload);
+            case "tags.member.set":
+              return tags.memberSet(request.payload);
+            case "tags.play": {
+              if (!identity.permissions.includes("library:read")) throw failure("FORBIDDEN", "Library access is not granted");
+              return tags.play(request.payload, signal, async (track, preparation) => {
+                preparation.throwIfAborted();
+                if (getTrackSource(track) === "local") return track;
+                if (!identity.permissions.includes("providers:call")) throw failure("FORBIDDEN", "Provider access is not granted");
+                const resolve = this.dependencies.resolvePlaylistInputs;
+                if (!resolve) throw failure("NOT_READY", "Provider resolution is unavailable");
+                const tracks2 = await resolve([{ kind: "provider", track: {
+                  id: track.id,
+                  source: getTrackSource(track),
+                  ncmSongId: track.ncmSongId,
+                  title: track.title,
+                  artist: track.artist,
+                  album: track.album,
+                  duration: track.duration
+                } }], preparation);
+                preparation.throwIfAborted();
+                if (!tracks2[0]) throw failure("FAILED", "来源不可用");
+                return tracks2[0];
+              });
+            }
+          }
+          break;
+        }
+        case "preferences.detail":
+        case "preferences.targets":
+        case "preferences.history":
+        case "preferences.set": {
+          const preferences = this.dependencies.preferences;
+          if (!preferences) throw failure("NOT_READY", "Music preferences are unavailable");
+          switch (request.name) {
+            case "preferences.detail":
+              return preferences.detail(request.payload.entityId);
+            case "preferences.targets":
+              return preferences.targets(request.payload);
+            case "preferences.history":
+              return preferences.history(request.payload);
+            case "preferences.set":
+              return preferences.set(request.payload);
+          }
+          break;
+        }
+        case "ratings.detail":
+        case "ratings.targets":
+        case "ratings.history":
+        case "ratings.set": {
+          const ratings = this.dependencies.ratings;
+          if (!ratings) throw failure("NOT_READY", "Music ratings are unavailable");
+          switch (request.name) {
+            case "ratings.detail":
+              return ratings.detail(request.payload.entityId);
+            case "ratings.targets":
+              return ratings.targets(request.payload);
+            case "ratings.history":
+              return ratings.history(request.payload);
+            case "ratings.set":
+              return ratings.set(request.payload);
+          }
+          break;
+        }
+        case "albums.browse":
+        case "albums.sources": {
+          const albums = this.dependencies.albums;
+          if (!albums) throw failure("NOT_READY", "Album version browsing is unavailable");
+          return request.name === "albums.browse" ? albums.browse(request.payload) : albums.sources(request.payload);
+        }
+        case "catalog.playUnified": {
+          if (!identity.permissions.includes("library:read")) throw failure("FORBIDDEN", "Library access is not granted");
+          const unified = this.dependencies.unifiedPlayback;
+          if (!unified) throw failure("NOT_READY", "Unified music playback is unavailable");
+          return unified.play(request.payload, signal, async (track, preparation) => {
+            preparation.throwIfAborted();
+            if (getTrackSource(track) === "local") return track;
+            if (!identity.permissions.includes("providers:call")) throw failure("FORBIDDEN", "Provider access is not granted");
+            const resolve = this.dependencies.resolvePlaylistInputs;
+            if (!resolve) throw failure("NOT_READY", "Provider resolution is unavailable");
+            const tracks2 = await resolve([{ kind: "provider", track: {
+              id: track.id,
+              source: getTrackSource(track),
+              ncmSongId: track.ncmSongId,
+              title: track.title,
+              artist: track.artist,
+              album: track.album,
+              duration: track.duration
+            } }], preparation);
+            preparation.throwIfAborted();
+            if (!tracks2[0]) throw failure("FAILED", "来源不可用");
+            return tracks2[0];
+          });
+        }
+        case "genres.tree":
+        case "genres.browse":
+        case "genres.members":
+        case "genres.facets":
+        case "genres.unmapped":
+        case "genres.evidence":
+        case "genres.edit":
+        case "genres.map":
+        case "genres.override": {
+          const genres = this.dependencies.genres;
+          if (!genres) throw failure("NOT_READY", "Music classification is unavailable");
+          switch (request.name) {
+            case "genres.tree":
+              return genres.tree(request.payload);
+            case "genres.browse":
+              return genres.browse(request.payload);
+            case "genres.members":
+              return genres.members(request.payload);
+            case "genres.facets":
+              return genres.facets(request.payload);
+            case "genres.unmapped":
+              return genres.unmapped(request.payload);
+            case "genres.evidence":
+              return genres.evidence(request.payload);
+            case "genres.edit":
+              return genres.edit(request.payload);
+            case "genres.map":
+              return genres.map(request.payload);
+            case "genres.override":
+              return genres.override(request.payload);
+          }
+          break;
+        }
+        case "catalog.query":
+        case "catalog.detail":
+        case "catalog.sources":
+        case "catalog.status":
+        case "catalog.refresh":
+        case "catalog.cancel":
+        case "catalog.play": {
+          const catalog = this.dependencies.catalog;
+          if (!catalog) throw failure("NOT_READY", "Music catalog is unavailable");
+          switch (request.name) {
+            case "catalog.query":
+              return catalog.query(request.payload);
+            case "catalog.detail":
+              return catalog.detail(request.payload.id, request.payload.revision);
+            case "catalog.sources":
+              return catalog.sources(request.payload);
+            case "catalog.status":
+              return catalog.status();
+            case "catalog.refresh":
+            case "catalog.cancel":
+              if (identity.role !== "desktop") throw failure("FORBIDDEN", "Catalog maintenance requires the desktop window");
+              return request.name === "catalog.refresh" ? catalog.refresh() : catalog.cancel();
+            case "catalog.play":
+              if (!identity.permissions.includes("library:read")) throw failure("FORBIDDEN", "Library access is not granted");
+              return playback.fromTrack(async (preparation) => {
+                const track = await catalog.resolve(request.payload.sourceId, request.payload.revision);
+                preparation.throwIfAborted();
+                if (!track) throw failure("FAILED", "来源已不存在，请刷新音乐库");
+                if (getTrackSource(track) === "local") return { ...track, sourceSelection: "explicit" };
+                if (!identity.permissions.includes("providers:call")) throw failure("FORBIDDEN", "Provider access is not granted");
+                const resolve = this.dependencies.resolvePlaylistInputs;
+                if (!resolve) throw failure("NOT_READY", "Provider resolution is unavailable");
+                const tracks2 = await resolve([{ kind: "provider", track: {
+                  id: track.id,
+                  source: getTrackSource(track),
+                  ncmSongId: track.ncmSongId,
+                  title: track.title,
+                  artist: track.artist,
+                  album: track.album,
+                  duration: track.duration
+                } }], preparation);
+                if (!tracks2[0]) throw failure("FAILED", "来源不可用");
+                return { ...tracks2[0], sourceSelection: "explicit" };
+              }, 0, true, signal);
+          }
+          break;
+        }
+        case "opra.search":
+        case "opra.profile":
+        case "opra.status":
+        case "opra.refresh": {
+          const opra = this.dependencies.opra;
+          if (!opra) throw failure("NOT_READY", "OPRA catalog is unavailable");
+          switch (request.name) {
+            case "opra.search":
+              return opra.search(request.payload.query.trim());
+            case "opra.profile":
+              return opra.getProfile(request.payload.id.trim());
+            case "opra.status":
+              return opra.getStatus();
+            case "opra.refresh":
+              return opra.refresh();
+          }
+          break;
+        }
+        case "player.presentation":
+          if (!this.dependencies.presentation)
+            throw failure("NOT_READY", "Player presentation is unavailable");
+          return this.dependencies.presentation.snapshot();
+        case "player.lyrics":
+          if (!this.dependencies.lyrics) throw failure("NOT_READY", "Lyrics are unavailable");
+          return {
+            state: this.dependencies.lyrics.state(),
+            content: this.dependencies.lyrics.content()
+          };
+        case "playback.diagnostics":
+          if (!this.dependencies.outputInfo)
+            throw failure("NOT_READY", "Output diagnostics are unavailable");
+          return projectCoreOutput(await this.dependencies.outputInfo());
+        case "playback.favorite":
+          if (!this.dependencies.presentation)
+            throw failure("NOT_READY", "Player presentation is unavailable");
+          return this.dependencies.presentation.toggleFavorite(request.payload, signal);
+        case "playback.control":
+          if (request.payload.type === "toggle-favorite") {
+            const expected = this.dependencies.presentation?.snapshot().current;
+            if (!expected) throw failure("NOT_READY", "There is no selected track");
+            return this.dependencies.presentation.toggleFavorite(expected, signal);
+          }
+          return playback.control(request.payload, signal);
+        case "queue.locate": {
+          const page2 = await this.dependencies.library.readLibraryQueue(request.payload.id, 0, 1, {
+            expectedRevision: request.payload.revision,
+            occurrenceId: request.payload.occurrenceId
+          });
+          return { position: page2.items[0]?.position ?? null };
+        }
+        case "queue.insert":
+          if (!this.dependencies.queueSubmission)
+            throw failure("NOT_READY", "Queue submission is unavailable");
+          if (identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Queue insertion requires the desktop window");
+          return this.dependencies.queueSubmission.insert(request.payload, signal);
+        case "playlists.addQueueEntries": {
+          if (!identity.permissions.includes("playback:read"))
+            throw failure("FORBIDDEN", "Playback access is required");
+          if (!this.dependencies.playlists) throw failure("NOT_READY", "Playlists are unavailable");
+          const { id: id2, revision: revision2, queue, occurrenceIds } = request.payload;
+          const tracks2 = [];
+          let libraryRevision;
+          for (const occurrenceId of occurrenceIds) {
+            signal.throwIfAborted();
+            const page2 = await this.dependencies.library.readLibraryQueue(queue.id, 0, 1, {
+              expectedRevision: queue.revision,
+              occurrenceId
+            });
+            libraryRevision ??= page2.libraryRevision;
+            if (page2.libraryRevision !== libraryRevision)
+              throw failure("STALE_REVISION", "Library changed while reading the queue");
+            const item = page2.items[0];
+            if (!item?.track) throw failure("STALE_REVISION", "队列中的曲目已不存在，请刷新队列");
+            tracks2.push(libraryQueueTrack(item.track, item.queueEntryId));
+          }
+          signal.throwIfAborted();
+          return this.dependencies.playlists.edit(revision2, { kind: "add", id: id2, tracks: tracks2 }, signal);
+        }
+        case "playlists.saveQueue": {
+          if (!identity.permissions.includes("playback:read"))
+            throw failure("FORBIDDEN", "Playback access is required");
+          if (!this.dependencies.playlists) throw failure("NOT_READY", "Playlists are unavailable");
+          const { name, revision: revision2, queue } = request.payload;
+          return this.dependencies.playlists.saveTrackPages(
+            name,
+            revision2,
+            async (append) => {
+              let libraryRevision, count = 0;
+              for (let offset = 0; ; offset += 200) {
+                signal.throwIfAborted();
+                const page2 = await this.dependencies.library.readLibraryQueue(queue.id, offset, 200, {
+                  expectedRevision: queue.revision
+                });
+                libraryRevision ??= page2.libraryRevision;
+                if (libraryRevision !== page2.libraryRevision)
+                  throw failure("STALE_REVISION", "Library changed while saving the queue");
+                const tracks2 = page2.items.flatMap(
+                  (item) => item.track ? [libraryQueueTrack(item.track, item.queueEntryId)] : []
+                );
+                count += tracks2.length;
+                await append(tracks2);
+                if (offset + 200 >= page2.total) break;
+              }
+              if (!count) throw failure("FAILED", "队列中没有可保存的歌曲");
+              const current = await this.dependencies.library.readLibraryQueue(queue.id, 0, 1, {
+                expectedRevision: queue.revision
+              });
+              if (current.libraryRevision !== libraryRevision)
+                throw failure("STALE_REVISION", "Library changed while saving the queue");
+              return () => {
+                signal.throwIfAborted();
+              };
+            },
+            signal
+          );
+        }
+        case "themes.list":
+        case "themes.bootstrap":
+        case "themes.edit":
+        case "themes.import":
+        case "themes.export":
+        case "themes.importAsset":
+        case "themes.validateAssets":
+        case "themes.copyAssets":
+        case "themes.reconcile": {
+          if (identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Theme management requires the desktop window");
+          const themes = this.dependencies.themes;
+          if (!themes) throw failure("FAILED", "Theme management unavailable");
+          switch (request.name) {
+            case "themes.list":
+              return themes.list();
+            case "themes.bootstrap":
+              return themes.bootstrap();
+            case "themes.edit":
+              return themes.edit(request.payload, signal);
+            case "themes.import":
+              return themes.import(request.payload.revision, signal);
+            case "themes.export":
+              return themes.export(request.payload.id, signal);
+            case "themes.importAsset":
+              return themes.importAsset(request.payload.id, request.payload.type, signal);
+            case "themes.validateAssets":
+              return themes.validateAssets(request.payload.id, request.payload.assets, signal);
+            case "themes.copyAssets":
+              return themes.copyAssets(request.payload.sourceId, request.payload.targetId);
+            case "themes.reconcile":
+              return themes.reconcile();
+          }
+          break;
+        }
+        case "visualization.subscribe":
+        case "visualization.unsubscribe": {
+          const visualization = this.dependencies.visualization;
+          if (!visualization) throw failure("FAILED", "Visualization unavailable");
+          return request.name === "visualization.subscribe" ? visualization.subscribe(identity.id, request.payload) : visualization.unsubscribe(identity.id, request.payload.subscriptionId);
+        }
+        case "automix.install.start":
+        case "automix.install.cancel":
+        case "automix.install.status": {
+          const installer = this.dependencies.modelPack;
+          if (!installer) throw failure("FAILED", "AutoMix model installation unavailable");
+          if (request.kind === "command" && identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Model installation requires the desktop window");
+          return request.name === "automix.install.start" ? installer.start(request.payload.enableAfterInstall) : request.name === "automix.install.cancel" ? installer.cancel() : installer.state();
+        }
+        case "settings.backup":
+        case "settings.restore": {
+          if (identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Settings backup requires the desktop window");
+          const backup = this.dependencies.settingsBackup;
+          if (!backup) throw failure("FAILED", "Settings backup unavailable");
+          return request.name === "settings.backup" ? backup.export() : backup.import(request.payload, signal);
+        }
+        case "ncm.cloud.chooseUploadFiles":
+        case "ncm.cloud.upload":
+        case "ncm.cloud.download":
+        case "ncm.cloud.cancel":
+        case "ncm.cloud.state":
+        case "ncm.cloud.page": {
+          const transfers = this.dependencies.cloudTransfers;
+          if (!transfers) throw failure("FAILED", "NCM cloud transfers unavailable");
+          if (request.kind === "command" && identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Cloud transfers require the desktop window");
+          switch (request.name) {
+            case "ncm.cloud.chooseUploadFiles":
+              return transfers.chooseUploadFiles(identity.id, signal);
+            case "ncm.cloud.upload":
+              return transfers.upload(identity.id, request.payload.handle);
+            case "ncm.cloud.download":
+              if (!identity.permissions.includes("providers:call"))
+                throw failure("FORBIDDEN", "NCM provider access is not granted");
+              return transfers.download(
+                identity.id,
+                {
+                  ...request.payload,
+                  cloudSongId: normalizeCloudSongId(request.payload.cloudSongId)
+                },
+                signal
+              );
+            case "ncm.cloud.cancel":
+              return transfers.cancel(request.payload.id);
+            case "ncm.cloud.state":
+              return transfers.state();
+            case "ncm.cloud.page":
+              return transfers.page(request.payload);
+          }
+          break;
+        }
+        case "library.health.start":
+        case "library.health.status":
+        case "library.health.page":
+        case "library.health.repair": {
+          const health = this.dependencies.libraryHealth;
+          if (!health) throw failure("FAILED", "音乐库体检服务不可用");
+          if (request.kind === "command" && identity.role !== "desktop")
+            throw failure("FORBIDDEN", "音乐库体检操作需要桌面窗口");
+          switch (request.name) {
+            case "library.health.start":
+              return health.start();
+            case "library.health.status":
+              return health.state();
+            case "library.health.page":
+              return health.page(request.payload);
+            case "library.health.repair":
+              return health.repair(request.payload);
+          }
+          break;
+        }
+        case "library.inbox.refresh":
+        case "library.inbox.mark":
+        case "library.inbox.page": {
+          const inbox = this.dependencies.inbox;
+          if (!inbox) throw failure("FAILED", "Library inbox unavailable");
+          if (request.kind === "command" && identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Inbox changes require the desktop window");
+          if (request.name === "library.inbox.refresh")
+            return inbox.refresh(request.payload.duplicatesId);
+          if (request.name === "library.inbox.mark") return inbox.mark(request.payload);
+          return inbox.page(request.payload);
+        }
+        case "library.loudness.prepare":
+        case "library.loudness.start":
+        case "library.loudness.cancel":
+        case "library.loudness.clear":
+        case "library.loudness.state":
+        case "library.loudness.page":
+        case "library.loudness.result": {
+          const loudness = this.dependencies.libraryLoudness;
+          if (!loudness) throw failure("FAILED", "Library loudness unavailable");
+          if (request.kind === "command" && identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Library loudness changes require the desktop window");
+          switch (request.name) {
+            case "library.loudness.prepare":
+              return loudness.prepare(request.payload, signal);
+            case "library.loudness.start":
+              return loudness.start(request.payload.id);
+            case "library.loudness.cancel":
+              return loudness.cancel(request.payload.id);
+            case "library.loudness.clear":
+              return loudness.clear(request.payload.id);
+            case "library.loudness.state":
+              return loudness.state();
+            case "library.loudness.page":
+              return loudness.page(request.payload.id, request.payload.offset, request.payload.limit);
+            case "library.loudness.result":
+              return loudness.result(request.payload.id, request.payload.index);
+          }
+          break;
+        }
+        case "analysis.request":
+        case "analysis.cache.clear":
+        case "analysis.cache.size":
+        case "analysis.loudness.status": {
+          const analysis = this.dependencies.analysis;
+          if (!analysis) throw failure("FAILED", "Audio analysis unavailable");
+          if ((request.name === "analysis.request" || request.name === "analysis.cache.clear") && identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Audio analysis changes require the desktop window");
+          switch (request.name) {
+            case "analysis.request": {
+              const result = await analysis.request(request.payload);
+              return "reason" in result ? { ...result, reason: projectCoreError(result.reason) } : result;
+            }
+            case "analysis.cache.clear":
+              return analysis.clearCache(request.payload.kind);
+            case "analysis.cache.size":
+              return analysis.cacheSize(request.payload.kind);
+            case "analysis.loudness.status":
+              return analysis.status();
+          }
+          break;
+        }
+        case "backup.export":
+        case "backup.preview":
+        case "backup.recover":
+        case "backup.repreview":
+        case "backup.stage":
+        case "backup.chooseFolder": {
+          if (identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Personal backup requires the desktop window");
+          const backup = this.dependencies.personalBackup;
+          if (!backup) throw failure("FAILED", "Personal backup unavailable");
+          switch (request.name) {
+            case "backup.export":
+              return backup.export(request.payload, signal);
+            case "backup.preview":
+              return backup.preview(signal);
+            case "backup.recover":
+              return backup.recoverPreview(signal);
+            case "backup.repreview":
+              return backup.repreview(request.payload, signal);
+            case "backup.stage": {
+              const result = await backup.stage(request.payload, signal);
+              this.changed();
+              return result;
+            }
+            case "backup.chooseFolder":
+              return backup.chooseFolder(signal);
+          }
+          break;
+        }
+        case "library.duplicates.start":
+        case "library.duplicates.cancel":
+        case "library.duplicates.status":
+        case "library.duplicates.groups":
+        case "library.duplicates.items":
+        case "library.duplicates.unavailable": {
+          const duplicates = this.dependencies.duplicates;
+          if (!duplicates) throw failure("FAILED", "Duplicate inspection unavailable");
+          switch (request.name) {
+            case "library.duplicates.start":
+            case "library.duplicates.cancel":
+              if (identity.role !== "desktop")
+                throw failure("FORBIDDEN", "Duplicate inspection requires the desktop window");
+              return request.name === "library.duplicates.start" ? duplicates.start() : duplicates.cancel(request.payload.id);
+            case "library.duplicates.status":
+              return duplicates.snapshot();
+            case "library.duplicates.groups":
+              return duplicates.groups(request.payload);
+            case "library.duplicates.items":
+              return duplicates.items(request.payload);
+            case "library.duplicates.unavailable":
+              return duplicates.unavailable(request.payload);
+          }
+          break;
+        }
+        case "playlists.repair":
+        case "playlists.repair.status": {
+          const playlists = this.dependencies.playlists;
+          if (!playlists) throw failure("FAILED", "Playlists unavailable");
+          if (request.name === "playlists.repair.status") return playlists.repairSnapshot();
+          if (identity.role !== "desktop")
+            throw failure("FORBIDDEN", "File management requires the desktop window");
+          return playlists.startRepair(
+            request.payload.id,
+            request.payload.revision,
+            request.payload.folder,
+            signal
+          );
+        }
+        case "library.selection.open":
+        case "library.selection.page":
+        case "library.selection.close":
+        case "library.remove":
+        case "library.reset":
+        case "library.exclusions.clear":
+        case "library.tags.write":
+        case "library.tags.restore": {
+          const maintenance = this.dependencies.libraryMaintenance;
+          if (!maintenance) throw failure("FAILED", "Library maintenance unavailable");
+          if (identity.role !== "desktop")
+            throw failure("FORBIDDEN", "File management requires the desktop window");
+          switch (request.name) {
+            case "library.selection.open":
+              return maintenance.open(request.payload, signal);
+            case "library.selection.page":
+              return maintenance.page(
+                request.payload.id,
+                request.payload.cursor,
+                request.payload.projection
+              );
+            case "library.selection.close":
+              return maintenance.close(request.payload.id);
+            case "library.remove":
+              return maintenance.remove(request.payload.selectionId, request.payload.mode, signal);
+            case "library.reset":
+              return maintenance.reset(request.payload.revision, signal);
+            case "library.exclusions.clear":
+              return maintenance.clearExclusions(
+                request.payload.revision,
+                request.payload.paths,
+                signal
+              );
+            case "library.tags.write":
+              return maintenance.writeTags(request.payload, signal);
+            case "library.tags.restore":
+              return maintenance.restoreTags(request.payload.selectionId, signal);
+          }
+          break;
+        }
+        case "settings.state":
+        case "settings.edit": {
+          const settings = this.dependencies.settings;
+          if (!settings) throw failure("FAILED", "Settings runtime unavailable");
+          return request.name === "settings.state" ? settings.state() : settings.edit(request.payload, signal);
+        }
+        case "automix.capabilities":
+          if (!this.dependencies.autoMix) throw failure("FAILED", "AutoMix is unavailable");
+          return this.dependencies.autoMix.capabilities(request.payload.refresh === true);
+        case "sleep.state":
+        case "sleep.configure":
+        case "sleep.cancel": {
+          const timer = this.dependencies.sleepTimer;
+          if (!timer) throw failure("FAILED", "Sleep timer unavailable");
+          if (request.name === "sleep.state") return timer.state();
+          if (request.name === "sleep.configure") return timer.configure(request.payload, signal);
+          return timer.cancel(request.payload.revision, signal);
+        }
+        case "cast.state":
+        case "cast.devices":
+        case "cast.discover":
+        case "cast.start":
+        case "cast.end": {
+          const cast = this.dependencies.cast;
+          if (!cast) throw failure("FAILED", "Cast runtime unavailable");
+          if (request.name === "cast.state") return cast.state();
+          if (request.name === "cast.devices")
+            return cast.page(request.payload.offset, request.payload.limit);
+          if (request.name === "cast.discover") return cast.discover();
+          if (request.name === "cast.start") return playback.startCast(request.payload, signal);
+          return playback.endCast(request.payload.revision);
+        }
+        case "remote.status":
+        case "remote.setEnabled":
+        case "remote.rotatePin": {
+          const remote = this.dependencies.remote;
+          if (!remote) throw failure("NOT_READY", "Remote control is unavailable");
+          if (request.name === "remote.status") return remote.status();
+          if (request.name === "remote.setEnabled") return remote.setEnabled(request.payload.enabled);
+          return remote.rotatePin();
+        }
+        case "audio.outputTest":
+        case "audio.outputTest.play":
+        case "audio.outputTest.stop": {
+          const test = this.dependencies.outputTest;
+          if (!test) throw failure("FAILED", "Output test runtime unavailable");
+          if (request.name === "audio.outputTest") return test.state();
+          if (identity.role !== "desktop") throw failure("FORBIDDEN", "试听仅可从主窗口发起");
+          if (request.name === "audio.outputTest.stop") return test.stop();
+          return test.play(request.payload.revision, request.payload.exclusive, signal);
+        }
+        case "audio.audition":
+        case "audio.audition.measure":
+        case "audio.audition.select":
+        case "audio.audition.end": {
+          const audition = this.dependencies.audition;
+          if (!audition) throw failure("FAILED", "DSP audition runtime unavailable");
+          switch (request.name) {
+            case "audio.audition":
+              return audition.state();
+            case "audio.audition.measure":
+              return audition.measure(request.payload, signal);
+            case "audio.audition.select":
+              return audition.select(
+                request.payload.revision,
+                request.payload.id,
+                request.payload.side,
+                signal
+              );
+            case "audio.audition.end":
+              return audition.end(request.payload.revision, signal);
+          }
+          break;
+        }
+        case "audio.dsp":
+        case "audio.dsp.status":
+        case "audio.dsp.assets":
+        case "audio.dsp.correction":
+        case "audio.dsp.edit":
+        case "audio.dsp.import":
+        case "audio.dsp.export":
+        case "audio.dsp.assetRemove":
+        case "audio.vst3":
+        case "audio.vst3.parameters":
+        case "audio.vst3.edit":
+        case "audio.vst3.chooseDirectory": {
+          const dsp = this.dependencies.dsp;
+          if (!dsp) throw failure("FAILED", "DSP runtime unavailable");
+          switch (request.name) {
+            case "audio.dsp":
+              return dsp.state();
+            case "audio.dsp.status":
+              return dsp.status();
+            case "audio.dsp.assets":
+              return dsp.assets(request.payload.offset, request.payload.limit);
+            case "audio.dsp.correction":
+              return dsp.correction(request.payload.id);
+            case "audio.dsp.edit":
+              return dsp.edit(request.payload, signal);
+            case "audio.dsp.import":
+              return dsp.import(request.payload, signal);
+            case "audio.dsp.export":
+              return dsp.export(request.payload.revision, request.payload.name, signal);
+            case "audio.dsp.assetRemove":
+              return dsp.removeAsset(request.payload.revision, request.payload.id, signal);
+            case "audio.vst3":
+              return dsp.vst3(request.payload.offset, request.payload.limit);
+            case "audio.vst3.parameters":
+              return dsp.parameters(
+                request.payload.id,
+                request.payload.revision,
+                request.payload.offset,
+                request.payload.limit
+              );
+            case "audio.vst3.edit":
+              return dsp.editVst3(request.payload, signal);
+            case "audio.vst3.chooseDirectory":
+              return dsp.chooseDirectory(signal);
+          }
+          break;
+        }
+        case "audio.output":
+        case "audio.profiles":
+        case "audio.output.edit":
+        case "audio.profiles.edit": {
+          const output = this.dependencies.output;
+          if (!output) throw failure("FAILED", "Audio output runtime unavailable");
+          switch (request.name) {
+            case "audio.output":
+              return output.state();
+            case "audio.profiles":
+              return output.profiles();
+            case "audio.output.edit":
+              return output.edit(request.payload, signal);
+            case "audio.profiles.edit":
+              return output.editProfiles(request.payload, signal);
+          }
+          break;
+        }
+        case "cache.info":
+        case "cache.clear": {
+          const cache = this.dependencies.cache;
+          if (!cache) throw failure("FAILED", "Music cache runtime unavailable");
+          return request.name === "cache.info" ? cache.info() : cache.clear(signal);
+        }
+        case "search.songs":
+        case "search.collections":
+          if (request.payload.scope !== "local" && !identity.permissions.includes("providers:call"))
+            throw failure("FORBIDDEN", "Search provider access is not granted");
+          if (!this.dependencies.search) throw failure("FAILED", "Search runtime unavailable");
+          return request.name === "search.songs" ? this.dependencies.search.page(request.payload, signal) : this.dependencies.search.collections(request.payload, signal);
+        case "downloads.state":
+        case "downloads.page":
+        case "downloads.create":
+        case "downloads.cancel":
+        case "downloads.retry":
+        case "downloads.result":
+        case "downloads.reveal":
+        case "downloads.indexed":
+        case "downloads.play": {
+          const downloads = this.dependencies.downloads;
+          if (!downloads) throw failure("FAILED", "Download runtime unavailable");
+          switch (request.name) {
+            case "downloads.indexed":
+              return downloads.indexed(request.payload.id);
+            case "downloads.reveal":
+              return downloads.reveal(request.payload.id);
+            case "downloads.state":
+              return downloads.state();
+            case "downloads.page":
+              return downloads.page(request.payload);
+            case "downloads.create":
+              return downloads.create(request.payload);
+            case "downloads.cancel":
+              return downloads.cancel(request.payload.id);
+            case "downloads.retry":
+              return downloads.retry(request.payload.id);
+            case "downloads.result":
+              if (request.payload.addToLibrary && !identity.permissions.includes("library:write"))
+                throw failure("FORBIDDEN", "Library write capability is not granted");
+              return downloads.result(request.payload.id, request.payload.addToLibrary);
+            case "downloads.play": {
+              if (!identity.permissions.includes("downloads:read"))
+                throw failure("FORBIDDEN", "Download access is not granted");
+              return playback.fromTrack(
+                () => downloads.playbackTrack(request.payload.id),
+                0,
+                request.payload.play !== false,
+                signal
+              );
+            }
+          }
+          break;
+        }
+        case "network.state":
+        case "network.profiles":
+        case "network.profiles.edit":
+        case "network.directory":
+        case "network.library":
+        case "network.test":
+        case "network.job":
+        case "network.removeEntry":
+        case "network.cover":
+        case "network.cacheInfo":
+        case "network.clearCache":
+        case "network.play": {
+          const network = this.dependencies.network;
+          if (!network) throw failure("FAILED", "Network runtime unavailable");
+          switch (request.name) {
+            case "network.state":
+              return network.state();
+            case "network.profiles":
+              return network.listProfiles(request.payload);
+            case "network.profiles.edit":
+              return network.edit(request.payload, signal);
+            case "network.directory":
+              return network.directory(request.payload, signal);
+            case "network.library":
+              return network.library(request.payload);
+            case "network.test":
+              return network.test(request.payload.profileId, signal);
+            case "network.job":
+              return network.job(request.payload);
+            case "network.removeEntry":
+              return network.removeEntry(request.payload, signal);
+            case "network.cover":
+              return network.cover(request.payload.profileId, request.payload.entryId);
+            case "network.cacheInfo":
+              return network.cacheInfo();
+            case "network.clearCache":
+              if (this.dependencies.cache) return this.dependencies.cache.clearNetwork(signal);
+              return network.clearCache((action) => playback.maintainSources(action), signal);
+            case "network.play": {
+              if (!identity.permissions.includes("library:read"))
+                throw failure("FORBIDDEN", "Network library access is not granted");
+              return playback.fromTrack(
+                (preparation) => network.playback(request.payload, preparation),
+                0,
+                request.payload.play !== false,
+                signal,
+                () => network.assertRevision(request.payload.revision)
+              );
+            }
+          }
+          break;
+        }
+        case "streams.state":
+        case "radio.stations":
+        case "radio.directory":
+        case "radio.edit":
+        case "podcasts.subscriptions":
+        case "podcasts.episodes":
+        case "podcasts.subscribe":
+        case "podcasts.edit":
+        case "podcasts.refresh":
+        case "podcasts.defaultRate":
+        case "streams.play": {
+          const streams = this.dependencies.streams;
+          if (!streams) throw failure("FAILED", "Streams runtime unavailable");
+          switch (request.name) {
+            case "streams.state":
+              return streams.state();
+            case "radio.stations":
+              return streams.stations(request.payload);
+            case "radio.directory":
+              return streams.searchDirectory(request.payload, signal);
+            case "radio.edit":
+              return streams.radioEdit(request.payload, signal);
+            case "podcasts.subscriptions":
+              return streams.subscriptions(request.payload);
+            case "podcasts.episodes":
+              return streams.episodes(request.payload.id, request.payload);
+            case "podcasts.subscribe":
+              return streams.subscribe(request.payload.feedUrl, request.payload.revision, signal);
+            case "podcasts.edit":
+              return streams.podcastEdit(request.payload, signal);
+            case "podcasts.refresh":
+              streams.assertPodcastRevision(request.payload.revision);
+              return streams.startRefresh(request.payload.id);
+            case "podcasts.defaultRate":
+              return streams.setDefaultRate(request.payload.rate, request.payload.revision, signal);
+            case "streams.play": {
+              if (!identity.permissions.includes("library:read"))
+                throw failure("FORBIDDEN", "Stream library access is not granted");
+              const source = streams.playback(request.payload);
+              return playback.fromTrack(
+                source.track,
+                source.position,
+                request.payload.play !== false,
+                signal,
+                () => {
+                  streams.playback(request.payload);
+                }
+              );
+            }
+          }
+          break;
+        }
+        case "playback.rate": {
+          const podcast = playback.snapshot().track?.source === "podcast";
+          await playback.setRate(request.payload.rate);
+          const streams = this.dependencies.streams;
+          if (podcast && streams)
+            await streams.setDefaultRate(
+              request.payload.rate,
+              streams.state().preferencesRevision,
+              signal
+            );
+          return;
+        }
+        case "workspace.state":
+        case "workspace.sessions":
+        case "workspace.history":
+        case "workspace.restore":
+        case "workspace.edit": {
+          const workspace = this.dependencies.workspace;
+          if (!workspace) throw failure("FAILED", "Queue workspace runtime unavailable");
+          switch (request.name) {
+            case "workspace.state":
+              return workspace.state();
+            case "workspace.sessions":
+              return workspace.sessions(request.payload);
+            case "workspace.history":
+              return workspace.history(request.payload);
+            case "workspace.restore":
+              if (!identity.permissions.includes("library:read"))
+                throw failure("FORBIDDEN", "Library read capability is not granted");
+              return workspace.restore(request.payload, signal);
+            case "workspace.edit":
+              if (!identity.permissions.includes("playback:read") && request.payload.edit.kind === "saveCurrent")
+                throw failure("FORBIDDEN", "Playback read capability is not granted");
+              return workspace.edit(request.payload, signal);
+          }
+          break;
+        }
+        case "lyrics.state":
+        case "lyrics.current":
+        case "lyrics.entry":
+        case "lyrics.search":
+        case "lyrics.edit":
+        case "lyrics.reload":
+        case "lyrics.importDraft":
+        case "lyrics.exportDraft": {
+          const lyrics = this.dependencies.lyrics;
+          if (!lyrics) throw failure("FAILED", "Lyrics runtime unavailable");
+          switch (request.name) {
+            case "lyrics.state":
+              return lyrics.state();
+            case "lyrics.current":
+              return lyrics.content();
+            case "lyrics.entry":
+              return lyrics.entry(request.payload.trackId);
+            case "lyrics.search":
+              return lyrics.search(request.payload, signal);
+            case "lyrics.edit":
+              return lyrics.edit(request.payload, signal);
+            case "lyrics.reload":
+              return lyrics.reload(request.payload);
+            case "lyrics.importDraft":
+            case "lyrics.exportDraft":
+              if (identity.role !== "desktop")
+                throw failure("FORBIDDEN", "Lyrics dialogs require the desktop client");
+              return request.name === "lyrics.importDraft" ? lyrics.importDraft(signal) : lyrics.exportDraft(request.payload.contents, signal);
+          }
+          break;
+        }
+        case "bookmarks.state":
+          if (!this.dependencies.bookmarks) throw failure("FAILED", "Bookmark runtime unavailable");
+          return this.dependencies.bookmarks.state();
+        case "bookmarks.page":
+          if (!this.dependencies.bookmarks) throw failure("FAILED", "Bookmark runtime unavailable");
+          return this.dependencies.bookmarks.page(request.payload);
+        case "bookmarks.edit":
+          if (!this.dependencies.bookmarks) throw failure("FAILED", "Bookmark runtime unavailable");
+          return this.dependencies.bookmarks.edit(request.payload, signal);
+        case "bookmarks.seek": {
+          if (!identity.permissions.includes("library:read"))
+            throw failure("FORBIDDEN", "Bookmark access is not granted");
+          if (!this.dependencies.bookmarks) throw failure("FAILED", "Bookmark runtime unavailable");
+          return playback.seek(
+            this.dependencies.bookmarks.position(
+              request.payload.id,
+              request.payload.revision,
+              request.payload.current
+            )
+          );
+        }
+        case "imports.previews":
+        case "imports.preview":
+        case "imports.previewPage":
+        case "imports.previewChoices":
+        case "imports.previewStart":
+        case "imports.previewFile":
+        case "imports.previewConfigure":
+        case "imports.previewSave":
+        case "imports.previewDiscard": {
+          const previews = this.dependencies.importPreviews;
+          if (!previews) throw failure("FAILED", "Playlist preview runtime unavailable");
+          if (request.name === "imports.previewFile" && identity.role !== "desktop")
+            throw failure("FORBIDDEN", "File selection requires a desktop window");
+          return executePreviewOperation(previews, request, signal);
+        }
+        case "imports.status": {
+          const status = this.dependencies.imports?.status(request.payload.id);
+          return status ? { ...status, error: status.error ? projectCoreError(status.error) : null } : null;
+        }
+        case "imports.bind":
+        case "imports.previewBind": {
+          const resolve = this.dependencies.resolvePlaylistInputs;
+          if (!resolve) throw failure("NOT_READY", "Track sources are unavailable");
+          const { id: id2, revision: revision2, entryId, input } = request.payload;
+          const track = input ? (await resolve([input], signal))[0] : null;
+          if (request.name === "imports.previewBind") {
+            if (!this.dependencies.importPreviews) throw failure("NOT_READY", "Import previews are unavailable");
+            return this.dependencies.importPreviews.bind(id2, revision2, entryId, track);
+          }
+          if (!this.dependencies.playlists) throw failure("NOT_READY", "Playlists are unavailable");
+          return this.dependencies.playlists.edit(revision2, { kind: "importBind", id: id2, entryId, track }, signal);
+        }
+        case "playlists.replaceSource":
+        case "playlists.rematch": {
+          const sources = this.dependencies.playlistSources;
+          if (!sources) throw failure("NOT_READY", "Playlist source matching is unavailable");
+          return request.name === "playlists.replaceSource" ? sources.replace(request.payload.revision, request.payload.oldTrackId, request.payload.input, signal) : sources.rematch(request.payload.revision, request.payload.input, signal);
+        }
+        case "library.reveal": {
+          if (!this.dependencies.revealAudioFile) throw failure("NOT_READY", "File reveal is unavailable");
+          const page2 = await this.dependencies.library.getTracksByIds([request.payload.id]);
+          const track = page2.tracks[0];
+          if (!track) throw failure("FAILED", "本地曲目已不存在");
+          if (request.payload.version !== void 0 && page2.versions[track.id] !== request.payload.version)
+            throw failure("STALE_REVISION", "曲目信息已变化，请刷新后重试");
+          if (track.source && track.source !== "local") throw failure("FAILED", "此曲目没有本地文件");
+          return this.dependencies.revealAudioFile(track.filePath);
+        }
+        case "imports.retry":
+          if (!this.dependencies.imports) throw failure("FAILED", "Playlist matching unavailable");
+          return this.dependencies.imports.start(
+            request.payload.id,
+            request.payload.force,
+            request.payload.entries
+          );
+        case "imports.cancel":
+          await this.dependencies.importPreviews?.cancel(request.payload.id);
+          return this.dependencies.imports?.stop(request.payload.id);
+        case "playlists.view":
+          if (!this.dependencies.playlists) throw failure("FAILED", "Playlist runtime unavailable");
+          return this.dependencies.playlists.view(request.payload, signal);
+        case "versions.catalog":
+          if (!this.dependencies.recordingCatalog) throw failure("NOT_READY", "Recording sources are unavailable");
+          return this.dependencies.recordingCatalog.page(request.payload, signal);
+        case "playlists.favorites": {
+          const { playlists, resolvePlaylistInputs } = this.dependencies;
+          if (!playlists || !resolvePlaylistInputs) throw failure("NOT_READY", "Playlists are unavailable");
+          const tracks2 = await resolvePlaylistInputs(request.payload.items, signal);
+          return playlists.favorites(request.payload.revision, tracks2);
+        }
+        case "versions.page":
+          if (!this.dependencies.recordingVersions)
+            throw failure("FAILED", "Recording versions unavailable");
+          return this.dependencies.recordingVersions.page(request.payload);
+        case "versions.edit":
+          if (!this.dependencies.recordingVersions)
+            throw failure("FAILED", "Recording versions unavailable");
+          return this.dependencies.recordingVersions.edit(request.payload, signal);
+        case "playlists.list":
+          if (!this.dependencies.playlists) throw failure("FAILED", "Playlist runtime unavailable");
+          return this.dependencies.playlists.list(
+            request.payload.offset,
+            request.payload.limit,
+            request.payload.revision
+          );
+        case "playlists.entries":
+          if (!this.dependencies.playlists) throw failure("FAILED", "Playlist runtime unavailable");
+          return this.dependencies.playlists.entries(
+            request.payload.id,
+            request.payload.revision,
+            request.payload.offset,
+            request.payload.limit
+          );
+        case "playlists.edit":
+          if (!this.dependencies.playlists) throw failure("FAILED", "Playlist runtime unavailable");
+          return this.dependencies.playlists.edit(
+            request.payload.revision,
+            request.payload.edit,
+            signal
+          );
+        case "playlists.catalog":
+        case "playlists.collection":
+        case "playlists.members":
+        case "playlists.membership":
+        case "playlists.state":
+        case "playlists.export":
+        case "playlists.importDocument":
+        case "playlists.flush":
+          if (!this.dependencies.playlists) throw failure("NOT_READY", "Playlists are unavailable");
+          return executePlaylistProjection(this.dependencies.playlists, request, signal);
+        case "providers.call": {
+          if (!this.dependencies.plugins) throw failure("FAILED", "Provider runtime unavailable");
+          const { providerId, method, args, idempotencyKey } = request.payload;
+          if (providerId === "ncm" && method === "logout")
+            await this.dependencies.cloudTransfers?.observeAccount(null);
+          const result = await this.dependencies.plugins.callProvider(providerId, method, args, {
+            signal,
+            idempotencyKey
+          });
+          if (providerId === "ncm" && ["checkLogin", "openOfficialLogin", "getProfile"].includes(method)) {
+            const value = result;
+            const userId = method === "getProfile" ? value?.userId : value?.loggedIn ? value.profile?.userId : null;
+            if (userId === null || typeof userId === "number")
+              await this.dependencies.cloudTransfers?.observeAccount(userId);
+          }
+          return result;
+        }
+        case "extensions.experiences":
+        case "extensions.resource":
+        case "extensions.stylesheet":
+        case "extensions.preferences":
+        case "extensions.preferences.edit":
+        case "extensions.document":
+        case "extensions.document.edit":
+        case "extensions.music":
+        case "extensions.export": {
+          const experiences = this.dependencies.pluginExperiences;
+          if (!experiences) throw failure("FAILED", "Plugin experiences unavailable");
+          switch (request.name) {
+            case "extensions.experiences":
+              return experiences.list();
+            case "extensions.resource":
+              return experiences.resource(request.payload.url);
+            case "extensions.stylesheet":
+              return experiences.stylesheet(request.payload.pluginId, request.payload.themeId);
+            case "extensions.preferences":
+              return experiences.preferences(request.payload.id);
+            case "extensions.preferences.edit":
+              return experiences.preferences(request.payload.id, request.payload.value);
+            case "extensions.document":
+              return experiences.document(request.payload.id);
+            case "extensions.document.edit":
+              return experiences.document(request.payload.id, request.payload.update);
+            case "extensions.music":
+              return experiences.music(request.payload.id, request.payload.operation, request.payload.args);
+            case "extensions.export":
+              return experiences.export(request.payload.id, request.payload.name, request.payload.content);
+          }
+          break;
+        }
+        case "extensions.pluginRequest": {
+          if (!this.dependencies.plugins) throw failure("FAILED", "Plugin runtime unavailable");
+          const { id: id2, request: pluginRequest } = request.payload;
+          if (typeof id2 !== "string" || !id2 || id2.length > 128)
+            throw failure("INVALID_REQUEST", "Invalid plugin id");
+          if (pluginRequest === void 0 || typeof pluginRequest !== "object")
+            throw failure("INVALID_REQUEST", "Invalid plugin request");
+          return this.dependencies.plugins.callExperienceRequest(id2, pluginRequest);
+        }
+        case "plugins.installSource":
+          if (!this.dependencies.plugins) throw failure("FAILED", "Plugin runtime unavailable");
+          return this.dependencies.plugins.installFromPath(request.payload.path);
+        case "plugins.index.list":
+        case "plugins.index.refresh":
+          if (!this.dependencies.pluginMarketplace) throw failure("FAILED", "Plugin market unavailable");
+          return this.dependencies.pluginMarketplace.list(request.name === "plugins.index.refresh");
+        case "plugins.index.status":
+          if (!this.dependencies.pluginMarketplace) throw failure("FAILED", "Plugin market unavailable");
+          return this.dependencies.pluginMarketplace.status();
+        case "plugins.index.install":
+          if (!this.dependencies.pluginMarketplace) throw failure("FAILED", "Plugin market unavailable");
+          return this.dependencies.pluginMarketplace.install(request.payload.id);
+        case "plugins.list":
+          return this.dependencies.plugins?.list() ?? [];
+        case "providers.list":
+          return this.dependencies.plugins?.listProviders() ?? [];
+        case "extensions.list":
+          return this.dependencies.plugins?.listExtensions() ?? [];
+        case "plugins.enable":
+        case "plugins.disable":
+        case "plugins.uninstall":
+        case "plugins.install":
+        case "plugins.dspParameters":
+        case "plugins.log":
+        case "plugins.showLog":
+        case "extensions.execute": {
+          const plugins = this.dependencies.plugins;
+          if (!plugins) throw failure("FAILED", "Plugin runtime unavailable");
+          return executePluginOperation(plugins, request);
+        }
+        case "statistics.summary":
+          return this.dependencies.statistics.summary();
+        case "statistics.overview":
+          return this.dependencies.statistics.overview();
+        case "statistics.previewClear":
+          return this.dependencies.statistics.previewClear(request.payload.range, request.payload.revision);
+        case "statistics.tracks":
+          return this.dependencies.statistics.page(request.payload);
+        case "statistics.clear":
+          return this.dependencies.statistics.clear(request.payload.range, request.payload.revision);
+        case "state.snapshot":
+          return this.snapshot(identity);
+        case "scan.status":
+          return projectCoreScan(this.dependencies.scan.snapshot());
+        case "scan.watchers":
+          return this.dependencies.libraryBackground?.snapshot() ?? { enabled: false, folders: [] };
+        case "metadata.status":
+          return this.dependencies.metadata?.snapshot() ?? null;
+        case "metadata.entity.policy":
+        case "identification.start":
+        case "identification.status":
+        case "identification.detail":
+        case "identification.candidates":
+        case "identification.history":
+        case "identification.restorePreview":
+        case "identification.restore":
+        case "metadata.entity.sources":
+        case "metadata.entity.requery":
+        case "identification.inbox":
+        case "identification.preview":
+        case "identification.decide":
+        case "identification.detach":
+        case "metadata.entity.detail":
+        case "metadata.entity.jobs":
+        case "metadata.entity.tasks":
+        case "metadata.entity.demands":
+        case "metadata.entity.credits":
+        case "metadata.entity.resolve":
+        case "metadata.entity.enrich":
+        case "metadata.entity.decide":
+        case "metadata.entity.detach":
+        case "metadata.entity.override":
+        case "metadata.entity.sourcePreference":
+        case "metadata.entity.artworkOverride":
+        case "metadata.entity.cancel": {
+          const service = this.dependencies.metadata?.entities;
+          if (!service) throw failure("NOT_READY", "Entity metadata service is unavailable");
+          switch (request.name) {
+            case "identification.start":
+              return service.startIdentification(request.payload);
+            case "identification.status":
+              return service.identificationStatus();
+            case "identification.detail":
+              return service.identity(request.payload.entityId);
+            case "identification.candidates":
+              return service.candidates(request.payload);
+            case "identification.history":
+              return service.history(request.payload);
+            case "identification.restorePreview":
+              return service.restorePreview(request.payload);
+            case "identification.restore":
+              return service.restoreIdentity(request.payload);
+            case "metadata.entity.sources":
+              return service.taskSources(request.payload);
+            case "metadata.entity.requery":
+              return service.requery(request.payload);
+            case "identification.inbox":
+              return service.inbox(request.payload);
+            case "identification.preview":
+              return service.preview(request.payload);
+            case "identification.decide":
+              return service.decideIdentity(request.payload);
+            case "identification.detach":
+              return service.detachIdentity(request.payload.linkId, request.payload.revision);
+            case "metadata.entity.policy":
+              return service.policy();
+            case "metadata.entity.detail":
+              return service.detail(request.payload.entityId, request.payload.language, request.payload.sourceProvider, request.payload.includeAutomaticArtwork);
+            case "metadata.entity.jobs":
+              return service.jobs(request.payload);
+            case "metadata.entity.tasks":
+              return service.tasks(request.payload);
+            case "metadata.entity.demands":
+              return service.demands(request.payload);
+            case "metadata.entity.credits":
+              return service.credits(request.payload);
+            case "metadata.entity.resolve":
+              return service.resolve(request.payload);
+            case "metadata.entity.enrich":
+              return service.enrich(request.payload);
+            case "metadata.entity.decide":
+              return service.decide(request.payload);
+            case "metadata.entity.detach":
+              return service.detach(request.payload.entityId, request.payload.revision);
+            case "metadata.entity.override":
+              return service.override(request.payload);
+            case "metadata.entity.sourcePreference":
+              return service.sourcePreference(request.payload);
+            case "metadata.entity.artworkOverride":
+              return service.artworkOverride(request.payload);
+            case "metadata.entity.cancel":
+              return service.cancel(request.payload.jobId, request.payload.batchId, request.payload.generation);
+          }
+          break;
+        }
+        case "metadata.start":
+          if (!this.dependencies.metadata) throw new Error("Metadata service is unavailable");
+          this.dependencies.metadata.start();
+          return;
+        case "metadata.cancel":
+          return this.dependencies.metadata?.cancel() ?? false;
+        case "metadata.candidates":
+          if (!this.dependencies.metadata) throw new Error("Metadata service is unavailable");
+          return this.dependencies.metadata.find(request.payload.id, request.payload.version, signal);
+        case "metadata.apply":
+          if (!this.dependencies.metadata) throw new Error("Metadata service is unavailable");
+          return this.dependencies.metadata.apply(
+            request.payload.token,
+            request.payload.index,
+            signal
+          );
+        case "metadata.clear":
+          if (!this.dependencies.metadata) throw new Error("Metadata service is unavailable");
+          return this.dependencies.metadata.clear(request.payload.id, request.payload.version, signal);
+        case "scan.start":
+          return projectCoreScan(await this.dependencies.scan.start(request.payload, signal));
+        case "scan.pause":
+          return this.dependencies.scan.pause(request.payload.jobId);
+        case "scan.resume":
+          return projectCoreScan(await this.dependencies.scan.resume(request.payload.jobId));
+        case "scan.cancel":
+          return this.dependencies.scan.cancel(request.payload.jobId);
+        case "library.metadata":
+          return this.dependencies.library.getMetadata();
+        case "audio.diagnostics":
+          if (!this.dependencies.diagnostics) throw failure("NOT_READY", "Audio diagnostics are unavailable");
+          return this.dependencies.diagnostics.report(request.payload.locale);
+        case "library.artwork":
+          if (!this.dependencies.artwork) throw failure("NOT_READY", "Artwork is unavailable");
+          return executeLibraryArtwork(this.dependencies.library, request.payload, this.dependencies.artwork, signal);
+        case "library.collections":
+        case "library.byIds":
+        case "library.paths.lookup":
+          return executeLibraryRead(this.dependencies.library, request);
+        case "library.recent.resolve": {
+          const versions = this.dependencies.recordingVersions;
+          if (!versions) throw failure("NOT_READY", "Recording versions unavailable");
+          const versionsRevision = versions.getRevision();
+          if (request.payload.versionsRevision !== versionsRevision)
+            throw failure("STALE_REVISION", "版本记录已变化，请刷新最近播放");
+          const versionSnapshot = versions.snapshot();
+          const result = await this.dependencies.library.lookupPlaylistTracks(
+            {
+              entries: request.payload.entries,
+              versions: versionSnapshot.tracks.versions,
+              resolution: "recent"
+            },
+            request.payload.revision
+          );
+          if (versions.getRevision() !== versionsRevision)
+            throw failure("STALE_REVISION", "版本记录已变化，请刷新最近播放");
+          return { ...result, versionsRevision };
+        }
+        case "library.tracks": {
+          const page2 = await this.dependencies.library.queryTracks(request.payload);
+          return { ...page2, tracks: page2.tracks.map((track) => projectCoreTrack(track)) };
+        }
+        case "queue.page": {
+          const { id: id2, revision: revision2, offset, limit, search } = request.payload;
+          const page2 = await this.dependencies.library.readLibraryQueue(id2, offset, limit, {
+            expectedRevision: revision2,
+            search
+          });
+          return {
+            ...page2,
+            items: page2.items.map((item) => ({
+              position: item.position,
+              queueEntryId: item.queueEntryId,
+              logicalQueueEnd: item.logicalQueueEnd,
+              track: item.track ? projectCoreTrack(item.track, item.queueEntryId) : null
+            }))
+          };
+        }
+        case "playback.play":
+          return playback.play(nonnegativeOptional(request.payload.position), signal);
+        case "playback.pause":
+          return playback.pause();
+        case "playback.stop":
+          return playback.stop();
+        case "playback.seek":
+          return playback.seek(nonnegative(request.payload.position));
+        case "playback.abLoop":
+          return playback.configureAbLoop(request.payload);
+        case "playback.mute":
+          return playback.configureMute(request.payload.muted);
+        case "playback.next":
+          return playback.navigate(1, signal);
+        case "playback.previous":
+          return playback.navigate(-1, signal);
+        case "playback.volume": {
+          const volume2 = nonnegative(request.payload.volume);
+          if (volume2 > 1) throw failure("INVALID_REQUEST", "Volume exceeds unity");
+          await playback.setVolume(volume2);
+          const actual = playback.snapshot().playback;
+          if (actual && actual.outputBackend !== "cast")
+            this.dependencies.settings?.rememberVolume(actual.volume);
+          return;
+        }
+        case "playback.mode":
+          if (!["sequential", "listLoop", "repeat", "shuffle", "heart"].includes(request.payload.mode))
+            throw failure("INVALID_REQUEST", "Unknown playback mode");
+          return playback.setMode(request.payload.mode, signal);
+        case "queue.select":
+          return playback.select(request.payload, signal);
+        case "queue.submit":
+          if (!this.dependencies.queueSubmission)
+            throw failure("NOT_READY", "Queue submission is unavailable");
+          if (identity.role !== "desktop")
+            throw failure("FORBIDDEN", "Queue submission requires the desktop window");
+          return this.dependencies.queueSubmission.submit(identity.id, request.payload);
+        case "playlists.submit":
+          if (!this.dependencies.playlistSubmission) throw failure("NOT_READY", "Playlist submission is unavailable");
+          return this.dependencies.playlistSubmission.submit(identity.id, request.payload);
+        case "queue.fromQuery":
+          return playback.fromQuery(
+            request.payload.query,
+            request.payload.selectedId,
+            request.payload.play,
+            signal,
+            {
+              position: request.payload.position,
+              randomStart: request.payload.randomStart,
+              playMode: request.payload.playMode
+            }
+          );
+        case "queue.edit":
+          return playback.edit(request.payload.id, request.payload.revision, request.payload.edit);
+        case "queue.undo":
+          return playback.edit(request.payload.id, request.payload.revision, { kind: "undo" });
+        case "queue.refresh":
+          return playback.refresh();
+        case "migration.status":
+          return this.dependencies.state.coreStateStatus();
+        case "migration.begin":
+          return this.dependencies.state.coreMigrationBegin(
+            request.payload.id,
+            request.payload.manifest
+          );
+        case "migration.stage":
+          return this.dependencies.state.coreMigrationStage(
+            request.payload.id,
+            request.payload.batch,
+            request.payload.domain,
+            request.payload.rows
+          );
+        case "migration.commit": {
+          const result = await this.dependencies.state.coreMigrationCommit(request.payload.id);
+          this.migrationRequired = !result.complete;
+          await this.checkReady();
+          return result;
+        }
+        case "migration.abort":
+          return this.dependencies.state.coreMigrationAbort(request.payload.id);
+        case "lifecycle.flush":
+          await this.dependencies.pluginExperiences?.flush();
+          await this.dependencies.sleepTimer?.flush();
+          await this.dependencies.settings?.flush();
+          await this.dependencies.dsp?.flush();
+          await this.dependencies.output?.flush();
+          await this.dependencies.cache?.flush();
+          await this.dependencies.recordingVersions?.flush();
+          await this.dependencies.playlists?.flush();
+          await playback.flush();
+          await this.dependencies.bookmarks?.flush();
+          await this.dependencies.lyrics?.flush();
+          await this.dependencies.workspace?.flush();
+          await this.dependencies.streams?.flush();
+          await this.dependencies.network?.flush();
+          return this.dependencies.statistics.flush();
+      }
+    }
+    async shutdown() {
+      await this.dependencies.catalog?.shutdown();
+      await this.dependencies.genres?.shutdown();
+      await this.dependencies.remote?.shutdown();
+      if (this.phase === "stopped") return;
+      this.shuttingDown = true;
+      this.dependencies.plugins?.off("changed", this.pluginsChanged);
+      this.dependencies.plugins?.off("notice", this.pluginNotice);
+      this.dependencies.plugins?.off("experience-event", this.pluginExperienceEvent);
+      await this.dependencies.queueSubmission?.shutdown();
+      await this.dependencies.playlistSubmission?.shutdown();
+      await this.dependencies.presentation?.shutdown();
+      for (const client of this.clients.values())
+        for (const controller of client.requests.values())
+          controller.abort(new Error("Core shutting down"));
+      try {
+        await this.dependencies.audition?.shutdown();
+        await this.dependencies.visualization?.shutdown();
+        await this.dependencies.outputTest?.stop();
+        await this.dependencies.sleepTimer?.shutdown();
+        await this.dependencies.autoMix?.shutdown();
+        await this.dependencies.modelPack?.shutdown();
+        await this.dependencies.analysis?.shutdown();
+        await this.dependencies.libraryLoudness?.shutdown();
+        await this.dependencies.downloads?.shutdown();
+        await this.dependencies.cloudTransfers?.shutdown();
+        await this.dependencies.libraryRepair?.shutdown();
+        await this.dependencies.duplicates?.shutdown();
+        await this.dependencies.inbox?.shutdown();
+        await this.dependencies.libraryHealth?.shutdown();
+        await this.dependencies.personalBackup?.shutdown();
+        await this.dependencies.settingsBackup?.shutdown();
+        await this.dependencies.pluginExperiences?.shutdown();
+        await this.dependencies.themes?.shutdown();
+        await this.dependencies.libraryMaintenance?.shutdown();
+        await Promise.all([
+          this.dependencies.search?.shutdown(),
+          Promise.allSettled([...this.work, ...this.readiness ? [this.readiness] : []]),
+          this.dependencies.scan.shutdown(),
+          this.dependencies.libraryBackground?.shutdown(),
+          this.dependencies.metadata?.shutdown(),
+          this.dependencies.lyrics?.shutdown(),
+          this.dependencies.streams?.stopRefresh(),
+          this.dependencies.network?.shutdown()
+        ]);
+        await this.dependencies.plugins?.broadcastEvent("app:before-quit", {});
+        await this.dependencies.settings?.flush();
+        await this.dependencies.importPreviews?.shutdown();
+        await this.dependencies.imports?.shutdown();
+        await this.dependencies.plugins?.destroy();
+        await this.dependencies.playlists?.shutdown();
+        await this.dependencies.recordingVersions?.flush();
+        await this.dependencies.dsp?.shutdown();
+        await this.dependencies.output?.shutdown();
+        await this.dependencies.playback.shutdown();
+        await this.dependencies.diagnostics?.shutdown();
+        await this.dependencies.streams?.shutdown();
+        await this.dependencies.workspace?.shutdown();
+        await this.dependencies.bookmarks?.shutdown();
+        await this.dependencies.statistics.shutdown();
+        this.phase = "stopped";
+        this.changed();
+      } finally {
+        this.shuttingDown = false;
+      }
+    }
+  }
+  function failure(code, message) {
+    return Object.assign(new Error(message), { code });
+  }
+  function nonnegative(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+      throw failure("INVALID_REQUEST", "Expected a finite nonnegative number");
+    return value;
+  }
+  function nonnegativeOptional(value) {
+    return value === void 0 ? void 0 : nonnegative(value);
+  }
+  function executePluginOperation(plugins, request) {
+    switch (request.name) {
+      case "plugins.enable":
+        return plugins.enable(request.payload.id);
+      case "plugins.disable":
+        return plugins.disable(request.payload.id);
+      case "plugins.uninstall":
+        return plugins.uninstall(request.payload.id, { removeData: request.payload.removeData });
+      case "plugins.install":
+        return plugins.chooseAndInstall(request.payload.kind);
+      case "plugins.dspParameters":
+        return plugins.setNativeDspPluginParameters(request.payload.id, request.payload.parameters);
+      case "plugins.log":
+        return plugins.getLog(request.payload.id);
+      case "plugins.showLog":
+        return plugins.openLog(request.payload.id);
+      case "extensions.execute":
+        return plugins.executeUiCommand(request.payload.command, request.payload.args);
+    }
+  }
+  function executePreviewOperation(previews, request, signal) {
+    switch (request.name) {
+      case "imports.previewChoices":
+        return previews.choices(
+          request.payload.id,
+          request.payload.revision,
+          request.payload.kind,
+          request.payload.offset,
+          request.payload.limit
+        );
+      case "imports.previews":
+        return previews.list(request.payload.offset, request.payload.limit);
+      case "imports.preview":
+        return previews.status(request.payload.id);
+      case "imports.previewPage":
+        return previews.page(
+          request.payload.id,
+          request.payload.revision,
+          request.payload.offset,
+          request.payload.limit
+        );
+      case "imports.previewStart":
+        return previews.start(request.payload.link, request.payload.credentials);
+      case "imports.previewFile":
+        return previews.file(signal);
+      case "imports.previewConfigure":
+        return previews.configure(request.payload);
+      case "imports.previewSave":
+        return previews.save(request.payload, signal);
+      case "imports.previewDiscard":
+        return previews.discard(request.payload.id, request.payload.revision);
+    }
+  }
+  class LibraryQueueSource {
+    api;
+    referenceOwner = `playback:${crypto.randomUUID()}`;
+    referenceTail = Promise.resolve();
+    queue = null;
+    attachment = 0;
+    epoch = 0;
+    disposed = false;
+    requiresRefresh = false;
+    minimumLibraryRevision = 0;
+    libraryRevision = null;
+    pages = /* @__PURE__ */ new Map();
+    reads = /* @__PURE__ */ new Map();
+    waiting = [];
+    activeReads = 0;
+    pendingControls = 0;
+    tail = Promise.resolve();
+    undoStack = [];
+    constructor(api) {
+      this.api = api;
+    }
+    syncReference(ids) {
+      const sync = this.api.syncQueueReferences;
+      if (!sync) return Promise.resolve();
+      const result = this.referenceTail.then(() => sync(this.referenceOwner, ids));
+      this.referenceTail = result.catch(() => {
+      });
+      return result;
+    }
+    get state() {
+      return {
+        queue: this.queue ? { ...this.queue } : null,
+        requiresRefresh: this.requiresRefresh,
+        libraryRevision: this.libraryRevision,
+        cachedPages: this.pages.size,
+        cachedTracks: [...this.pages.values()].reduce(
+          (count, page2) => count + page2.items.filter((item) => item.track !== null).length,
+          0
+        ),
+        activeReads: this.activeReads,
+        pendingControls: this.pendingControls
+      };
+    }
+    resetPages() {
+      this.epoch++;
+      this.pages.clear();
+      this.libraryRevision = null;
+      for (const request of this.waiting.splice(0)) request.resolve(null);
+    }
+    /** Detaching does not delete a queue that a persisted session may reference. */
+    detach() {
+      this.attachment++;
+      this.queue = null;
+      this.undoStack = [];
+      this.requiresRefresh = false;
+      this.resetPages();
+      void this.syncReference([]).catch(() => {
+      });
+    }
+    control(action) {
+      if (this.disposed) return Promise.reject(new Error("Library queue source was disposed"));
+      if (this.pendingControls >= 8)
+        return Promise.reject(new Error("Too many pending library queue actions"));
+      this.pendingControls++;
+      const result = this.tail.then(action).finally(() => {
+        this.pendingControls--;
+      });
+      this.tail = result.catch(() => {
+      });
+      return result;
+    }
+    current(attachment) {
+      return !this.disposed && attachment === this.attachment;
+    }
+    create(query2, selectedId) {
+      const input = structuredClone(query2);
+      if (this.disposed || this.pendingControls >= 8) return this.control(async () => null);
+      this.detach();
+      const attachment = this.attachment;
+      return this.control(async () => {
+        if (!this.current(attachment)) return null;
+        const queue = await this.api.createQueue(input, selectedId);
+        if (!this.current(attachment)) {
+          await this.api.deleteQueue(queue.id, queue.revision);
+          return null;
+        }
+        try {
+          await this.syncReference([queue.id]);
+        } catch (error) {
+          await this.api.deleteQueue(queue.id, queue.revision).catch(() => {
+          });
+          throw error;
+        }
+        if (!this.current(attachment)) {
+          await this.syncReference([]).catch(() => {
+          });
+          await this.api.deleteQueue(queue.id, queue.revision).catch(() => {
+          });
+          return null;
+        }
+        this.queue = queue;
+        return { ...queue };
+      });
+    }
+    restore(id2) {
+      if (this.disposed || this.pendingControls >= 8) return this.control(async () => null);
+      this.detach();
+      const attachment = this.attachment;
+      return this.control(async () => {
+        if (!this.current(attachment)) return null;
+        const queue = await this.api.getQueue(id2);
+        if (!this.current(attachment)) return null;
+        await this.syncReference([queue.id]);
+        if (!this.current(attachment)) {
+          await this.syncReference([]).catch(() => {
+          });
+          return null;
+        }
+        this.queue = queue;
+        return { ...queue };
+      });
+    }
+    refresh() {
+      const attachment = this.attachment;
+      return this.control(async () => {
+        if (!this.current(attachment) || !this.queue) return null;
+        const queue = await this.api.getQueue(this.queue.id);
+        if (!this.current(attachment)) return null;
+        this.queue = queue;
+        this.requiresRefresh = false;
+        this.resetPages();
+        return { ...queue };
+      });
+    }
+    edit(edit2, options = {}) {
+      const input = structuredClone(edit2), attachment = this.attachment;
+      return this.control(async () => {
+        if (!this.current(attachment) || !this.queue) return null;
+        if (this.requiresRefresh) throw new Error("Refresh the library queue before editing it");
+        const previous = this.queue;
+        try {
+          const result = await this.api.editQueue(previous.id, previous.revision, input);
+          if (!this.current(attachment)) return null;
+          this.queue = result.queue;
+          if (previous.revision !== result.queue.revision) this.resetPages();
+          if (previous.revision !== result.queue.revision) {
+            if (edit2.kind === "undo") {
+            } else if (edit2.kind === "insert" || edit2.kind === "remove" || edit2.kind === "move" || edit2.kind === "order" || edit2.kind === "clear") {
+              if (options.recordUndo !== false)
+                this.undoStack = [
+                  ...this.undoStack,
+                  {
+                    revision: result.queue.revision,
+                    label: edit2.kind === "clear" ? "清空队列" : "队列操作"
+                  }
+                ].slice(-20);
+              else this.undoStack = [];
+            } else this.undoStack = [];
+          }
+          return { ...result, queue: { ...result.queue } };
+        } catch (error) {
+          if (this.current(attachment)) {
+            this.requiresRefresh = true;
+            this.resetPages();
+          }
+          throw error;
+        }
+      });
+    }
+    get canUndo() {
+      return !!this.queue && !this.requiresRefresh && (this.queue.canUndo ?? this.undoStack.length > 0);
+    }
+    /** A source repair changes metadata for one occurrence, not queue membership.
+     * Retain a valid undo chain, but never resurrect an already invalid one. */
+    replaceSource(command) {
+      const attachment = this.attachment;
+      return this.control(async () => {
+        if (!this.current(attachment) || !this.queue) return null;
+        if (!this.api.replaceSource) throw new Error("Playback source repair is unavailable");
+        if (this.requiresRefresh) throw new Error("Refresh the library queue before repairing it");
+        if (this.queue.id !== command.queue.id || this.queue.revision !== command.queue.revision)
+          throw new Error("Playback queue changed during source preparation");
+        try {
+          const repaired = await this.api.replaceSource(command);
+          if (!this.current(attachment)) return null;
+          const undo = this.undoStack.at(-1);
+          if (undo?.revision === command.queue.revision) undo.revision = repaired.revision;
+          this.queue = repaired;
+          this.resetPages();
+          return { ...repaired };
+        } catch (error) {
+          if (this.current(attachment)) {
+            this.requiresRefresh = true;
+            this.resetPages();
+          }
+          throw error;
+        }
+      });
+    }
+    extend(items) {
+      const input = structuredClone(items), attachment = this.attachment;
+      return this.control(async () => {
+        if (!this.current(attachment) || !this.queue) return null;
+        if (!this.api.extendQueue) throw new Error("Automatic queue extensions are unavailable");
+        if (this.requiresRefresh) throw new Error("Refresh the library queue before extending it");
+        try {
+          const result = await this.api.extendQueue(this.queue.id, this.queue.revision, input);
+          if (!this.current(attachment)) return null;
+          this.queue = result.queue;
+          this.undoStack = [];
+          this.resetPages();
+          return result;
+        } catch (error) {
+          if (this.current(attachment)) {
+            this.requiresRefresh = true;
+            this.resetPages();
+          }
+          throw error;
+        }
+      });
+    }
+    get undoLabel() {
+      return this.queue?.undoLabel ?? this.undoStack.at(-1)?.label ?? "";
+    }
+    undo(expectedRevision = this.queue?.revision ?? -1) {
+      if (!this.canUndo || this.queue?.revision !== expectedRevision || this.queue.canUndo === void 0 && this.undoStack.at(-1)?.revision !== expectedRevision)
+        return Promise.resolve(null);
+      return this.edit({ kind: "undo" }).then((result) => {
+        if (result) {
+          this.undoStack = this.undoStack.slice(0, -1);
+          const previous = this.undoStack.at(-1);
+          if (previous) previous.revision = result.queue.revision;
+        }
+        return result;
+      });
+    }
+    /** Call only after the replacement session has durably stopped referencing it. */
+    delete() {
+      const attachment = this.attachment;
+      return this.control(async () => {
+        if (!this.current(attachment) || !this.queue) return false;
+        if (this.requiresRefresh) throw new Error("Refresh the library queue before deleting it");
+        try {
+          await this.syncReference([]);
+          await this.api.deleteQueue(this.queue.id, this.queue.revision);
+          if (this.current(attachment)) this.detach();
+          return true;
+        } catch (error) {
+          if (this.current(attachment)) {
+            await this.syncReference(this.queue ? [this.queue.id] : []).catch(() => {
+            });
+            this.requiresRefresh = true;
+            this.resetPages();
+          }
+          throw error;
+        }
+      });
+    }
+    invalidateLibrary(revision2) {
+      if (!Number.isSafeInteger(revision2) || revision2 < 0) throw new Error("Invalid library revision");
+      if (revision2 <= Math.max(this.minimumLibraryRevision, this.libraryRevision ?? 0)) return;
+      this.minimumLibraryRevision = revision2;
+      this.resetPages();
+    }
+    loadPage(page2) {
+      if (!Number.isSafeInteger(page2) || page2 < 0)
+        return Promise.reject(new Error("Invalid library queue page"));
+      if (this.disposed) return Promise.reject(new Error("Library queue source was disposed"));
+      if (this.requiresRefresh)
+        return Promise.reject(new Error("Refresh the library queue before reading it"));
+      if (!this.queue) return Promise.resolve(null);
+      const cached = this.pages.get(page2);
+      if (cached) {
+        this.pages.delete(page2);
+        this.pages.set(page2, cached);
+        return Promise.resolve(cached);
+      }
+      const key = `${this.epoch}:${page2}`, existing = this.reads.get(key);
+      if (existing) return existing;
+      if (this.waiting.length >= LIBRARY_CACHE_PAGES)
+        return Promise.reject(new Error("Too many pending library queue pages"));
+      const promise = new Promise((resolve, reject) => {
+        this.waiting.push({ epoch: this.epoch, queue: { ...this.queue }, page: page2, resolve, reject });
+      });
+      this.reads.set(key, promise);
+      void promise.then(
+        () => this.reads.delete(key),
+        () => this.reads.delete(key)
+      );
+      this.pump();
+      return promise;
+    }
+    pump() {
+      while (!this.disposed && this.activeReads < 2 && this.waiting.length) {
+        const request = this.waiting.shift();
+        this.activeReads++;
+        void this.fetch(request).finally(() => {
+          this.activeReads--;
+          this.pump();
+        });
+      }
+    }
+    async fetch(request) {
+      try {
+        const page2 = await this.api.readQueue(
+          request.queue.id,
+          request.page * LIBRARY_PAGE_SIZE,
+          LIBRARY_PAGE_SIZE
+        );
+        if (this.disposed || request.epoch !== this.epoch) {
+          request.resolve(null);
+          return;
+        }
+        if (page2.revision !== request.queue.revision) {
+          if (page2.revision > request.queue.revision) {
+            this.requiresRefresh = true;
+            this.resetPages();
+          }
+          request.resolve(null);
+          return;
+        }
+        if (page2.libraryRevision < Math.max(this.minimumLibraryRevision, this.libraryRevision ?? 0)) {
+          request.resolve(null);
+          return;
+        }
+        const offset = request.page * LIBRARY_PAGE_SIZE;
+        if (page2.offset !== offset || page2.total !== request.queue.total || page2.items.length !== Math.max(0, Math.min(LIBRARY_PAGE_SIZE, page2.total - offset)) || page2.items.some((item, i) => item.position !== offset + i))
+          throw new Error("Database returned an invalid library queue page");
+        if (this.libraryRevision !== null && page2.libraryRevision > this.libraryRevision)
+          this.resetPages();
+        this.libraryRevision = page2.libraryRevision;
+        this.pages.set(request.page, page2);
+        while (this.pages.size > LIBRARY_CACHE_PAGES)
+          this.pages.delete(this.pages.keys().next().value);
+        request.resolve(page2);
+      } catch (error) {
+        if (request.epoch !== this.epoch || this.disposed) request.resolve(null);
+        else request.reject(error);
+      }
+    }
+    /** Fetch the selected occurrence plus an immediate successor for native CUE
+     * handoff. Holes stay in the queue; navigation skips them inside SQL. At most
+     * two detail pages are read, never a walk over an arbitrarily large hole. */
+    async playbackWindow(options = {}) {
+      const queue = this.queue ? { ...this.queue } : null, attachment = this.attachment;
+      if (!queue || queue.index < 0) return null;
+      const pageNumber = Math.floor(queue.index / LIBRARY_PAGE_SIZE);
+      const first = await this.loadPage(pageNumber);
+      if (!first || !this.current(attachment) || this.queue?.revision !== queue.revision) return null;
+      const current = first.items[queue.index % LIBRARY_PAGE_SIZE];
+      if (!current?.track || current.queueEntryId !== queue.selectedEntryId) return null;
+      let next = !options.repeat ? first.items.find((item) => item.position > queue.index && item.track) : void 0;
+      const libraryRevision = first.libraryRevision;
+      if (!options.repeat && !next) {
+        const nextPage = (pageNumber + 1) * LIBRARY_PAGE_SIZE < queue.total ? pageNumber + 1 : options.wrap ? 0 : -1;
+        if (nextPage >= 0) {
+          const page2 = nextPage === pageNumber ? first : await this.loadPage(nextPage);
+          if (!page2 || page2.libraryRevision !== libraryRevision) return null;
+          next = page2.items.find((item) => item.queueEntryId !== current.queueEntryId && item.track);
+        }
+      }
+      if (!this.current(attachment) || this.queue?.revision !== queue.revision || libraryRevision < this.minimumLibraryRevision || libraryRevision !== this.libraryRevision)
+        return null;
+      return {
+        queue,
+        libraryRevision,
+        lastPlayablePosition: first.lastPlayablePosition,
+        items: next ? [current, next] : [current]
+      };
+    }
+    dispose() {
+      this.disposed = true;
+      this.detach();
+    }
+  }
+  async function buildLibraryQueuePages(api, produce, start, options = {}) {
+    start = { ...start };
+    const id2 = start.id ?? crypto.randomUUID();
+    let accepting = false, failed = false, failure2;
+    let sequence = 0, total = 0;
+    let ready;
+    const state = { inFlight: null };
+    const reject = (error) => {
+      if (!failed) {
+        failed = true;
+        failure2 = error;
+      }
+      throw failure2;
+    };
+    const check = () => {
+      if (failed) throw failure2;
+      if (options.signal?.aborted) throw new Error("队列构建已取消");
+      options.guard?.();
+    };
+    const append = (items) => {
+      let request;
+      try {
+        check();
+        if (!accepting) throw new Error("队列数据源已关闭");
+        if (state.inFlight) throw new Error("请等待上一批队列构建完成");
+        if (!Array.isArray(items) || items.length > LIBRARY_PAGE_SIZE)
+          throw new Error("每批最多构建 200 首");
+        if (!items.length) return Promise.resolve();
+        const batch = structuredClone([...items]);
+        request = (async () => {
+          const reply = await api.buildQueue({
+            kind: "append",
+            id: id2,
+            sequence: ++sequence,
+            items: batch
+          });
+          if (reply.kind !== "building" || reply.id !== id2 || reply.sequence !== sequence || reply.total !== total + batch.length)
+            throw new Error("队列批次回复无效，请重新开始，不要重放批次");
+          total = reply.total;
+          check();
+        })().catch(reject);
+        state.inFlight = request;
+        void request.then(
+          () => {
+            if (state.inFlight === request) state.inFlight = null;
+          },
+          () => {
+            if (state.inFlight === request) state.inFlight = null;
+          }
+        );
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          failure2 = error;
+        }
+        request = Promise.reject(failure2);
+        void request.catch(() => {
+        });
+      }
+      return request;
+    };
+    check();
+    try {
+      const opened = await api.buildQueue({
+        kind: "begin",
+        id: id2,
+        contentRevision: start.contentRevision,
+        order: start.order
+      });
+      if (opened.kind !== "building" || opened.id !== id2 || opened.sequence !== 0 || opened.total !== 0)
+        throw new Error("队列构建回复无效");
+      check();
+      accepting = true;
+      try {
+        await produce(append);
+        if (state.inFlight) throw new Error("请等待每批队列构建完成后结束数据源");
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          failure2 = error;
+        }
+      } finally {
+        accepting = false;
+        await state.inFlight?.catch(() => {
+        });
+      }
+      check();
+      const selectedIndex = (typeof start.selectedIndex === "function" ? start.selectedIndex() : start.selectedIndex) ?? (total ? 0 : -1);
+      const reply = await api.buildQueue({ kind: "commit", id: id2, sequence: ++sequence, selectedIndex });
+      if (reply.kind === "ready") ready = reply.queue;
+      check();
+      if (reply.kind !== "ready" || reply.id !== id2 || reply.queue.total !== total || reply.queue.index !== selectedIndex || reply.queue.order !== start.order)
+        throw new Error("队列发布回复无效，未切换播放来源");
+      return reply.queue;
+    } catch (error) {
+      if (ready) await api.deleteQueue(ready.id, ready.revision).catch(() => {
+      });
+      else await api.buildQueue({ kind: "abort", id: id2 }).catch(() => {
+      });
+      throw error;
+    } finally {
+      accepting = false;
+    }
+  }
+  function createLibraryPlaybackController(api, cell = (value) => ({ value })) {
+    const source = new LibraryQueueSource(api);
+    const active = cell(false);
+    const window = cell(null);
+    const snapshot = cell(null);
+    const contentRevision = cell(0);
+    const busy = cell(false);
+    let epoch = 0;
+    let pending = 0;
+    let tail = Promise.resolve();
+    function detach() {
+      epoch++;
+      active.value = false;
+      window.value = null;
+      snapshot.value = null;
+      source.detach();
+    }
+    function run(action, requireActive = true) {
+      if (pending >= 8) return Promise.reject(new Error("播放队列操作过多，请稍后重试"));
+      const generation = epoch;
+      const isCurrent = () => generation === epoch && active.value === requireActive;
+      pending++;
+      busy.value = true;
+      const result = tail.then(() => isCurrent() ? action(isCurrent) : null).finally(() => {
+        pending--;
+        busy.value = pending > 0;
+      });
+      tail = result.catch(() => {
+      });
+      return result;
+    }
+    const windowOptions = (mode) => ({
+      repeat: mode === "repeat",
+      wrap: mode === "listLoop" || mode === "shuffle"
+    });
+    function stagePages(produce, start, mode, adopt, options = {}) {
+      const generation = epoch;
+      start = { ...start };
+      return run(async (isCurrent) => {
+        if (!api.buildQueue) throw new Error("数据库流式队列尚未接入");
+        let ready;
+        let adopted = false, retained = false, accepting = true;
+        const check = () => {
+          if (!accepting || !isCurrent()) throw new Error("播放来源已变化，队列构建已中断");
+          if (options.signal?.aborted) throw new Error("队列构建已取消");
+          if (contentRevision.value > start.contentRevision)
+            throw new Error("曲库已变化，未切换播放来源");
+          options.guard?.();
+        };
+        try {
+          ready = await buildLibraryQueuePages(
+            { buildQueue: (command) => api.buildQueue(command), deleteQueue: api.deleteQueue },
+            produce,
+            start,
+            { ...options, guard: check }
+          );
+          check();
+          const restored = await source.restore(ready.id);
+          check();
+          if (!restored || restored.revision !== ready.revision)
+            throw new Error("暂存队列已变化，未切换播放来源");
+          if (!restored.total) return null;
+          const bound = ready.playMode === mode ? { queue: ready } : await source.edit({
+            kind: "mode",
+            mode: mode === "heart" ? "sequential" : mode
+          });
+          check();
+          if (!bound) throw new Error("暂存队列已变化，未切换播放来源");
+          ready = bound.queue;
+          const result = await source.playbackWindow(windowOptions(mode));
+          check();
+          if (result && result.libraryRevision !== start.contentRevision)
+            throw new Error("曲库已变化，未切换播放来源");
+          if (!result || result.items[0]?.queueEntryId !== ready.selectedEntryId)
+            throw new Error("未能读取原选中歌曲，未切换播放来源");
+          await adopt(
+            result,
+            () => {
+              check();
+              adopted = true;
+              active.value = true;
+              publish(result);
+            },
+            () => {
+              retained = true;
+            }
+          );
+          if (!adopted) throw new Error("队列尚未接管，未切换播放来源");
+          return result;
+        } finally {
+          accepting = false;
+          if (!adopted) {
+            if (generation === epoch && !active.value) source.detach();
+            if (ready && !retained) await api.deleteQueue(ready.id, ready.revision).catch(() => {
+            });
+          }
+        }
+      }, false);
+    }
+    async function readSelection(mode, isCurrent) {
+      const result = await source.playbackWindow(windowOptions(mode));
+      return isCurrent() ? result : null;
+    }
+    function publish(result) {
+      if (result) {
+        window.value = result;
+        snapshot.value = result.queue;
+        contentRevision.value = Math.max(contentRevision.value, result.libraryRevision);
+      }
+      return result;
+    }
+    function assertExpected(expected) {
+      const queue = source.state.queue;
+      if (expected && (queue?.id !== expected.id || queue.revision !== expected.revision))
+        throw new Error("播放队列已变化，请刷新后重试");
+    }
+    async function commit(edit22, options) {
+      const generation = epoch;
+      const result = await source.edit(edit22, options);
+      if (result && generation === epoch && active.value) snapshot.value = result.queue;
+      return result;
+    }
+    async function firstPlayable(mode, isCurrent, check) {
+      let result = await readSelection(mode, isCurrent);
+      check?.();
+      const selected = source.state.queue;
+      if (!result && isCurrent() && selected?.selectedEntryId) {
+        const page2 = await source.loadPage(Math.floor(selected.index / LIBRARY_PAGE_SIZE));
+        check?.();
+        if (!page2 || !isCurrent()) return null;
+        if (page2.items[selected.index % LIBRARY_PAGE_SIZE]?.track) {
+          result = await readSelection(mode, isCurrent);
+          if (!result && isCurrent()) throw new Error("曲库正在更新，请重试读取播放队列");
+          check?.();
+          return publish(result);
+        }
+        const next = await commit({ kind: "step", direction: 1, wrap: true });
+        check?.();
+        if (next && !next.reachedEnd && isCurrent()) result = await readSelection(mode, isCurrent);
+      }
+      if (!result && isCurrent()) throw new Error("播放队列中没有可用的本地歌曲");
+      check?.();
+      return publish(result);
+    }
+    function create(query2, selectedId, mode, randomStart = false) {
+      if (pending >= 8) return Promise.reject(new Error("播放队列操作过多，请稍后重试"));
+      detach();
+      active.value = true;
+      return run(async (isCurrent) => {
+        const created = await source.create(query2, selectedId);
+        if (!created || !isCurrent()) return null;
+        snapshot.value = created;
+        if (randomStart && !selectedId && created.total > 1) {
+          const index = Math.floor(Math.random() * created.total);
+          const page2 = await source.loadPage(Math.floor(index / LIBRARY_PAGE_SIZE));
+          if (!page2 || !isCurrent()) return null;
+          const entry = page2.items[index % LIBRARY_PAGE_SIZE];
+          if (!entry) throw new Error("未能读取随机播放起点");
+          await commit({ kind: "select", entryId: entry.queueEntryId });
+          if (!isCurrent()) return null;
+        }
+        await commit({ kind: "mode", mode: mode === "heart" ? "sequential" : mode });
+        return isCurrent() ? firstPlayable(mode, isCurrent) : null;
+      });
+    }
+    function restore(reference2, mode, canRestore, applySavedMode = false) {
+      if (pending >= 8) return Promise.reject(new Error("播放队列操作过多，请稍后重试"));
+      detach();
+      active.value = true;
+      const generation = epoch;
+      return run(async (ownsSource) => {
+        const isCurrent = () => ownsSource() && canRestore();
+        const restored = await source.restore(reference2.id);
+        if (!restored || !isCurrent()) {
+          if (ownsSource()) detach();
+          return null;
+        }
+        snapshot.value = restored;
+        mode = applySavedMode ? mode : libraryQueueResumeMode(restored, mode);
+        if (applySavedMode)
+          await commit({ kind: "mode", mode: mode === "heart" ? "sequential" : mode });
+        if (!isCurrent()) {
+          if (ownsSource()) detach();
+          return null;
+        }
+        const result = await firstPlayable(mode, isCurrent);
+        if (!isCurrent()) {
+          if (ownsSource()) detach();
+          return null;
+        }
+        return result;
+      }).catch((error) => {
+        if (generation === epoch) detach();
+        throw error;
+      });
+    }
+    function adoptLive(reference2, mode, canAdopt) {
+      if (pending >= 8) return Promise.reject(new Error("播放队列操作过多，请稍后重试"));
+      detach();
+      active.value = true;
+      const generation = epoch;
+      return run(async (ownsSource) => {
+        const current = () => ownsSource() && canAdopt();
+        const queue = await source.restore(reference2.id);
+        if (!current()) {
+          if (ownsSource()) detach();
+          return null;
+        }
+        if (!queue || queue.revision !== reference2.revision || queue.index !== reference2.index || queue.selectedEntryId !== reference2.entryId || queue.playMode !== void 0 && queue.playMode !== mode)
+          throw new Error("后台播放队列已变化，未接管原生播放");
+        const result = await readSelection(mode, current);
+        if (!current()) {
+          if (ownsSource()) detach();
+          return null;
+        }
+        if (!result || result.queue.revision !== reference2.revision || result.items[0]?.position !== reference2.index || result.items[0]?.queueEntryId !== reference2.entryId || !result.items[0]?.track)
+          throw new Error("无法读取后台正在播放的歌曲，未接管原生播放");
+        return publish(result);
+      }).catch((error) => {
+        if (generation === epoch) detach();
+        throw error;
+      });
+    }
+    function adoptStopped(reference2, mode, canAdopt) {
+      if (pending >= 8) return Promise.reject(new Error("播放队列操作过多，请稍后重试"));
+      detach();
+      active.value = true;
+      const generation = epoch;
+      return run(async (ownsSource) => {
+        const current = () => ownsSource() && canAdopt();
+        const queue = await source.restore(reference2.id);
+        if (!current()) return null;
+        if (!queue || queue.revision !== reference2.revision || queue.index !== reference2.index || queue.selectedEntryId !== reference2.entryId || libraryQueueResumeMode(queue, mode) !== mode)
+          throw new Error("后台播放队列已变化，请重新读取恢复状态");
+        const page2 = await source.loadPage(Math.floor(queue.index / LIBRARY_PAGE_SIZE));
+        if (!current()) return null;
+        const row = page2?.items[queue.index % LIBRARY_PAGE_SIZE];
+        if (!page2 || row?.queueEntryId !== reference2.entryId)
+          throw new Error("无法读取后台播放队列，请重试");
+        return publish({
+          queue,
+          libraryRevision: page2.libraryRevision,
+          lastPlayablePosition: page2.lastPlayablePosition,
+          items: [row]
+        });
+      }).then((result) => {
+        if (!result && generation === epoch) detach();
+        return result;
+      }).catch((error) => {
+        if (generation === epoch) detach();
+        throw error;
+      });
+    }
+    function navigate(direction, wrap, mode) {
+      return run(async (isCurrent) => {
+        const result = await commit({ kind: "step", direction, wrap });
+        if (!result || !isCurrent()) return null;
+        if (result.reachedEnd) return { reachedEnd: true, window: null };
+        return { reachedEnd: false, window: publish(await readSelection(mode, isCurrent)) };
+      });
+    }
+    function select(index, mode) {
+      if (!Number.isSafeInteger(index) || index < 0) return Promise.resolve(null);
+      return run(async (isCurrent) => {
+        if (!source.state.queue || index >= source.state.queue.total) return null;
+        const page2 = await source.loadPage(Math.floor(index / LIBRARY_PAGE_SIZE));
+        const entry = page2?.items[index % LIBRARY_PAGE_SIZE];
+        if (!entry?.track || !isCurrent()) return null;
+        await commit({ kind: "select", entryId: entry.queueEntryId });
+        return isCurrent() ? publish(await readSelection(mode, isCurrent)) : null;
+      });
+    }
+    function selectEntry(entryId, expected, mode) {
+      return run(async (isCurrent) => {
+        assertExpected(expected);
+        await commit({ kind: "select", entryId });
+        return isCurrent() ? firstPlayable(mode, isCurrent) : null;
+      });
+    }
+    function acceptNative(entryId, expected, mode) {
+      return run(async (isCurrent) => {
+        const previous = window.value;
+        if (!previous || previous.queue.id !== expected.id || previous.queue.revision !== expected.revision || !previous.items.some((entry) => entry.queueEntryId === entryId && entry.track))
+          return null;
+        await commit({ kind: "select", entryId });
+        return isCurrent() ? publish(await readSelection(mode, isCurrent)) : null;
+      });
+    }
+    function edit2(edit22, mode, expected, options) {
+      return run(async (isCurrent) => {
+        assertExpected(expected);
+        const items = edit22.kind === "insert" ? edit22.items ?? edit22.trackIds?.map((id2) => ({ id: id2 })) : void 0;
+        if (edit22.kind === "insert" && items && items.length > LIBRARY_MAX_PAGE_SIZE) {
+          let inserted = 0;
+          const batches = Array.from(
+            { length: Math.ceil(items.length / LIBRARY_MAX_PAGE_SIZE) },
+            (_, index) => index * LIBRARY_MAX_PAGE_SIZE
+          );
+          if (edit22.afterEntryId && !edit22.beforeEntryId) batches.reverse();
+          try {
+            for (const offset of batches) {
+              if (!isCurrent()) return null;
+              const batch = items.slice(offset, offset + LIBRARY_MAX_PAGE_SIZE);
+              const result = await commit(
+                {
+                  kind: "insert",
+                  items: batch,
+                  ...edit22.afterEntryId ? { afterEntryId: edit22.afterEntryId } : {},
+                  ...edit22.beforeEntryId ? { beforeEntryId: edit22.beforeEntryId } : {}
+                },
+                options
+              );
+              if (!result || !isCurrent()) return null;
+              inserted += batch.length;
+            }
+          } catch (error) {
+            throw new Error(
+              `已确认添加 ${inserted} 首；后续批次中断，请刷新队列后检查：${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        } else await commit(edit22, options);
+        if (!isCurrent()) return null;
+        if (!source.state.queue?.total) {
+          window.value = null;
+          return null;
+        }
+        return firstPlayable(mode, isCurrent);
+      });
+    }
+    function extend(items, mode) {
+      return run(async (isCurrent) => {
+        const result = await source.extend(items);
+        if (!result || !isCurrent()) return null;
+        snapshot.value = result.queue;
+        return publish(await readSelection(mode, isCurrent));
+      });
+    }
+    function undo(mode, expected) {
+      return run(async (isCurrent) => {
+        assertExpected(expected);
+        const result = await source.undo(source.state.queue?.revision);
+        if (!result || !isCurrent()) return null;
+        if (!source.state.queue?.total) {
+          window.value = null;
+          return null;
+        }
+        return firstPlayable(result.queue.playMode ?? mode, isCurrent);
+      });
+    }
+    function appendPages(produce, mode, options = {}) {
+      return run(async (isCurrent) => {
+        let inserted = 0;
+        let accepting = true, failed = false, failure2;
+        const state = { inFlight: null };
+        const reject = (error) => {
+          if (!failed) {
+            failed = true;
+            failure2 = error;
+          }
+          throw failure2;
+        };
+        const check = () => {
+          if (failed) throw failure2;
+          if (options.signal?.aborted) throw new Error("队列添加已取消");
+          if (!isCurrent()) throw new Error("播放来源已变化");
+          options.guard?.();
+        };
+        const append = (items) => {
+          let request;
+          try {
+            check();
+            if (!accepting) throw new Error("队列数据源已关闭");
+            if (state.inFlight) throw new Error("请等待上一批队列添加完成");
+            if (!Array.isArray(items) || items.length > LIBRARY_PAGE_SIZE)
+              throw new Error("每批最多添加 200 首");
+            if (!items.length) return Promise.resolve();
+            const batch = [...items];
+            request = (async () => {
+              const result = await commit({ kind: "insert", items: batch });
+              if (!result) throw new Error("播放来源已变化");
+              inserted += batch.length;
+              check();
+            })().catch(reject);
+            state.inFlight = request;
+            void request.then(
+              () => {
+                if (state.inFlight === request) state.inFlight = null;
+              },
+              () => {
+                if (state.inFlight === request) state.inFlight = null;
+              }
+            );
+          } catch (error) {
+            if (!failed) {
+              failed = true;
+              failure2 = error;
+            }
+            request = Promise.reject(failure2);
+            void request.catch(() => {
+            });
+          }
+          return request;
+        };
+        try {
+          try {
+            check();
+            await produce(append);
+            if (state.inFlight) throw new Error("请等待每批队列添加完成后结束数据源");
+          } catch (error) {
+            if (!failed) {
+              failed = true;
+              failure2 = error;
+            }
+          } finally {
+            accepting = false;
+            await state.inFlight?.catch(() => {
+            });
+          }
+          check();
+          const result = source.state.queue?.total ? await firstPlayable(mode, isCurrent, check) : null;
+          check();
+          return { inserted, window: result };
+        } catch (error) {
+          throw new Error(
+            `已确认添加 ${inserted} 首；后续批次中断，请刷新队列后检查：${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      });
+    }
+    function refresh(mode) {
+      return run(async (isCurrent) => {
+        const refreshed = await source.refresh();
+        if (!isCurrent() || !refreshed) return null;
+        snapshot.value = refreshed;
+        if (!refreshed.total) {
+          window.value = null;
+          return null;
+        }
+        return isCurrent() ? firstPlayable(refreshed.playMode ?? mode, isCurrent) : null;
+      });
+    }
+    function editPositions(action, mode) {
+      const expected = reference();
+      return run(async (isCurrent) => {
+        const queue = source.state.queue;
+        if (!expected || queue?.id !== expected.id || queue.revision !== expected.revision)
+          throw new Error("播放队列已变化，请重新选择操作项");
+        if (action.kind === "move" && (!Number.isSafeInteger(action.to) || action.to < 0 || action.to >= queue.total || action.from === action.to))
+          return null;
+        const at = async (index) => {
+          if (!Number.isSafeInteger(index) || index < 0 || index >= queue.total) return null;
+          const page2 = await source.loadPage(Math.floor(index / LIBRARY_PAGE_SIZE));
+          return page2?.items[index % LIBRARY_PAGE_SIZE] ?? null;
+        };
+        const from = await at(action.kind === "remove" ? action.index : action.from);
+        if (!from || !isCurrent()) return null;
+        let edit22 = { kind: "remove", entryIds: [from.queueEntryId] };
+        if (action.kind === "move") {
+          const target = await at(action.to > action.from ? action.to + 1 : action.to);
+          if (!isCurrent()) return null;
+          edit22 = {
+            kind: "move",
+            entryId: from.queueEntryId,
+            beforeEntryId: target?.queueEntryId ?? null
+          };
+        }
+        await commit(edit22);
+        if (!isCurrent()) return null;
+        if (!source.state.queue?.total) {
+          window.value = null;
+          return null;
+        }
+        return firstPlayable(mode, isCurrent);
+      });
+    }
+    function forEachPage(visit) {
+      return run(async (isCurrent) => {
+        const expected = source.state.queue;
+        if (!expected) return null;
+        let visited = 0;
+        let tracks2 = 0;
+        let libraryRevision = null;
+        for (let pageNumber = 0; pageNumber * LIBRARY_PAGE_SIZE < expected.total; pageNumber++) {
+          const page2 = await source.loadPage(pageNumber);
+          if (!page2 || !isCurrent() || source.state.queue?.id !== expected.id || source.state.queue.revision !== expected.revision || page2.revision !== expected.revision || page2.total !== expected.total || libraryRevision !== null && source.state.libraryRevision !== null && source.state.libraryRevision !== libraryRevision)
+            return null;
+          if (libraryRevision === null) libraryRevision = page2.libraryRevision;
+          else if (page2.libraryRevision !== libraryRevision) return null;
+          visited++;
+          tracks2 += page2.items.reduce((count, item) => count + (item.track ? 1 : 0), 0);
+          await visit(page2);
+        }
+        if (!isCurrent() || source.state.queue?.id !== expected.id || source.state.queue.revision !== expected.revision || source.state.libraryRevision !== libraryRevision)
+          return null;
+        return { queue: { ...expected }, visited, tracks: tracks2 };
+      });
+    }
+    function reference() {
+      const queue = active.value ? window.value?.queue : null;
+      return queue?.selectedEntryId ? {
+        id: queue.id,
+        revision: queue.revision,
+        entryId: queue.selectedEntryId,
+        index: queue.index
+      } : null;
+    }
+    function track(result = window.value) {
+      const entry = result?.items[0];
+      return entry?.track ? libraryQueueTrack(entry.track, entry.queueEntryId) : null;
+    }
+    async function playbackWindow(current, mode) {
+      const generation = epoch;
+      if (!active.value || current.queueEntryId !== reference()?.entryId) return null;
+      const result = await source.playbackWindow(windowOptions(mode));
+      if (generation !== epoch || !active.value || !result || result.queue.selectedEntryId !== current.queueEntryId || result.items[0]?.track?.id !== current.id)
+        return null;
+      return publish(result);
+    }
+    async function replaceSource(command, mode) {
+      const generation = epoch;
+      const repaired = await source.replaceSource(command);
+      if (!repaired || generation !== epoch) throw new Error("Playback source detached during repair");
+      const result = await source.playbackWindow(windowOptions(mode));
+      if (!result || generation !== epoch) throw new Error("Cannot read the repaired playback window");
+      publish(result);
+      return result;
+    }
+    return {
+      active,
+      window,
+      snapshot,
+      contentRevision,
+      busy,
+      create,
+      restore,
+      adoptLive,
+      adoptStopped,
+      navigate,
+      select,
+      selectEntry,
+      acceptNative,
+      edit: edit2,
+      extend,
+      appendPages,
+      stagePages,
+      undo,
+      canUndo: () => source.canUndo,
+      undoLabel: () => source.undoLabel,
+      editPositions,
+      refresh,
+      reference,
+      track,
+      playbackWindow,
+      replaceSource,
+      forEachPage,
+      detach,
+      invalidateLibrary: (revision2) => {
+        source.invalidateLibrary(revision2);
+        contentRevision.value = Math.max(contentRevision.value, revision2);
+      },
+      loadPage: (page2) => source.loadPage(page2),
+      get diagnostics() {
+        return source.state;
+      },
+      dispose: () => {
+        detach();
+        source.dispose();
+      }
+    };
+  }
+  const DEFAULT_SLEEP_TIMER_SETTINGS = {
+    defaultMinutes: 30,
+    fadeSeconds: 10
+  };
+  const UNPLAYABLE_SOURCE_PATTERN = /^(?:blob|data|twilight-media|twilight-audio):/i;
+  const isAfterglowPlayableSource = (source) => {
+    if (typeof source !== "string") return false;
+    const trimmed = source.trim();
+    if (!trimmed || UNPLAYABLE_SOURCE_PATTERN.test(trimmed)) return false;
+    if (/^https?:\/\//i.test(trimmed)) return true;
+    if (/^file:\/\//i.test(trimmed)) return true;
+    if (/^[a-z]:[\\/]/i.test(trimmed)) return true;
+    if (trimmed.startsWith("\\\\")) return true;
+    return trimmed.startsWith("/");
+  };
+  class SourceAuthorizationError extends Error {
+    code = "SOURCE_ACCESS_DENIED";
+  }
+  async function authorizeNativeSource(source, authorize) {
+    return await prepareNativeSource(source, authorize);
+  }
+  async function prepareNativeSource(source, prepare) {
+    const local = isAfterglowPlayableSource(source) && !/^https?:\/\//i.test(source);
+    const iso = local ? /^(.*\.iso)(\?area=(?:stereo|multichannel)&track=[1-9]\d{0,8})$/i.exec(source) : null;
+    try {
+      if (!iso) return await prepare(source);
+      const path = await prepare(iso[1]);
+      return path === null ? null : `${path}${iso[2]}`;
+    } catch (cause) {
+      if (cause instanceof SourceAuthorizationError) throw cause;
+      throw new SourceAuthorizationError(
+        cause instanceof Error ? cause.message : "Audio source authorization was refused",
+        { cause }
+      );
+    }
+  }
+  const isSourceCurrent = (resolved, now = Date.now()) => resolved.expiresAt === null || resolved.expiresAt > now;
+  const textField = (record2, key) => {
+    const value = record2[key];
+    return typeof value === "string" && value ? value : void 0;
+  };
+  const numberField = (record2, key) => {
+    const value = record2[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+  };
+  const nativeQueueItem = (track, source, logicalIndex, logicalQueueEnd) => {
+    const record2 = track && typeof track === "object" ? track : {};
+    const cueRange2 = record2.cueRange && typeof record2.cueRange === "object" ? record2.cueRange : void 0;
+    const item = {
+      id: textField(record2, "id") ?? `afterglow:${logicalIndex}`,
+      ...textField(record2, "queueEntryId") ? { queueEntryId: textField(record2, "queueEntryId") } : {},
+      source,
+      ...logicalQueueEnd !== void 0 ? { logicalQueueEnd } : {},
+      ...textField(record2, "title") ? { title: textField(record2, "title") } : {},
+      ...textField(record2, "artist") ? { artist: textField(record2, "artist") } : {},
+      ...textField(record2, "album") ? { album: textField(record2, "album") } : {},
+      ...numberField(record2, "duration") !== void 0 ? { duration: numberField(record2, "duration") } : {},
+      ...numberField(record2, "sampleRate") !== void 0 ? { sampleRate: numberField(record2, "sampleRate") } : {},
+      ...numberField(record2, "bitrate") !== void 0 ? { bitrate: numberField(record2, "bitrate") } : {},
+      ...numberField(record2, "bitDepth") !== void 0 ? { bitDepth: numberField(record2, "bitDepth") } : {},
+      ...cueRange2 ? { cueRange: cueRange2 } : {}
+    };
+    for (const key of [
+      "measuredIntegratedLufs",
+      "measuredTruePeakDb",
+      "replayGainTrackGainDb",
+      "replayGainAlbumGainDb",
+      "replayGainTrackPeak",
+      "replayGainAlbumPeak",
+      "r128TrackGainDb",
+      "r128AlbumGainDb"
+    ]) {
+      const value = numberField(record2, key);
+      if (value !== void 0) item[key] = value;
+    }
+    const codec = textField(record2, "codec") ?? textField(record2, "format");
+    if (codec) item.codec = codec;
+    return item;
+  };
+  const END_RECOVERY_BUDGET_MS = 3e4;
+  class LibraryNativeQueueMaintainer {
+    options;
+    mapping;
+    active = false;
+    generation = 0;
+    pending = null;
+    requested = false;
+    engineDrain = Promise.resolve();
+    // One successor cache and one retry slot, independent of traversal length.
+    source = null;
+    retry = null;
+    rejected = null;
+    hasEndTarget = false;
+    endRecovery = null;
+    sourceReads = new AbortController();
+    constructor(options) {
+      this.options = options;
+      this.mapping = [...options.nativeQueueIndices];
+    }
+    getMapping() {
+      return [...this.mapping];
+    }
+    isActive() {
+      return this.active;
+    }
+    getPlaybackEndRecoveryDeadline() {
+      const end = this.options.engine.getPlaybackEnd();
+      if (!this.active || !this.hasEndTarget || !end || this.options.mayContinueAfterEnd?.() === false)
+        return null;
+      const key = `${end.intent}:${end.selection.queueToken}:${end.selection.index}`;
+      if (this.endRecovery?.key !== key)
+        this.endRecovery = {
+          key,
+          deadline: (this.options.now ?? Date.now)() + END_RECOVERY_BUDGET_MS
+        };
+      return this.endRecovery.deadline;
+    }
+    start() {
+      if (!this.active) {
+        this.active = true;
+        this.generation++;
+        this.sourceReads = new AbortController();
+      }
+      return this.tick();
+    }
+    stop() {
+      this.active = false;
+      this.generation++;
+      this.sourceReads.abort();
+      this.pending = null;
+      this.requested = false;
+      return this.engineDrain;
+    }
+    tick() {
+      if (!this.active) return Promise.resolve();
+      this.requested = true;
+      if (this.pending) return this.pending;
+      const generation = this.generation;
+      const current = () => this.active && generation === this.generation;
+      const run = Promise.resolve().then(async () => {
+        try {
+          while (current() && this.requested) {
+            this.requested = false;
+            const maintain = () => current() ? this.maintain(current) : Promise.resolve();
+            if (this.options.resources) await this.options.resources.use(maintain);
+            else await maintain();
+          }
+        } catch (error) {
+          if (current()) this.options.onError(error instanceof Error ? error.message : String(error));
+        }
+      });
+      this.pending = run;
+      void run.finally(() => {
+        if (this.pending === run) this.pending = null;
+      });
+      return run;
+    }
+    async maintain(current) {
+      const { engine } = this.options;
+      const info = await engine.getPlaybackInfo();
+      if (!current()) return;
+      const token2 = engine.getQueueToken();
+      const native = engine.getQueueSnapshot();
+      const item = native[info.queueIndex];
+      const index = this.mapping[info.queueIndex];
+      if (!token2 || !item?.queueEntryId || native.length !== this.mapping.length || !Number.isSafeInteger(index) || index < 0 && !(index === -1 && this.options.allowDetachedCurrent?.()))
+        throw new Error("afterglow_requires_mappable_current_track");
+      if (info.state !== "stopped" && info.source !== item.source)
+        throw new Error("afterglow_requires_mappable_current_track");
+      const plan = await this.options.readWindow(index, item.queueEntryId, current);
+      if (!current() || !plan) return;
+      const { window, mode } = plan;
+      const lastPlayablePosition = window.lastPlayablePosition ?? window.queue.total - 1;
+      const row = window.items[0];
+      if (window.queue.index !== index || window.queue.selectedEntryId !== item.queueEntryId || row?.position !== index || row.queueEntryId !== item.queueEntryId || row.track && row.track.id !== item.id)
+        throw new Error("afterglow_library_queue_changed");
+      if (mode === "heart") throw new Error("afterglow_requires_renderer_play_mode");
+      const next = mode === "repeat" ? void 0 : window.items[1];
+      const repeat = mode === "repeat" || (mode === "shuffle" || mode === "listLoop") && !next && !!row.track;
+      const nativeMode = repeat ? "repeat" : "sequential";
+      const endTarget = repeat ? row : next;
+      this.hasEndTarget = !!endTarget?.track;
+      const end = engine.getPlaybackEnd();
+      if (info.state === "stopped" && end && !endTarget?.track) return;
+      if (info.state === "stopped" && end && endTarget?.track) {
+        const deadline = this.getPlaybackEndRecoveryDeadline();
+        if (!deadline || (this.options.now ?? Date.now)() >= deadline) return;
+        const key = `${endTarget.queueEntryId}:${window.libraryRevision}`;
+        if (this.retry?.key === key && (this.options.now ?? Date.now)() < this.retry.after) return;
+        const cached2 = this.source?.key === key ? this.source.prepared : null;
+        let prepared2;
+        try {
+          prepared2 = cached2 && isSourceCurrent(cached2.resolved, (this.options.now ?? Date.now)()) ? cached2 : await this.prepare(libraryQueueTrack(endTarget.track, endTarget.queueEntryId));
+          if (!current()) return;
+        } catch (error) {
+          if (!current()) return;
+          this.retry = { key, after: (this.options.now ?? Date.now)() + 3e4 };
+          throw error;
+        }
+        if (!current()) return;
+        const { resolved: resolved2 } = prepared2;
+        const target2 = nativeQueueItem(
+          prepared2.track,
+          resolved2.source,
+          endTarget.position,
+          mode !== "repeat" && endTarget.position === lastPlayablePosition
+        );
+        await this.options.commit(async () => {
+          if (!current() || !await this.options.validateWindow(plan) || !current()) return;
+          if ((this.options.now ?? Date.now)() >= deadline) return;
+          this.requireFreshSource(key, resolved2, endTarget.position);
+          let selected = false;
+          const mutation = (async () => {
+            try {
+              prepared2.confirm?.();
+              await this.options.commitSource?.(plan, endTarget.queueEntryId, prepared2);
+              if (!current()) return;
+              prepared2.confirm?.();
+              this.requireFreshSource(key, resolved2, endTarget.position);
+              const advanced = await engine.continueAfterPlaybackEnd({
+                expected: end,
+                item: target2,
+                playMode: nativeMode,
+                isCurrent: () => current() && this.options.mayContinueAfterEnd?.() !== false && (this.options.now ?? Date.now)() < deadline && isSourceCurrent(resolved2, (this.options.now ?? Date.now)()),
+                onSelected: () => {
+                  selected = true;
+                  this.mapping = [endTarget.position];
+                  if (current()) this.options.onMappingChanged(this.getMapping());
+                }
+              });
+              if (!advanced && endTarget.track?.id !== prepared2.track.id)
+                throw new Error("Native EOF rejected the repaired source identity");
+              if (advanced && current()) {
+                this.source = null;
+                this.retry = null;
+                this.rejected = null;
+                this.endRecovery = null;
+                this.requested = true;
+              } else if (current() && !isSourceCurrent(resolved2, (this.options.now ?? Date.now)())) {
+                this.options.onError(this.expiredSourceError(key, endTarget.position).message);
+              }
+            } finally {
+              if (selected && engine.getQueueToken()) {
+                const actual = await engine.getPlaybackInfo();
+                if (actual.queueIndex === 0 && engine.getQueueSnapshot()[0]?.queueEntryId === endTarget.queueEntryId)
+                  await this.options.onPlaybackAdvanced(
+                    actual,
+                    endTarget.position,
+                    endTarget.queueEntryId,
+                    prepared2.track
+                  );
+              }
+            }
+          })().catch(async (error) => {
+            if (current()) {
+              this.options.onError(error instanceof Error ? error.message : String(error));
+              this.active = false;
+            }
+            await this.options.onCommitError?.(error);
+            throw error;
+          });
+          this.engineDrain = mutation.catch(() => {
+          });
+          await mutation;
+        }, current);
+        return;
+      }
+      const attemptKey = `${token2}:${info.queueIndex}:${window.queue.revision}:${window.libraryRevision}:${nativeMode}`;
+      if (this.rejected === attemptKey) return;
+      const nextKey = next ? `${next.queueEntryId}:${window.libraryRevision}` : "";
+      if (this.source?.key !== nextKey) this.source = null;
+      if (this.retry?.key !== nextKey) this.retry = null;
+      const apply = async (items, mapping, prepared2) => {
+        let changed = false;
+        await this.options.commit(async () => {
+          if (!current()) return;
+          const valid = await this.options.validateWindow(plan);
+          if (!current() || !valid || engine.getQueueToken() !== token2) return;
+          const latest = await engine.getPlaybackInfo();
+          if (!current() || engine.getQueueToken() !== token2 || latest.queueIndex !== info.queueIndex || latest.source !== info.source)
+            return;
+          if (latest.state === "stopped" && engine.getPlaybackEnd()) {
+            this.requested = true;
+            return;
+          }
+          if (prepared2) this.requireFreshSource(nextKey, prepared2.resolved, next.position);
+          const mutation = (async () => {
+            prepared2?.confirm?.();
+            if (prepared2) await this.options.commitSource?.(plan, next.queueEntryId, prepared2);
+            if (!current()) return;
+            prepared2?.confirm?.();
+            if (prepared2) this.requireFreshSource(nextKey, prepared2.resolved, next.position);
+            const result = await engine.rebindQueue({
+              expected: {
+                queueToken: token2,
+                index: info.queueIndex,
+                id: item.id,
+                source: item.source
+              },
+              items,
+              startIndex: 0,
+              playMode: nativeMode
+            });
+            if (!result) {
+              if (prepared2 && next.track?.id !== prepared2.track.id)
+                throw new Error("Native handoff rejected the repaired source identity");
+              if (current()) {
+                this.rejected = attemptKey;
+                this.options.onError("afterglow_library_queue_changed");
+              }
+              return;
+            }
+            this.rejected = null;
+            this.mapping = mapping;
+            changed = true;
+            if (current()) this.options.onMappingChanged(this.getMapping());
+          })().catch(async (error) => {
+            if (current()) {
+              this.active = false;
+              this.options.onError(error instanceof Error ? error.message : String(error));
+            }
+            await this.options.onCommitError?.(error);
+            throw error;
+          });
+          this.engineDrain = mutation.catch(() => {
+          });
+          await mutation;
+        }, current);
+        return changed;
+      };
+      const residentNext = native[info.queueIndex + 1];
+      const expectedNext = next?.track && residentNext ? nativeQueueItem(
+        libraryQueueTrack(next.track, next.queueEntryId),
+        residentNext.source,
+        next.position,
+        next.position === lastPlayablePosition
+      ) : null;
+      const reusable = !!expectedNext && (!this.source || isSourceCurrent(this.source.prepared.resolved, (this.options.now ?? Date.now)())) && residentNext.queueEntryId === next.queueEntryId && this.mapping[info.queueIndex + 1] === next.position && JSON.stringify(
+        nativeQueueItem(
+          residentNext,
+          residentNext.source,
+          next.position,
+          residentNext.logicalQueueEnd
+        )
+      ) === JSON.stringify(expectedNext);
+      const base = [
+        { ...item, logicalQueueEnd: mode !== "repeat" && index === lastPlayablePosition },
+        ...reusable ? [residentNext] : []
+      ];
+      const baseMap = [index, ...reusable ? [next.position] : []];
+      if (info.queueIndex !== 0 || native.length !== base.length || info.playMode !== nativeMode || native.some(
+        (entry, i) => entry.queueEntryId !== base[i]?.queueEntryId || entry.logicalQueueEnd !== base[i]?.logicalQueueEnd
+      )) {
+        if (await apply(base, baseMap, reusable ? this.source?.prepared : void 0))
+          this.requested = true;
+        return;
+      }
+      if (!next?.track) {
+        this.options.onHealthy?.();
+        return;
+      }
+      const now = (this.options.now ?? Date.now)();
+      const cached = this.source;
+      if (cached && isSourceCurrent(cached.prepared.resolved, now) && (cached.prepared.resolved.expiresAt === null || cached.prepared.resolved.expiresAt - now > 12e4 || now < cached.refreshAfter)) {
+        this.options.onHealthy?.();
+        return;
+      }
+      if (this.retry && now < this.retry.after) return;
+      let prepared;
+      try {
+        prepared = await this.prepare(libraryQueueTrack(next.track, next.queueEntryId));
+      } catch (error) {
+        if (!current()) return;
+        this.retry = { key: nextKey, after: (this.options.now ?? Date.now)() + 3e4 };
+        throw error;
+      }
+      if (!current()) return;
+      const { resolved } = prepared;
+      this.requireFreshSource(nextKey, resolved, next.position);
+      const target = nativeQueueItem(
+        prepared.track,
+        resolved.source,
+        next.position,
+        next.position === lastPlayablePosition
+      );
+      if (!reusable || JSON.stringify(expectedNext) !== JSON.stringify(target)) {
+        if (!await apply([base[0], target], [index, next.position], prepared) || !current()) {
+          if (current() && this.requested) this.rememberSource(nextKey, prepared);
+          return;
+        }
+      }
+      this.retry = null;
+      this.rememberSource(nextKey, prepared);
+      this.options.onHealthy?.();
+    }
+    expiredSourceError(key, position) {
+      this.retry = { key, after: (this.options.now ?? Date.now)() + 3e4 };
+      return new Error(`afterglow_core_source_expired:${position}`);
+    }
+    requireFreshSource(key, resolved, position) {
+      if (isSourceCurrent(resolved, (this.options.now ?? Date.now)())) return;
+      throw this.expiredSourceError(key, position);
+    }
+    async prepare(track) {
+      if (this.options.prepareSource)
+        return this.options.prepareSource(track, this.sourceReads.signal);
+      const resolved = await this.options.resolver.resolve(track, this.sourceReads.signal);
+      this.sourceReads.signal.throwIfAborted();
+      if (!resolved) throw new Error("afterglow_core_source_unavailable");
+      return {
+        track,
+        resolved: {
+          ...resolved,
+          source: await authorizeNativeSource(resolved.source, this.options.authorize)
+        }
+      };
+    }
+    rememberSource(key, prepared) {
+      const { resolved } = prepared;
+      const resolvedAt = (this.options.now ?? Date.now)();
+      this.source = {
+        key,
+        prepared,
+        refreshAfter: resolvedAt + Math.min(3e4, Math.max(1e3, ((resolved.expiresAt ?? Infinity) - resolvedAt) / 2))
+      };
+    }
+  }
+  function toPlaybackQueueSnapshot(track) {
+    return {
+      id: track.id,
+      queueEntryId: track.queueEntryId,
+      sourceSelection: track.sourceSelection,
+      title: track.title,
+      artist: track.artist,
+      artists: track.artists,
+      album: track.album,
+      albumId: track.albumId,
+      albumArtist: track.albumArtist,
+      filePath: track.filePath,
+      fileName: track.fileName,
+      dir: track.dir,
+      subTrack: track.subTrack,
+      cueRange: track.cueRange,
+      cueSheetPath: track.cueSheetPath,
+      cueEncoding: track.cueEncoding,
+      duration: track.duration,
+      size: track.size,
+      cover: track.cover,
+      coverSource: track.coverSource ?? null,
+      lyrics: null,
+      source: track.source,
+      ncmSongId: track.ncmSongId,
+      networkSource: track.networkSource,
+      streamUrl: track.streamUrl ?? null,
+      streamQuality: track.streamQuality,
+      format: track.format,
+      sampleRate: track.sampleRate,
+      bitrate: track.bitrate,
+      bitDepth: track.bitDepth,
+      bpm: track.bpm,
+      replayGainTrackGainDb: track.replayGainTrackGainDb,
+      replayGainAlbumGainDb: track.replayGainAlbumGainDb,
+      replayGainTrackPeak: track.replayGainTrackPeak,
+      replayGainAlbumPeak: track.replayGainAlbumPeak,
+      r128TrackGainDb: track.r128TrackGainDb,
+      r128AlbumGainDb: track.r128AlbumGainDb
+    };
+  }
+  function toPlaybackQueueSnapshots(tracks2) {
+    const assignedIds = /* @__PURE__ */ new Set();
+    const occurrenceByTrack = /* @__PURE__ */ new Map();
+    return tracks2.map((track) => {
+      const occurrence = occurrenceByTrack.get(track.id) ?? 0;
+      occurrenceByTrack.set(track.id, occurrence + 1);
+      const base = track.queueEntryId?.trim() || `queue:${track.id}:${occurrence}`;
+      let queueEntryId = base;
+      let suffix = 1;
+      while (assignedIds.has(queueEntryId)) {
+        queueEntryId = `${base}:${suffix}`;
+        suffix += 1;
+      }
+      assignedIds.add(queueEntryId);
+      const snapshot = toPlaybackQueueSnapshot(track);
+      snapshot.queueEntryId = queueEntryId;
+      return snapshot;
+    });
+  }
+  const MAX_SESSION_TRACK_INLINE_COVER_LENGTH = 256 * 1024;
+  function cloneTrackForPlaybackSession(track) {
+    const source = getTrackSource(track);
+    const cover = track.cover && (/^(?:blob:|twilight-media:)/i.test(track.cover) || /^data:/i.test(track.cover) && track.cover.length > MAX_SESSION_TRACK_INLINE_COVER_LENGTH) ? null : track.cover;
+    const cloned = {
+      id: track.id,
+      queueEntryId: track.queueEntryId,
+      title: track.title,
+      artist: track.artist,
+      artists: track.artists?.map((item) => ({ ...item })),
+      album: track.album,
+      albumId: track.albumId,
+      albumArtist: track.albumArtist,
+      filePath: track.filePath,
+      fileName: track.fileName,
+      dir: track.dir,
+      subTrack: track.subTrack,
+      cueRange: track.cueRange ? { ...track.cueRange } : void 0,
+      cueSheetPath: track.cueSheetPath,
+      cueEncoding: track.cueEncoding,
+      duration: track.duration,
+      size: track.size,
+      cover,
+      coverSource: track.coverSource ?? null,
+      lyrics: null,
+      source: track.source,
+      ncmSongId: track.ncmSongId,
+      networkSource: track.networkSource,
+      streamUrl: source === "local" ? track.streamUrl : null,
+      format: track.format,
+      sampleRate: track.sampleRate,
+      bitrate: track.bitrate,
+      bitDepth: track.bitDepth,
+      bpm: track.bpm,
+      // bpmAnalysis 不进会话克隆：tempoMap 动辄数百段/轨，全队列克隆时代价过高，
+      // 且队列与会话恢复界面从不消费它；播放时分析结果可按需重取。
+      replayGainTrackGainDb: track.replayGainTrackGainDb,
+      replayGainAlbumGainDb: track.replayGainAlbumGainDb,
+      replayGainTrackPeak: track.replayGainTrackPeak,
+      replayGainAlbumPeak: track.replayGainAlbumPeak,
+      r128TrackGainDb: track.r128TrackGainDb,
+      r128AlbumGainDb: track.r128AlbumGainDb
+    };
+    return cloned;
+  }
+  async function importLegacyQueue(options) {
+    const { session, api } = options;
+    const tracks2 = toPlaybackQueueSnapshots(
+      (session.queue?.length ? session.queue : [session.track]).map(cloneTrackForPlaybackSession)
+    );
+    let selected = session.track.queueEntryId ? tracks2.findIndex(
+      (t) => t.queueEntryId === session.track.queueEntryId && t.id === session.track.id
+    ) : -1;
+    if (selected < 0 && Number.isInteger(session.queueIndex) && session.queueIndex >= 0 && tracks2[session.queueIndex]?.id === session.track.id)
+      selected = session.queueIndex;
+    if (selected < 0) selected = tracks2.findIndex((t) => t.id === session.track.id);
+    const sameSelection = selected >= 0 && (!session.track.queueEntryId || tracks2[selected].queueEntryId === session.track.queueEntryId);
+    if (selected < 0) selected = 0;
+    const id2 = `core-session-${options.sessionRevision}`;
+    const start = {
+      kind: "begin",
+      id: id2,
+      contentRevision: options.libraryRevision,
+      order: session.playMode === "shuffle" ? "shuffle" : "original"
+    };
+    let opened = await api.importLegacyPlaybackQueue(start);
+    while (opened.kind === "retiring") opened = await api.importLegacyPlaybackQueue(start);
+    let queue;
+    if (opened.kind === "ready") queue = opened.queue;
+    else {
+      if (opened.kind !== "building" || opened.total !== 0 || opened.sequence !== 0)
+        throw new Error("Invalid Core queue import start");
+      let sequence = 0;
+      for (let offset = 0; offset < tracks2.length; offset += LIBRARY_PAGE_SIZE) {
+        const items = tracks2.slice(offset, offset + LIBRARY_PAGE_SIZE).map((track) => ({
+          id: track.id,
+          occurrenceId: track.queueEntryId,
+          ...getTrackSource(track) === "local" ? { localSnapshot: { ...track } } : { snapshot: { ...track } }
+        }));
+        const result2 = await api.importLegacyPlaybackQueue({
+          kind: "append",
+          id: id2,
+          sequence: ++sequence,
+          items
+        });
+        if (result2.kind !== "building" || result2.sequence !== sequence || result2.total !== offset + items.length)
+          throw new Error("Invalid Core queue import batch acknowledgement");
+      }
+      const result = await api.importLegacyPlaybackQueue({
+        kind: "commit",
+        id: id2,
+        sequence: ++sequence,
+        selectedIndex: selected
+      });
+      if (result.kind !== "ready") throw new Error("Core queue import did not publish");
+      queue = result.queue;
+    }
+    if (queue.id !== id2 || queue.total !== tracks2.length || queue.index !== selected || queue.selectedEntryId !== tracks2[selected].queueEntryId || queue.order !== start.order)
+      throw new Error("Published Core import does not match the legacy session");
+    for (let offset = 0; offset < tracks2.length; offset += LIBRARY_PAGE_SIZE) {
+      const page2 = await api.readQueue(id2, offset, LIBRARY_PAGE_SIZE, {
+        expectedRevision: queue.revision
+      });
+      if (page2.offset !== offset || page2.items.length !== Math.min(LIBRARY_PAGE_SIZE, tracks2.length - offset))
+        throw new Error("Incomplete Core queue import readback");
+      for (let i = 0; i < page2.items.length; i++) {
+        const row = page2.items[i], track = tracks2[offset + i];
+        if (row.queueEntryId !== track.queueEntryId || row.track?.id !== track.id || row.track.filePath !== track.filePath || row.track.subTrack !== track.subTrack || JSON.stringify(normalizeCueRange(row.track.cueRange)) !== JSON.stringify(normalizeCueRange(track.cueRange)))
+          throw new Error("Core queue import changed a legacy occurrence or source segment");
+      }
+    }
+    const duration = tracks2[selected].duration;
+    const position = sameSelection && session.mode === "trackAndPosition" ? Math.max(
+      0,
+      Number.isFinite(duration) && duration > 0 ? Math.min(session.position, duration) : session.position
+    ) : 0;
+    return { queue, position };
+  }
+  async function automaticPlaybackMask(tracks2, allowed, signal) {
+    signal?.throwIfAborted();
+    if (!allowed || !tracks2.length) return tracks2.map(() => true);
+    const result = await allowed(tracks2, signal);
+    signal?.throwIfAborted();
+    if (!Array.isArray(result) || result.length !== tracks2.length || tracks2.some((_, index) => typeof result[index] !== "boolean"))
+      throw new Error("Automatic playback preferences returned an invalid batch");
+    return result;
+  }
+  async function automaticPlaybackTracks(tracks2, allowed, signal, explicitId) {
+    const mask = await automaticPlaybackMask(tracks2, allowed, signal);
+    return tracks2.filter((track, index) => mask[index] || track.id === explicitId);
+  }
+  const RETRY_MS = 15e3;
+  const REFILL_THRESHOLD = 3;
+  class PersonalizedQueue {
+    context = null;
+    controller = new AbortController();
+    pending = null;
+    retryAfter = 0;
+    failedWrite = false;
+    error = null;
+    closed = false;
+    options;
+    constructor(options) {
+      this.options = options;
+    }
+    attach(context) {
+      this.stop();
+      this.context = { ...context };
+    }
+    stop() {
+      this.controller.abort(new Error("Personalized queue changed"));
+      this.controller = new AbortController();
+      this.context = null;
+      this.retryAfter = 0;
+      this.failedWrite = false;
+      this.error = null;
+    }
+    persisted() {
+      return this.context ? { ...this.context } : void 0;
+    }
+    recover() {
+      this.failedWrite = false;
+      this.error = null;
+      this.retryAfter = 0;
+    }
+    state() {
+      const queue = this.options.queue();
+      return this.context && queue?.id === this.context.queueId ? {
+        ...this.context,
+        loading: this.pending !== null,
+        remaining: Math.max(0, queue.total - queue.index - 1),
+        error: this.error
+      } : null;
+    }
+    observe(playing) {
+      if (this.closed) return;
+      if (this.context && this.options.queue()?.id !== this.context.queueId) this.stop();
+      const state = this.state();
+      if (playing && state && state.remaining < REFILL_THRESHOLD) void this.refill().catch(() => {
+      });
+    }
+    async fetch(providerId, key, signal, fmFallback = false, explicitId) {
+      const method = key === "fm" || fmFallback ? "fetchPersonalFm" : "fetchPrivateContent";
+      if (!this.options.supportedMethods(providerId).includes(method))
+        throw new Error(`Provider does not support ${method}`);
+      const response = await this.options.call(providerId, method, signal);
+      signal.throwIfAborted();
+      if (!Array.isArray(response))
+        throw new Error("Provider returned an invalid recommendation batch");
+      const seen = /* @__PURE__ */ new Set();
+      const tracks2 = response.flatMap((value) => {
+        if (!value || typeof value !== "object" || typeof value.id !== "string" || !value.id || seen.has(value.id))
+          return [];
+        seen.add(value.id);
+        const track = toPlaybackQueueSnapshot(
+          libraryTrack({ ...value, source: providerId, filePath: "" })
+        );
+        track.streamUrl = null;
+        return [track];
+      });
+      return automaticPlaybackTracks(tracks2, this.options.automaticPlaybackAllowed, signal, explicitId);
+    }
+    async initial(providerId, key, signal, explicitId) {
+      const tracks2 = await this.fetch(providerId, key, signal, false, explicitId);
+      return tracks2.length || key !== "radar" || !this.options.supportedMethods(providerId).includes("fetchPersonalFm") ? tracks2 : this.fetch(providerId, key, signal, true, explicitId);
+    }
+    refill(explicit = false) {
+      if (this.pending) return this.pending;
+      if (explicit && this.failedWrite)
+        throw new Error("Refresh stopped playback before requesting another personalized refill");
+      if (this.closed || !this.context || this.failedWrite || !explicit && this.options.now() < this.retryAfter)
+        return Promise.resolve(0);
+      const context = this.context, signal = this.controller.signal;
+      const current = () => !signal.aborted && this.context === context && this.options.queue()?.id === context.queueId;
+      const work = Promise.resolve().then(async () => {
+        const append = async (tracks2) => {
+          if (!current()) return 0;
+          try {
+            return await this.options.append(context.queueId, tracks2, current);
+          } catch (error) {
+            if (current()) this.failedWrite = true;
+            throw error;
+          }
+        };
+        let added = await append(await this.fetch(context.providerId, context.key, signal));
+        if (current() && added === 0 && context.key === "radar" && this.options.supportedMethods(context.providerId).includes("fetchPersonalFm"))
+          added = await append(await this.fetch(context.providerId, context.key, signal, true));
+        if (current()) {
+          this.error = null;
+          this.retryAfter = added ? 0 : this.options.now() + RETRY_MS;
+        }
+        return added;
+      }).catch((error) => {
+        if (current()) {
+          this.error = projectCoreError(error);
+          this.retryAfter = this.options.now() + RETRY_MS;
+        }
+        throw error;
+      }).finally(() => {
+        if (this.pending === work) this.pending = null;
+        this.options.changed();
+      });
+      this.pending = work;
+      this.options.changed();
+      return work;
+    }
+    async shutdown() {
+      this.closed = true;
+      this.controller.abort(new Error("Personalized queue is shutting down"));
+      await this.pending?.catch(() => {
+      });
+    }
+  }
+  function shuffleArray(arr) {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+  function tracks(value) {
+    if (!Array.isArray(value)) throw new Error("Invalid NCM track batch");
+    return value.flatMap((value2) => {
+      if (!value2 || typeof value2 !== "object" || typeof value2.id !== "string") return [];
+      const track = toPlaybackQueueSnapshot(libraryTrack({ ...value2, source: "ncm", filePath: "" }));
+      track.streamUrl = null;
+      return track.ncmSongId && track.ncmSongId > 0 ? [track] : [];
+    });
+  }
+  class HeartQueue {
+    context = null;
+    controller = new AbortController();
+    pending = null;
+    failedWrite = false;
+    retryAfter = 0;
+    error = null;
+    closed = false;
+    options;
+    constructor(options) {
+      this.options = options;
+    }
+    attach(context) {
+      this.stop();
+      this.context = structuredClone(context);
+    }
+    stop() {
+      this.controller.abort(new Error("Heart queue changed"));
+      this.controller = new AbortController();
+      this.context = null;
+      this.failedWrite = false;
+      this.retryAfter = 0;
+      this.error = null;
+    }
+    persisted() {
+      return this.context ? structuredClone(this.context) : void 0;
+    }
+    recover() {
+      this.failedWrite = false;
+      this.retryAfter = 0;
+      this.error = null;
+    }
+    state() {
+      const queue = this.options.queue(), track = this.options.track();
+      const attached = !!this.context && this.context.queueId === queue?.id;
+      const available = attached && track?.source === "ncm";
+      return {
+        available,
+        active: attached && !!this.context?.baseQueue,
+        loading: this.pending !== null,
+        remaining: queue ? Math.max(0, queue.total - queue.index - 1) : 0,
+        error: this.error
+      };
+    }
+    observe(playing) {
+      if (this.closed) return;
+      if (this.context && this.context.queueId !== this.options.queue()?.id) this.stop();
+      const state = this.state();
+      if (playing && state.active && state.available && state.remaining < 3)
+        void this.refill().catch(() => {
+        });
+    }
+    async liked(signal, selectedId) {
+      const library = await this.options.call("fetchUserLibrary", [], signal);
+      signal.throwIfAborted();
+      const playlistId = Number(library?.likedPlaylist?.id);
+      if (!Number.isSafeInteger(playlistId) || playlistId <= 0)
+        throw new Error("NCM liked playlist is unavailable");
+      let selected = selectedId ? -1 : 0;
+      return {
+        playlistId,
+        selectedIndex: () => {
+          if (selected < 0) throw new Error("Selected liked song is unavailable");
+          return selected;
+        },
+        produce: async (append) => {
+          let offset = 0, position = 0;
+          for (; ; ) {
+            signal.throwIfAborted();
+            const page2 = await this.options.call(
+              "fetchLikedTracksPage",
+              [offset, 200, false],
+              signal
+            );
+            signal.throwIfAborted();
+            const batch = tracks(page2.tracks);
+            if (selectedId && selected < 0) {
+              const index = batch.findIndex((track) => track.id === selectedId);
+              if (index >= 0) selected = position + index;
+            }
+            await append(batch.map((track) => ({ id: track.id, snapshot: { ...track } })));
+            position += batch.length;
+            if (!page2.hasMore) break;
+            if (!Number.isSafeInteger(page2.nextOffset) || page2.nextOffset <= offset)
+              throw new Error("NCM liked playlist cursor did not advance");
+            offset = page2.nextOffset;
+          }
+        }
+      };
+    }
+    async fetch(playlistId, seed, signal) {
+      if (seed.source !== "ncm" || !seed.ncmSongId) throw new Error("Heart mode requires an NCM seed");
+      const result = await this.options.call(
+        "fetchIntelligenceList",
+        [
+          {
+            songId: seed.ncmSongId,
+            playlistId,
+            startSongId: seed.ncmSongId,
+            count: 20
+          }
+        ],
+        signal
+      );
+      signal.throwIfAborted();
+      return automaticPlaybackTracks(tracks(result), this.options.automaticPlaybackAllowed, signal);
+    }
+    refill(explicit = false) {
+      if (this.pending) return this.pending;
+      if (explicit && this.failedWrite)
+        throw new Error("Refresh stopped playback before another heart refill");
+      const context = this.context, seed = this.options.track(), signal = this.controller.signal;
+      if (this.closed || !context?.baseQueue || !seed || this.failedWrite || !explicit && this.options.now() < this.retryAfter)
+        return Promise.resolve(0);
+      if (seed.source !== "ncm" || !seed.ncmSongId) {
+        if (explicit) return Promise.reject(new Error("Heart mode requires an NCM seed"));
+        return Promise.resolve(0);
+      }
+      const current = () => !signal.aborted && context === this.context && this.options.queue()?.id === context.queueId;
+      const work = Promise.resolve().then(async () => {
+        const batch = await this.fetch(context.likedPlaylistId, seed, signal);
+        if (!current()) return 0;
+        let added;
+        try {
+          added = await this.options.append(context.queueId, batch, current);
+        } catch (error) {
+          if (current()) this.failedWrite = true;
+          throw error;
+        }
+        if (current()) {
+          this.error = null;
+          this.retryAfter = added ? 0 : this.options.now() + 15e3;
+        }
+        return added;
+      }).catch((error) => {
+        if (current()) {
+          this.error = projectCoreError(error);
+          this.retryAfter = this.options.now() + 15e3;
+        }
+        throw error;
+      }).finally(() => {
+        if (this.pending === work) this.pending = null;
+        this.options.changed();
+      });
+      this.pending = work;
+      this.options.changed();
+      return work;
+    }
+    async shutdown() {
+      this.closed = true;
+      this.controller.abort(new Error("Heart queue is shutting down"));
+      await this.pending?.catch(() => {
+      });
+    }
+  }
+  class CorePlaybackSession {
+    controller;
+    maintainer = null;
+    mapping = [];
+    info = null;
+    currentTrack = null;
+    mode = "sequential";
+    error = null;
+    intent = 0;
+    preview = new AbortController();
+    mutation = Promise.resolve();
+    observed = null;
+    observing = null;
+    initialized = false;
+    restored = false;
+    uncertain = false;
+    revision = 0;
+    lastSavedAt = 0;
+    persistence = Promise.resolve();
+    scheduledSave = null;
+    stopped = false;
+    committing = false;
+    sourceBarrier = null;
+    castBoundaryRevision = null;
+    sleepReset = Promise.resolve();
+    castSleepVolume = null;
+    abLoop = {
+      revision: 0,
+      occurrenceId: null,
+      a: null,
+      b: null,
+      mode: "off"
+    };
+    muted = false;
+    lastAudibleVolume = DEFAULT_SOFTWARE_VOLUME;
+    loadingIntent = null;
+    requestedState = null;
+    modeControls = Promise.resolve();
+    streamBuffering = false;
+    streamUnderruns = 0;
+    stopBufferingTimer = null;
+    personalized;
+    heart;
+    heartBase = null;
+    detachedHeartTrack = false;
+    heartTransition = false;
+    automaticEnd = null;
+    listen = (info) => {
+      if (this.options.cast?.active()) return;
+      this.observed = { info, token: info.queueToken ?? this.options.engine.getQueueToken() };
+      this.drainObservation();
+    };
+    crash = (event) => {
+      this.revoke();
+      this.resetAbLoopState();
+      this.uncertain = true;
+      this.error = event?.reason ?? "Audio service exited; playback remains stopped";
+      if (this.options.cast?.active()) {
+        void this.commit(() => this.failStopped(new Error(this.error))).catch(() => {
+        });
+      }
+      if (this.info) this.info = { ...this.info, state: "stopped" };
+      this.publish();
+    };
+    options;
+    constructor(options) {
+      this.options = options;
+      this.controller = createLibraryPlaybackController(options.queues);
+      this.personalized = options.personalized ? new PersonalizedQueue({
+        ...options.personalized,
+        automaticPlaybackAllowed: options.automaticPlaybackAllowed,
+        queue: () => {
+          const queue = this.controller.snapshot.value;
+          return queue ? {
+            id: queue.id,
+            revision: queue.revision,
+            total: queue.total,
+            index: queue.index,
+            occurrenceId: queue.selectedEntryId
+          } : null;
+        },
+        append: (id2, tracks2, current) => this.extendPersonalized(id2, tracks2, current),
+        now: options.now,
+        changed: () => this.publish()
+      }) : null;
+      this.heart = options.heart ? new HeartQueue({
+        ...options.heart,
+        automaticPlaybackAllowed: options.automaticPlaybackAllowed,
+        queue: () => this.queueReference(),
+        track: () => this.currentTrack,
+        append: (id2, tracks2, current) => this.extendPersonalized(id2, tracks2, current),
+        now: options.now,
+        changed: () => this.publish()
+      }) : null;
+    }
+    queueReference() {
+      const queue = this.controller.snapshot.value;
+      return queue ? {
+        id: queue.id,
+        revision: queue.revision,
+        total: queue.total,
+        index: queue.index,
+        occurrenceId: queue.selectedEntryId,
+        canUndo: queue.canUndo ?? false,
+        undoLabel: queue.undoLabel ?? null
+      } : null;
+    }
+    publish() {
+      this.observeStreamBuffering();
+      const awake = !this.options.sleepTimer?.triggered();
+      this.personalized?.observe(
+        awake && !this.uncertain && !this.restored && this.info?.state === "playing"
+      );
+      this.heart?.observe(
+        awake && !this.heartTransition && !this.uncertain && !this.restored && this.info?.state === "playing"
+      );
+      if (this.info)
+        this.options.observePlayback?.(this.currentTrack, { ...this.info, playMode: this.mode });
+      this.options.changed();
+    }
+    resetStreamBuffering() {
+      this.stopBufferingTimer?.();
+      this.stopBufferingTimer = null;
+      this.streamBuffering = false;
+      this.streamUnderruns = 0;
+    }
+    observeStreamBuffering() {
+      const track = this.currentTrack, info = this.info;
+      if (!track || !info || this.options.cast?.active() || this.restored || this.uncertain || track.source !== "radio" && track.source !== "podcast" && !/^https?:\/\//i.test(track.filePath || "") && !/^https?:\/\//i.test(track.streamUrl || "")) {
+        this.resetStreamBuffering();
+        return;
+      }
+      const underruns = Number(
+        info.diagnostics?.sessionUnderrunCount ?? info.outputInfo?.diagnostics?.sessionUnderrunCount ?? 0
+      );
+      if (info.state !== "playing" || this.requestedState && this.requestedState !== "playing") {
+        this.resetStreamBuffering();
+      } else if (underruns > this.streamUnderruns) {
+        this.streamBuffering = true;
+        this.stopBufferingTimer?.();
+        this.stopBufferingTimer = this.options.schedule(() => {
+          this.stopBufferingTimer = null;
+          this.streamBuffering = false;
+          this.publish();
+        }, 1500);
+      }
+      if (Number.isFinite(underruns) && underruns >= 0) this.streamUnderruns = underruns;
+    }
+    /** Metadata publication never reloads native playback or changes its occurrence. */
+    applyBpm(track, analysis) {
+      const current = this.currentTrack;
+      if (current && current.filePath === track.filePath) {
+        this.currentTrack = { ...current, bpmAnalysis: analysis };
+        this.publish();
+      }
+    }
+    clearBpm() {
+      if (this.currentTrack?.bpmAnalysis) {
+        this.currentTrack = { ...this.currentTrack, bpmAnalysis: void 0 };
+        this.publish();
+      }
+    }
+    acceptCast(sample, source = this.info?.source ?? "") {
+      if (!this.info) return;
+      this.info = {
+        ...this.info,
+        ...sample,
+        source,
+        playbackRate: 1,
+        duration: sample.duration || this.currentTrack?.duration || 0,
+        volume: this.castSleepVolume ?? sample.volume ?? this.info.volume,
+        queueIndex: this.controller.reference()?.index ?? 0,
+        queueToken: void 0,
+        queueRevision: void 0,
+        naturalBoundaries: this.info.naturalBoundaries ?? {
+          trackSerial: 0,
+          queueSerial: 0,
+          trackTimeMs: 0,
+          queueTimeMs: 0
+        },
+        upcomingQueueIndex: -1,
+        upcomingTrack: null,
+        nativePlaybackActive: false,
+        outputBackend: "cast",
+        codec: "",
+        bitrate: 0,
+        sourceSampleRate: 0,
+        sourceChannels: 0,
+        sourceBitDepth: 0,
+        decodedSampleRate: 0,
+        decodedBitDepth: 0,
+        decodedChannels: 0,
+        decodedSampleFormat: "",
+        actualSampleRate: 0,
+        actualBitDepth: 0,
+        actualChannels: 0,
+        outputPerfect: false,
+        sourceExact: false,
+        pcmPassthrough: false,
+        gaplessActive: false,
+        preloadReady: false,
+        crossfadeActive: false,
+        crossfadeSeconds: 0,
+        isDsd: false,
+        dsdMode: "",
+        dsdRate: 0
+      };
+    }
+    async startCast(command, signal) {
+      const cast = this.options.cast;
+      if (!cast) throw new Error("Cast runtime unavailable");
+      cast.assertDevice(command.deviceId, command.revision);
+      this.assertReference(command.queue);
+      if (this.controller.reference()?.entryId !== command.queue.occurrenceId)
+        throw Object.assign(new Error("Cast occurrence changed"), { code: "STALE_REVISION" });
+      if (this.currentTrack?.subTrack || this.currentTrack?.cueRange)
+        throw new Error("Cast does not support native subtracks or CUE segments");
+      const intent = this.beginPreparation();
+      let position = 0;
+      try {
+        await this.transport(async () => {
+          this.guard(intent, signal);
+          await this.nativeSelection();
+          this.assertReference(command.queue);
+          if (!this.currentTrack || this.currentTrack.queueEntryId !== command.queue.occurrenceId)
+            throw Object.assign(new Error("Cast occurrence changed"), { code: "STALE_REVISION" });
+          if (this.currentTrack.subTrack || this.currentTrack.cueRange)
+            throw new Error("Cast does not support native subtracks or CUE segments");
+          cast.assertDevice(command.deviceId, command.revision);
+          if (cast.state().phase === "ready") this.acceptCast(await cast.read());
+          position = this.info?.position ?? 0;
+          await this.clearAbLoop();
+          await this.options.engine.stop();
+          if ((await this.options.engine.getPlaybackInfo()).state !== "stopped")
+            throw new Error("Native Stop was not acknowledged");
+          this.guard(intent, signal);
+          await cast.select(command.deviceId, command.revision);
+          this.restored = true;
+          if (this.info) this.info = { ...this.info, state: "paused", nativePlaybackActive: false };
+          this.publish();
+        });
+        const base = this.controller.window.value;
+        await this.load(
+          this.detachedHeartTrack ? this.detachedWindow(base) : base,
+          intent,
+          true,
+          position,
+          signal
+        );
+      } catch (error) {
+        if (intent === this.intent && !this.uncertain) {
+          await this.commit(() => this.failStopped(error));
+          this.publish();
+        }
+        throw error;
+      } finally {
+        this.finishPreparation(intent);
+      }
+    }
+    async endCast(revision2) {
+      const cast = this.options.cast;
+      if (!cast) throw new Error("Cast runtime unavailable");
+      cast.assertRevision(revision2);
+      const intent = this.revoke();
+      await this.transport(async () => {
+        this.guard(intent);
+        try {
+          if (cast.state().phase === "ready") this.acceptCast(await cast.read());
+          const position = this.info?.position ?? 0;
+          await this.clearAbLoop();
+          await cast.end();
+          this.restored = true;
+          this.uncertain = false;
+          this.info = {
+            ...await this.options.engine.getPlaybackInfo(),
+            state: "paused",
+            position,
+            duration: this.currentTrack?.duration ?? 0,
+            nativePlaybackActive: false
+          };
+        } catch (error) {
+          await this.failStopped(error);
+          throw error;
+        } finally {
+          this.publish();
+        }
+      });
+      await this.flush();
+    }
+    observeCast(sample, revision2) {
+      const intent = this.intent;
+      void this.commit(async () => {
+        if (this.stopped || intent !== this.intent || !this.options.cast?.active() || this.uncertain || this.restored || revision2 !== this.options.cast.state().revision)
+          return false;
+        const previous = this.info;
+        const duration = sample.duration || this.currentTrack?.duration || 0;
+        const ended = sample.ended && previous?.state === "playing" && duration > 0 && Math.max(sample.position, previous.position) >= duration - 2;
+        const loopAtEnd = ended && this.abLoop.mode === "soft" && this.abLoop.b !== null && duration + 0.02 >= this.abLoop.b;
+        this.acceptCast(
+          ended ? { ...sample, position: duration, ...loopAtEnd ? { state: "playing" } : {} } : sample
+        );
+        if (await this.enforceAbLoop(intent)) {
+          this.publish();
+          return false;
+        }
+        if (ended && this.castBoundaryRevision !== revision2 && this.info) {
+          const boundaries = this.info.naturalBoundaries;
+          this.info.naturalBoundaries = {
+            ...boundaries,
+            trackSerial: boundaries.trackSerial + 1,
+            trackTimeMs: this.options.now()
+          };
+          this.options.naturalBoundary?.("trackEnd", this.options.now());
+          const queue = this.queueReference();
+          if (queue && queue.index === queue.total - 1 && this.mode !== "repeat")
+            this.options.naturalBoundary?.("queueEnd", this.options.now());
+        }
+        this.publish();
+        if (this.options.now() - this.lastSavedAt >= 5e3) this.scheduleSave();
+        if (ended && this.castBoundaryRevision !== revision2) {
+          this.castBoundaryRevision = revision2;
+          return true;
+        }
+        return false;
+      }).then(async (advance) => {
+        if (advance && intent === this.intent) await this.advanceCast();
+      }).catch((error) => {
+        if (intent === this.intent) this.castFailed(error, revision2);
+      });
+    }
+    castFailed(error, revision2) {
+      const intent = this.intent;
+      void this.commit(async () => {
+        if (this.stopped || intent !== this.intent || !this.options.cast?.active() || revision2 !== this.options.cast.state().revision)
+          return;
+        this.revoke();
+        await this.failStopped(error);
+        this.publish();
+      }).catch(() => {
+      });
+    }
+    async advanceCast() {
+      if (this.automaticQueue()) return this.navigateAutomatic(1, void 0, true);
+      const intent = this.beginPreparation(), signal = this.preview.signal;
+      try {
+        let reference = this.controller.reference();
+        if (!reference) return;
+        if (this.mode === "repeat" && this.currentTrack) {
+          const base = this.controller.window.value;
+          return await this.load(
+            this.detachedHeartTrack ? this.detachedWindow(base) : base,
+            intent,
+            true,
+            0,
+            signal
+          );
+        }
+        const next = () => this.detachedHeartTrack ? this.options.queues.readQueue(reference.id, 0, 1, { expectedRevision: reference.revision }).then((page2) => page2.items[0] ?? null) : this.options.queues.readNeighbor(
+          reference.id,
+          reference.revision,
+          reference.index,
+          1,
+          this.mode === "listLoop" || this.mode === "shuffle"
+        );
+        let target = await next();
+        if (!target && (this.personalized?.state() || this.heart?.state().active)) {
+          await (this.personalized?.state() ? this.personalized.refill() : this.heart.refill());
+          this.guard(intent, signal);
+          reference = this.controller.reference();
+          target = await next();
+        }
+        this.guard(intent, signal);
+        if (target?.track)
+          return await this.load(this.targetWindow(target), intent, true, 0, signal, {
+            selection: { expected: reference, native: null }
+          });
+        await this.stop();
+      } catch (error) {
+        if (intent === this.intent && !this.uncertain) {
+          await this.commit(() => this.failStopped(error));
+          this.publish();
+        }
+      } finally {
+        this.finishPreparation(intent);
+      }
+    }
+    async initialize() {
+      await this.options.engine.start();
+      this.info = await this.options.engine.getPlaybackInfo();
+      if (this.info.volume > 0) this.lastAudibleVolume = this.info.volume;
+      const saved = await this.options.repository.load();
+      this.revision = saved?.revision ?? 0;
+      if (saved?.data && this.options.resumeMode() !== "off") {
+        const session = saved.data;
+        this.options.sleepTimer?.restore(session.sleepTimer);
+        let position = session.position;
+        this.mode = session.playMode ?? "sequential";
+        if (session.libraryQueue) {
+          let window;
+          if (session.detachedHeartTrack && session.heart && this.heart) {
+            const queue = await this.options.queues.getQueue(session.libraryQueue.id);
+            window = await this.controller.adoptStopped(
+              {
+                id: queue.id,
+                revision: queue.revision,
+                index: queue.index,
+                entryId: queue.selectedEntryId
+              },
+              libraryQueueResumeMode(queue, this.mode),
+              () => !this.stopped
+            );
+            await this.updateTrack(session.track);
+          } else {
+            window = await this.controller.restore(
+              session.libraryQueue,
+              this.mode,
+              () => !this.stopped
+            );
+            await this.updateTrack(this.controller.track(window));
+          }
+          if (window) this.mode = libraryQueueResumeMode(window.queue, this.mode);
+        } else {
+          const imported = await importLegacyQueue({
+            api: this.options.queues,
+            session,
+            sessionRevision: this.revision,
+            libraryRevision: await this.options.queues.libraryRevision()
+          });
+          position = imported.position;
+          const queue = imported.queue;
+          const window = await this.controller.restore(
+            {
+              id: queue.id,
+              revision: queue.revision,
+              index: queue.index,
+              entryId: queue.selectedEntryId
+            },
+            this.mode,
+            () => !this.stopped,
+            true
+          );
+          await this.updateTrack(this.controller.track(window));
+        }
+        if (this.currentTrack) {
+          if (session.heart && session.heart.queueId === this.controller.reference()?.id && this.heart) {
+            if (session.heart.baseQueue) {
+              const base = createLibraryPlaybackController(this.options.queues);
+              try {
+                const queue = await this.options.queues.getQueue(session.heart.baseQueue.id);
+                const window = await base.adoptStopped(
+                  {
+                    id: queue.id,
+                    revision: queue.revision,
+                    index: queue.index,
+                    entryId: queue.selectedEntryId
+                  },
+                  libraryQueueResumeMode(queue, "sequential"),
+                  () => !this.stopped
+                );
+                if (!window) throw new Error("Heart base queue is unavailable");
+                this.heartBase = base;
+                this.mode = "heart";
+              } catch (error) {
+                base.dispose();
+                throw error;
+              }
+            }
+            this.heart.attach(session.heart);
+            if (session.detachedHeartTrack) {
+              this.detachedHeartTrack = true;
+              await this.updateTrack(session.track);
+            }
+          }
+          if (session.personalizedStream && session.personalizedStream.queueId === this.controller.reference()?.id)
+            this.personalized?.attach(session.personalizedStream);
+          this.restored = true;
+          this.info = {
+            ...this.info,
+            state: "paused",
+            position: this.options.resumeMode() === "trackAndPosition" ? position : 0,
+            duration: this.currentTrack.duration
+          };
+        }
+      }
+      this.initialized = true;
+      this.options.engine.on("playback-info", this.listen);
+      this.options.engine.on("playback-sample", this.listen);
+      this.options.engine.on("audio-service-crash", this.crash);
+      if (saved?.data && !saved.data.libraryQueue && this.currentTrack) {
+        await this.flush();
+      }
+      this.publish();
+    }
+    snapshot() {
+      const queue = this.controller.snapshot.value;
+      return {
+        abLoop: { ...this.abLoop },
+        loading: this.loadingIntent !== null,
+        isStreamBuffering: this.streamBuffering,
+        mute: {
+          muted: this.muted,
+          userVolume: this.info?.volume ?? 0,
+          lastAudibleVolume: this.lastAudibleVolume
+        },
+        playback: this.info ? projectCorePlayback({ ...this.info, playMode: this.mode }) : null,
+        // Transient URLs/authorization belong to the resolver, never the public snapshot.
+        track: this.currentTrack ? projectCoreTrack(this.currentTrack, this.currentTrack.queueEntryId) : null,
+        queue: queue ? {
+          id: queue.id,
+          revision: queue.revision,
+          total: queue.total,
+          index: queue.index,
+          occurrenceId: queue.selectedEntryId,
+          canUndo: queue.canUndo ?? false,
+          undoLabel: queue.undoLabel ?? null
+        } : null,
+        error: this.error ? projectCoreError(this.error) : null,
+        personalized: this.personalized?.state() ?? null,
+        heart: this.heart ? { ...this.heart.state(), ...this.detachedHeartTrack ? { available: false } : {} } : null
+      };
+    }
+    drainObservation() {
+      if (this.observing || this.stopped || this.committing) return;
+      if (!this.observed) return;
+      let advance = false;
+      const intent = this.intent;
+      this.observing = this.commit(async () => {
+        const intent2 = this.intent;
+        const observed = this.observed;
+        this.observed = null;
+        if (!observed || this.options.cast?.active() || this.restored || this.uncertain || observed.token !== this.options.engine.getQueueToken())
+          return;
+        const info = await this.options.engine.getPlaybackInfo();
+        await this.acceptNative(info);
+        if (observed.token !== this.options.engine.getQueueToken()) return;
+        this.info = info;
+        const looped = await this.enforceAbLoop(intent2);
+        const end = this.options.engine.getPlaybackEnd();
+        if (!looped && this.automaticQueue() && info.state === "stopped" && end && !this.options.sleepTimer?.triggered()) {
+          const key = `${end.intent}:${end.selection.queueToken}:${end.selection.index}`;
+          if (this.automaticEnd !== key) {
+            this.automaticEnd = key;
+            advance = true;
+          }
+        }
+        this.publish();
+        if (this.options.now() - this.lastSavedAt >= 5e3) this.scheduleSave();
+        void this.maintainer?.tick();
+      }).then(async () => {
+        if (advance && intent === this.intent) await this.navigateAutomatic(1, void 0, true);
+      }).catch(async (error) => {
+        this.revoke();
+        try {
+          await this.commit(() => this.failStopped(error));
+        } catch (fatal) {
+          this.error = errorText(fatal);
+        }
+        this.publish();
+      }).finally(() => {
+        this.observing = null;
+        if (this.observed) this.drainObservation();
+      });
+    }
+    async acceptNative(info) {
+      const entry = this.options.engine.getQueueSnapshot()[info.queueIndex];
+      const index = this.mapping[info.queueIndex];
+      const reference = this.controller.reference();
+      if (!reference || !entry?.queueEntryId || index === void 0 || info.source !== entry.source)
+        return;
+      if (this.detachedHeartTrack && entry.queueEntryId === this.currentTrack?.queueEntryId) return;
+      if (this.detachedHeartTrack) {
+        const window = await this.controller.selectEntry(entry.queueEntryId, reference, this.mode);
+        if (!window || window.queue.index !== index) throw new Error("Heart exit successor changed");
+        this.detachedHeartTrack = false;
+        await this.updateTrack(this.controller.track(window));
+        return;
+      }
+      if (reference.entryId !== entry.queueEntryId) {
+        const result = await this.controller.acceptNative(entry.queueEntryId, reference, this.mode);
+        if (!result || result.queue.index !== index)
+          throw new Error("Native occurrence no longer matches the logical queue");
+        const previous = this.currentTrack;
+        await this.updateTrack(this.controller.track(result));
+        await this.applyTrackRate(previous, this.currentTrack);
+      } else if (this.currentTrack?.id !== entry.id) {
+        const selected = this.controller.track();
+        if (selected?.id !== entry.id) throw new Error("Native source identity differs from SQL");
+        const previous = this.currentTrack;
+        await this.updateTrack(selected);
+        await this.applyTrackRate(previous, selected);
+      }
+    }
+    interruptSleep() {
+      const reset = this.options.sleepTimer?.interrupt();
+      if (!reset) return;
+      this.sleepReset = Promise.all([this.sleepReset.catch(() => {
+      }), reset]).then(() => {
+      });
+      void this.sleepReset.catch((error) => this.options.fatal(error));
+    }
+    revoke(interruptSleep = true) {
+      if (interruptSleep) this.interruptSleep();
+      this.intent++;
+      const wasLoading = this.loadingIntent !== null;
+      this.loadingIntent = null;
+      this.requestedState = null;
+      this.preview.abort(new Error("Playback intent superseded"));
+      this.preview = new AbortController();
+      this.options.cast?.cancelPending();
+      const drain = this.maintainer?.stop();
+      this.maintainer = null;
+      if (drain) this.mutation = Promise.all([this.mutation.catch(() => {
+      }), drain]);
+      if (wasLoading) this.publish();
+      return this.intent;
+    }
+    beginPreparation(play = true) {
+      const intent = this.revoke();
+      this.loadingIntent = intent;
+      this.requestedState = play ? "playing" : "paused";
+      this.publish();
+      return intent;
+    }
+    finishPreparation(intent) {
+      if (intent !== this.intent) return;
+      this.loadingIntent = null;
+      this.requestedState = null;
+      this.publish();
+    }
+    commit(operation) {
+      const result = this.mutation.then(async () => {
+        await this.sleepReset;
+        this.committing = true;
+        try {
+          return await operation();
+        } finally {
+          this.committing = false;
+          this.drainObservation();
+        }
+      });
+      this.mutation = result.catch(() => {
+      });
+      return result;
+    }
+    guard(intent, signal) {
+      if (this.stopped || intent !== this.intent || signal?.aborted)
+        throw Object.assign(new Error("Playback request superseded"), { code: "CANCELLED" });
+    }
+    transport(action) {
+      return this.commit(
+        () => this.options.runTransport ? this.options.runTransport(action) : action()
+      );
+    }
+    async resolve(window, intent, signal) {
+      this.guard(intent, signal);
+      const entry = window.items[0];
+      const track = entry?.track ? libraryQueueTrack(entry.track, entry.queueEntryId) : null;
+      if (!track) throw new Error("Selected queue occurrence is not playable");
+      const current = signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal;
+      let prepared;
+      try {
+        prepared = await this.prepareSource(track, current);
+      } catch (error) {
+        this.guard(intent, signal);
+        throw error;
+      }
+      this.guard(intent, signal);
+      return prepared;
+    }
+    async prepareSource(track, signal) {
+      if (this.options.sources) return this.options.sources.prepare(track, signal);
+      const resolved = await this.options.resolver.resolve(track, signal);
+      signal?.throwIfAborted();
+      if (!resolved) throw new Error("Unable to resolve the selected audio source");
+      const source = await authorizeNativeSource(resolved.source, this.options.authorize);
+      signal?.throwIfAborted();
+      if (!isSourceCurrent(resolved, this.options.now()))
+        throw new Error("Audio source expired before playback");
+      return { track, resolved: { ...resolved, source } };
+    }
+    /** The native commit lane owns this write and the controller cache adoption.
+     * No provider IO or recursive controller command is allowed in this stage. */
+    async repairSource(owner, window, occurrenceId, prepared) {
+      prepared.confirm?.();
+      const row = window.items.find((item) => item.queueEntryId === occurrenceId);
+      if (!row?.track) throw new Error("Source repair occurrence is unavailable");
+      if (row.track.id === prepared.track.id) return;
+      const queue = owner.diagnostics.queue;
+      if (!queue?.selectedEntryId || queue.id !== window.queue.id || queue.revision !== window.queue.revision)
+        throw new Error("Playback queue changed during source preparation");
+      const previous = libraryQueueTrack(row.track, occurrenceId);
+      const snapshot = { ...toPlaybackQueueSnapshot(prepared.track) };
+      if (this.detachedHeartTrack && window.queue.index === -1 && occurrenceId === this.currentTrack?.queueEntryId) {
+        window.items = window.items.map(
+          (item) => item === row ? { ...item, track: snapshot } : item
+        );
+        await this.options.sources?.repaired?.(previous, prepared.track);
+        return;
+      }
+      const repaired = await owner.replaceSource(
+        {
+          queue: {
+            id: queue.id,
+            revision: queue.revision,
+            index: queue.index,
+            entryId: queue.selectedEntryId
+          },
+          contentRevision: window.libraryRevision,
+          occurrenceId,
+          expectedTrackId: previous.id,
+          replacement: {
+            id: snapshot.id,
+            ...snapshot.source === "local" ? { localSnapshot: snapshot } : { snapshot }
+          }
+        },
+        this.mode
+      );
+      window.queue = { ...window.queue, revision: repaired.queue.revision };
+      window.items = window.items.map((item) => item === row ? { ...item, track: snapshot } : item);
+      await this.options.sources?.repaired?.(previous, prepared.track);
+    }
+    async load(window, intent, play, position = 0, signal, context = {}) {
+      this.guard(intent, signal);
+      this.loadingIntent = intent;
+      this.requestedState = play ? "playing" : "paused";
+      this.publish();
+      try {
+        if (this.sourceBarrier) await this.sourceBarrier;
+        const run = () => {
+          this.guard(intent, signal);
+          return this.loadSource(window, intent, play, position, signal, context);
+        };
+        await (this.options.resources && !context.resourcesHeld ? this.options.resources.use(run) : run());
+      } finally {
+        this.finishPreparation(intent);
+      }
+    }
+    async loadSource(window, intent, play, position = 0, signal, context = {}) {
+      let { selection, adopt, prepare } = context;
+      const owner = context.owner ?? this.controller, staged = !!prepare;
+      let prepared = context.prepared ?? (context.recover ? await this.recoverSource(context.recover, intent, signal) : await this.resolve(window, intent, signal));
+      for (let attempt = 0; ; attempt++) {
+        const { track, resolved } = prepared;
+        if (context.automatic) {
+          const [allowed] = await automaticPlaybackMask(
+            [track],
+            this.options.automaticPlaybackAllowed,
+            signal
+          );
+          this.guard(intent, signal);
+          if (!allowed) throw new AutomaticPlaybackRejected();
+        }
+        try {
+          await this.transport(async () => {
+            this.guard(intent, signal);
+            if (context.automatic && selection) {
+              const reference = this.controller.reference();
+              if (reference?.id !== selection.expected.id || reference.entryId !== context.automaticOrigin)
+                throw Object.assign(new Error("Automatic playback occurrence changed"), {
+                  code: "STALE_REVISION"
+                });
+              selection.expected = reference;
+              window.queue = { ...window.queue, revision: reference.revision };
+            }
+            if (selection) this.assertReference(selection.expected);
+            if (selection?.native) await this.fenceNative(selection.native);
+            this.guard(intent, signal);
+            if (context.prepared) {
+              prepared.confirm?.();
+              if (!isSourceCurrent(resolved, this.options.now()))
+                throw new Error("Audio source expired before playback");
+            }
+            await prepare?.();
+            try {
+              this.guard(intent, signal);
+              prepared.confirm?.();
+              if (!isSourceCurrent(resolved, this.options.now()))
+                throw new Error("Audio source expired before playback");
+              await this.observeDepartingTrack(track);
+              await this.repairSource(owner, window, track.queueEntryId, prepared);
+              if (selection)
+                selection.expected = { ...selection.expected, revision: window.queue.revision };
+              this.guard(intent, signal);
+              prepared.confirm?.();
+              if (!isSourceCurrent(resolved, this.options.now()))
+                throw new Error("Audio source expired before playback");
+              await this.clearAbLoop();
+              if (!this.options.cast?.active()) {
+                await this.options.engine.loadQueue(
+                  [
+                    nativeQueueItem(
+                      track,
+                      resolved.source,
+                      window.queue.index,
+                      window.queue.index === window.lastPlayablePosition
+                    )
+                  ],
+                  0
+                );
+              }
+              adopt?.();
+              this.mapping = [window.queue.index];
+              const previousTrack = this.currentTrack;
+              await this.updateTrack(track);
+              this.restored = false;
+              this.uncertain = false;
+              if (selection) {
+                const selected = await this.controller.selectEntry(
+                  track.queueEntryId,
+                  selection.expected,
+                  this.mode
+                );
+                if (!selected || selected.items[0]?.queueEntryId !== track.queueEntryId)
+                  throw new Error("SQL did not confirm the selected native occurrence");
+                this.detachedHeartTrack = false;
+              }
+              this.guard(intent, signal);
+              if (this.options.cast?.active()) {
+                const sample = await this.options.cast.load(
+                  resolved.source,
+                  track,
+                  track.source === "radio" ? 0 : position,
+                  play,
+                  signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal
+                );
+                this.acceptCast(sample, resolved.source);
+                if (play) this.options.playbackStarted?.();
+              } else {
+                await this.applyTrackRate(previousTrack, track);
+                await this.options.engine.setPlayMode(
+                  this.mode === "repeat" && !this.automaticQueue() ? "repeat" : "sequential"
+                );
+                if (play) {
+                  const result = await this.options.engine.play(
+                    resolved.source,
+                    position,
+                    () => intent === this.intent && !signal?.aborted && isSourceCurrent(resolved, this.options.now())
+                  );
+                  if (!result.nativeStarted || result.superseded) throw nativeStartFailure(result);
+                  this.options.playbackStarted?.();
+                }
+                this.info = await this.options.engine.getPlaybackInfo();
+              }
+              this.error = null;
+            } catch (error) {
+              adopt?.();
+              await this.updateTrack(track);
+              await this.failStopped(error);
+              throw error;
+            } finally {
+              this.publish();
+            }
+          });
+          break;
+        } catch (error) {
+          this.guard(intent, signal);
+          if (!(error instanceof NativeSourceRejected) || attempt > 0 || context.allowRecovery === false || !this.options.sources?.recover)
+            throw error;
+          prepared = await this.recoverSource(track, intent, signal);
+          const base = owner.window.value;
+          if (!base) throw new Error("Playback queue detached during source recovery");
+          window = this.detachedHeartTrack ? this.detachedWindow(base) : base;
+          selection = void 0;
+          adopt = void 0;
+          prepare = void 0;
+        }
+      }
+      this.guard(intent, signal);
+      if (!staged) this.startMaintenance();
+      await this.flush();
+    }
+    async recoverSource(track, intent, signal) {
+      try {
+        const prepared = await this.options.sources.recover(
+          track,
+          signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal
+        );
+        this.guard(intent, signal);
+        return prepared;
+      } catch (error) {
+        this.guard(intent, signal);
+        throw error;
+      }
+    }
+    startMaintenance() {
+      if (this.options.sleepTimer?.triggered()) return;
+      if (this.options.cast?.active()) {
+        this.options.cast.resumeSampling();
+        return;
+      }
+      if (this.automaticQueue()) return;
+      if (!this.controller.reference() || this.uncertain || this.restored || this.sourceBarrier || this.maintainer?.isActive())
+        return;
+      const intent = this.intent;
+      this.maintainer = new LibraryNativeQueueMaintainer({
+        engine: this.options.engine,
+        resources: this.options.resources,
+        nativeQueueIndices: this.mapping,
+        resolver: this.options.resolver,
+        authorize: this.options.authorize,
+        prepareSource: (track, signal) => this.prepareSource(track, signal),
+        commitSource: async ({ window }, occurrenceId, prepared) => {
+          await this.repairSource(this.controller, window, occurrenceId, prepared);
+        },
+        onCommitError: (error) => this.failStopped(error),
+        now: this.options.now,
+        readWindow: (_index, entryId, current) => this.commit(async () => {
+          if (!current() || intent !== this.intent) return null;
+          const reference = this.controller.reference();
+          if (this.detachedHeartTrack) {
+            if (entryId === this.currentTrack?.queueEntryId)
+              return { window: this.detachedWindow(this.controller.window.value), mode: this.mode };
+            if (!reference) return null;
+            const selected = await this.controller.selectEntry(entryId, reference, this.mode);
+            if (!selected || !current()) return null;
+            this.detachedHeartTrack = false;
+            await this.updateTrack(this.controller.track(selected));
+          } else if (reference?.entryId !== entryId && reference) {
+            const changed = await this.controller.acceptNative(entryId, reference, this.mode);
+            if (!changed || !current()) return null;
+            await this.updateTrack(this.controller.track(changed));
+          }
+          const window = this.currentTrack ? await this.controller.playbackWindow(this.currentTrack, this.mode) : null;
+          return window && current() ? { window, mode: this.mode === "heart" ? "sequential" : this.mode } : null;
+        }),
+        allowDetachedCurrent: () => this.detachedHeartTrack,
+        mayContinueAfterEnd: () => !this.options.sleepTimer?.triggered(),
+        validateWindow: async ({ window }) => {
+          const queue = await this.options.queues.getQueue(window.queue.id);
+          const expected = this.detachedHeartTrack ? this.controller.window.value.queue : window.queue;
+          return queue.revision === expected.revision && queue.index === expected.index && queue.selectedEntryId === expected.selectedEntryId;
+        },
+        commit: (operation, current) => this.commit(async () => {
+          if (current() && intent === this.intent) await operation();
+        }),
+        onMappingChanged: (mapping) => {
+          this.mapping = mapping;
+        },
+        onPlaybackAdvanced: async (info, _index, occurrenceId, prepared) => {
+          if (this.detachedHeartTrack && prepared && occurrenceId === this.currentTrack?.queueEntryId)
+            await this.updateTrack(prepared);
+          await this.acceptNative(info);
+          this.info = info;
+          this.publish();
+          this.scheduleSave();
+        },
+        onError: (message) => {
+          this.error = message;
+          this.publish();
+        }
+      });
+      void this.maintainer.start();
+    }
+    async fromQuery(query2, selectedId, play = true, signal, options = {}) {
+      const intent = this.beginPreparation(play);
+      const candidate = createLibraryPlaybackController(this.options.queues);
+      let adopted = false;
+      try {
+        const requestedMode = options.playMode ?? this.mode;
+        const nextMode = requestedMode === "heart" ? "sequential" : requestedMode;
+        const window = await candidate.create(query2, selectedId, nextMode, options.randomStart);
+        this.guard(intent, signal);
+        if (!window) throw new Error("No playable queue entries");
+        const previous = this.controller;
+        await this.load(window, intent, play, options.position ?? 0, signal, {
+          adopt: () => {
+            if (adopted) return;
+            this.controller = candidate;
+            this.clearHeart();
+            this.mode = nextMode;
+            adopted = true;
+            previous.dispose();
+          },
+          owner: candidate
+        });
+      } finally {
+        if (!adopted) candidate.dispose();
+        this.finishPreparation(intent);
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    /** Internal source-owner entry point. Public clients submit identities, never arbitrary tracks. */
+    async fromPages(produce, options = {}, signal) {
+      const intent = this.beginPreparation(options.play !== false);
+      return this.stagePages(produce, options, intent, signal);
+    }
+    async stagePages(produce, options, intent, signal) {
+      const candidate = createLibraryPlaybackController({
+        ...this.options.queues,
+        ...options.preserveOccurrenceIds ? {
+          buildQueue: (command) => this.options.queues.restoreNamedPlaybackQueue({
+            ...command,
+            ...command.kind === "begin" ? { playMode: options.mode ?? this.mode } : {}
+          })
+        } : {}
+      });
+      const mode = options.mode ?? (this.mode === "heart" ? "sequential" : this.mode);
+      let adopted = false;
+      try {
+        const revision2 = await this.options.queues.libraryRevision();
+        this.guard(intent, signal);
+        const result = await candidate.stagePages(
+          produce,
+          {
+            ...options.preserveOccurrenceIds ? { id: `core-restore-${crypto.randomUUID()}` } : {},
+            contentRevision: revision2,
+            selectedIndex: options.selectedIndex,
+            order: options.order ?? (mode === "shuffle" ? "shuffle" : "original")
+          },
+          mode,
+          async (window, activate, retain) => {
+            const previous = this.controller;
+            const adopt = () => {
+              if (adopted) return;
+              options.guard?.();
+              retain();
+              activate();
+              this.controller = candidate;
+              this.clearHeart();
+              this.mode = mode;
+              adopted = true;
+              previous.dispose();
+              options.onAdopt?.();
+            };
+            if (options.play === false) {
+              await this.transport(async () => {
+                this.guard(intent, signal);
+                options.guard?.();
+                await this.options.cast?.stop();
+                await this.options.engine.pause();
+                const info = await this.options.engine.getPlaybackInfo();
+                if (info.state === "playing") throw new Error("Native Pause was not acknowledged");
+                await this.observeDepartingTrack(candidate.track(window));
+                await options.beforeAdopt?.(false);
+                await this.clearAbLoop();
+                this.guard(intent, signal);
+                adopt();
+                await this.updateTrack(candidate.track(window));
+                this.restored = true;
+                this.uncertain = false;
+                this.info = {
+                  ...this.options.cast?.active() ? this.info : info,
+                  state: "paused",
+                  position: options.position ?? 0,
+                  duration: this.currentTrack?.duration ?? 0
+                };
+                this.error = null;
+                this.publish();
+              });
+              await this.flush();
+            } else {
+              await this.load(window, intent, true, options.position ?? 0, signal, {
+                automatic: options.automatic,
+                prepare: async () => {
+                  await options.beforeAdopt?.(true);
+                  adopt();
+                },
+                owner: candidate,
+                ...options.preparedSource ? {
+                  prepared: {
+                    ...options.preparedSource,
+                    track: { ...options.preparedSource.track, queueEntryId: window.items[0]?.queueEntryId }
+                  },
+                  resourcesHeld: true,
+                  allowRecovery: false
+                } : {}
+              });
+            }
+          },
+          {
+            signal,
+            guard: () => {
+              this.guard(intent, signal);
+              options.guard?.();
+            }
+          }
+        );
+        if (!result) throw new Error("No playable queue entries");
+      } finally {
+        if (!adopted) candidate.dispose();
+        this.finishPreparation(intent);
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    /** Named restore is a playback intent from the first source read onward.
+     * Pause/Stop cancel slow preparation; an empty result leaves the live queue. */
+    async restoreNamedSession(session, resolveEntries, guard, play = false, signal) {
+      const intent = this.beginPreparation(play);
+      const initialReference = this.controller.reference();
+      const current = () => {
+        this.guard(intent, signal);
+        guard();
+      };
+      const beforeAdopt = async (playing) => {
+        const native = await this.nativeSelection();
+        current();
+        const reference = this.controller.reference();
+        if (reference?.id !== initialReference?.id || reference?.revision !== initialReference?.revision || reference?.entryId !== initialReference?.entryId)
+          throw Object.assign(new Error("队列选中项已变化，已取消恢复"), { code: "STALE_REVISION" });
+        if (playing && native) await this.fenceNative(native);
+        current();
+      };
+      try {
+        current();
+        if (!session.libraryQueue) {
+          const result = await resolveEntries(
+            signal ? AbortSignal.any([signal, this.preview.signal]) : this.preview.signal
+          );
+          current();
+          if (!result.queue.length) throw new Error("会话中的资源均不可用，当前队列未改变");
+          const originalPositions = new Map(
+            result.original.map((track, index) => [track.queueEntryId, index])
+          );
+          await this.stagePages(
+            async (append) => {
+              for (let offset = 0; offset < result.queue.length; offset += 200) {
+                current();
+                await append(
+                  result.queue.slice(offset, offset + 200).map((track) => {
+                    const snapshot = { ...toPlaybackQueueSnapshot(track) };
+                    return {
+                      id: track.id,
+                      occurrenceId: track.queueEntryId,
+                      originalPosition: originalPositions.get(track.queueEntryId),
+                      ...snapshot.source === "local" ? { localSnapshot: snapshot } : { snapshot }
+                    };
+                  })
+                );
+              }
+            },
+            {
+              selectedIndex: result.index,
+              position: result.position,
+              mode: session.playMode,
+              play,
+              preserveOccurrenceIds: true,
+              guard: current,
+              beforeAdopt
+            },
+            intent,
+            signal
+          );
+          return { restored: result.queue.length, missing: result.missing, deferred: result.deferred };
+        }
+        const candidate = createLibraryPlaybackController(this.options.queues);
+        let adopted = false;
+        try {
+          const window = await candidate.restore(
+            session.libraryQueue,
+            session.playMode,
+            () => {
+              current();
+              return true;
+            },
+            true
+          );
+          current();
+          if (!window) throw new Error("数据库队列已删除或没有可用资源，当前队列未改变");
+          const previous = this.controller;
+          const adopt = () => {
+            current();
+            this.controller = candidate;
+            this.clearHeart();
+            this.mode = session.playMode;
+            adopted = true;
+            previous.dispose();
+          };
+          const prepare = async (playing) => {
+            await beforeAdopt(playing);
+            const latest = await this.options.queues.getQueue(window.queue.id);
+            current();
+            if (latest.revision !== window.queue.revision)
+              throw Object.assign(new Error("共享播放队列已变化，请重新选择会话"), {
+                code: "STALE_REVISION"
+              });
+          };
+          if (play)
+            await this.load(window, intent, true, session.position, signal, {
+              prepare: async () => {
+                await prepare(true);
+                adopt();
+              },
+              owner: candidate
+            });
+          else {
+            await this.transport(async () => {
+              current();
+              await this.options.cast?.stop();
+              await this.options.engine.pause();
+              const info = await this.options.engine.getPlaybackInfo();
+              if (info.state === "playing") throw new Error("Native Pause was not acknowledged");
+              await prepare(false);
+              current();
+              adopt();
+              await this.clearAbLoop();
+              await this.updateTrack(candidate.track(window));
+              this.restored = true;
+              this.uncertain = false;
+              this.info = {
+                ...this.options.cast?.active() ? this.info : info,
+                state: "paused",
+                position: session.position,
+                duration: this.currentTrack?.duration ?? 0
+              };
+              this.error = null;
+              this.publish();
+            });
+            await this.flush();
+          }
+          return { restored: window.queue.total, missing: [], deferred: 0 };
+        } finally {
+          if (!adopted) candidate.dispose();
+        }
+      } finally {
+        this.finishPreparation(intent);
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    fromTrack(track, position = 0, play = true, signal, guard) {
+      const intent = this.beginPreparation(play);
+      const preparation = signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal;
+      const immediate = typeof track === "function" ? null : { ...toPlaybackQueueSnapshot(track) };
+      return this.stagePages(
+        async (append) => {
+          const snapshot = immediate ?? {
+            ...toPlaybackQueueSnapshot(
+              await track(preparation)
+            )
+          };
+          this.guard(intent, signal);
+          await append([
+            {
+              id: snapshot.id,
+              ...snapshot.source === "local" ? { localSnapshot: snapshot } : { snapshot }
+            }
+          ]);
+        },
+        { position, play, guard },
+        intent,
+        signal
+      );
+    }
+    /** New unified operation: all source IO completes before staging one chosen
+     * queue. Preparation failures never mutate the live queue; native commit
+     * failures are not reasons to try another source. */
+    async fromUnifiedTrack(select, signal, beforeAdopt) {
+      const intent = this.beginPreparation();
+      const current = signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal;
+      const run = async () => {
+        this.guard(intent, signal);
+        const selection = await select(current, async (track) => {
+          this.guard(intent, signal);
+          const prepared2 = await this.prepareSource({ ...track, sourceSelection: "explicit" }, current);
+          this.guard(intent, signal);
+          prepared2.confirm?.();
+          if (!isSourceCurrent(prepared2.resolved, this.options.now()))
+            throw new Error("Audio source expired before playback");
+          return prepared2;
+        });
+        this.guard(intent, signal);
+        if (!selection.prepared) return selection.result;
+        const prepared = selection.prepared;
+        const snapshot = { ...toPlaybackQueueSnapshot(prepared.track) };
+        await this.stagePages(async (append) => {
+          await append([{
+            id: snapshot.id,
+            ...snapshot.source === "local" ? { localSnapshot: snapshot } : { snapshot }
+          }]);
+        }, {
+          preparedSource: prepared,
+          beforeAdopt: async () => {
+            await beforeAdopt?.();
+            this.guard(intent, signal);
+            prepared.confirm?.();
+            if (!isSourceCurrent(prepared.resolved, this.options.now()))
+              throw new Error("Audio source expired before playback");
+          }
+        }, intent, signal);
+        return selection.result;
+      };
+      try {
+        if (this.sourceBarrier) await this.sourceBarrier;
+        this.guard(intent, signal);
+        return await (this.options.resources ? this.options.resources.use(run) : run());
+      } finally {
+        this.finishPreparation(intent);
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    async applyTrackRate(previous, track) {
+      if (this.options.cast?.active()) return;
+      if (track?.source === "podcast")
+        await this.options.engine.setPlaybackRate(this.options.podcastPlaybackRate?.() ?? 1);
+      else if (previous?.source === "podcast") await this.options.engine.setPlaybackRate(1);
+    }
+    async setRate(rate) {
+      if (this.options.cast?.active()) {
+        if (rate !== 1) throw new Error("Cast does not support changing playback speed");
+        return;
+      }
+      await this.commit(async () => {
+        await this.options.engine.setPlaybackRate(rate);
+        const info = await this.options.engine.getPlaybackInfo();
+        this.info = this.restored && this.info ? { ...this.info, playbackRate: info.playbackRate } : info;
+      });
+      this.publish();
+    }
+    resetAbLoopState(occurrenceId = this.currentTrack?.queueEntryId ?? null) {
+      if (this.abLoop.occurrenceId === occurrenceId && this.abLoop.a === null && this.abLoop.b === null)
+        return;
+      this.abLoop = {
+        revision: this.abLoop.revision + 1,
+        occurrenceId,
+        a: null,
+        b: null,
+        mode: "off"
+      };
+    }
+    async clearAbLoop() {
+      const active = this.abLoop.a !== null || this.abLoop.b !== null;
+      this.resetAbLoopState();
+      if (active && !this.options.cast?.active())
+        await this.options.engine.setLoopRangeConfirmed?.(-1, -1);
+    }
+    async updateTrack(track) {
+      if (track?.queueEntryId !== this.currentTrack?.queueEntryId) {
+        this.resetStreamBuffering();
+        await this.clearAbLoop();
+        this.resetAbLoopState(track?.queueEntryId ?? null);
+      }
+      this.currentTrack = track;
+    }
+    abLoopLive() {
+      const track = this.currentTrack;
+      return !!track && (track.source === "radio" || track.duration <= 0 && !!(track.streamUrl || /^https?:\/\//i.test(track.filePath || "")));
+    }
+    async configureAbLoop(command) {
+      const intent = this.intent;
+      return this.transport(async () => {
+        this.guard(intent);
+        await this.nativeSelection();
+        this.guard(intent);
+        if (command.revision !== this.abLoop.revision || command.occurrenceId !== this.currentTrack?.queueEntryId)
+          throw Object.assign(new Error("A-B loop occurrence or revision changed"), {
+            code: "STALE_REVISION"
+          });
+        let action = command.action;
+        if (action === "toggle")
+          action = this.abLoopLive() || this.abLoop.b !== null ? "clear" : this.abLoop.a === null ? "a" : "b";
+        if (action !== "clear" && this.abLoopLive()) return { ...this.abLoop };
+        let a = this.abLoop.a, b = this.abLoop.b;
+        const time = command.position ?? this.info?.position ?? 0;
+        const position = Math.max(0, Number.isFinite(time) ? time : 0);
+        if (action === "clear") {
+          a = null;
+          b = null;
+        } else if (action === "a") {
+          a = position;
+          if (b !== null && b <= a) b = null;
+        } else {
+          a ??= 0;
+          if (position > a) b = position;
+        }
+        if (a === this.abLoop.a && b === this.abLoop.b) return { ...this.abLoop };
+        try {
+          const valid = a !== null && b !== null && b > a;
+          const native = !this.options.cast?.active() && !this.restored && await this.options.engine.setLoopRangeConfirmed?.(valid ? a : -1, valid ? b : -1);
+          this.abLoop = {
+            revision: this.abLoop.revision + 1,
+            occurrenceId: command.occurrenceId,
+            a,
+            b,
+            mode: valid ? native ? "native" : "soft" : a === null ? "off" : "pending"
+          };
+          this.publish();
+          return { ...this.abLoop };
+        } catch (error) {
+          await this.failStopped(error);
+          this.publish();
+          throw error;
+        }
+      });
+    }
+    async enforceAbLoop(intent) {
+      const loop = this.abLoop;
+      if (this.stopped || intent !== this.intent || this.restored || this.uncertain || loop.mode !== "soft" || loop.a === null || loop.b === null || loop.occurrenceId !== this.currentTrack?.queueEntryId || this.info?.state !== "playing" || this.info.position + 0.02 < loop.b || this.abLoopLive())
+        return false;
+      const seek = async () => {
+        if (intent !== this.intent || this.abLoop !== loop) return false;
+        if (this.options.cast?.active())
+          this.acceptCast(await this.options.cast.control("seek", loop.a));
+        else {
+          if (!this.options.engine.seekConfirmed)
+            throw new Error("Confirmed native Seek is unavailable");
+          await this.options.engine.seekConfirmed(loop.a);
+          this.info = await this.options.engine.getPlaybackInfo();
+        }
+        return true;
+      };
+      return this.options.runTransport ? this.options.runTransport(seek) : seek();
+    }
+    async play(position, signal) {
+      const intent = this.beginPreparation();
+      try {
+        await this.playIntent(intent, position, signal);
+      } finally {
+        this.finishPreparation(intent);
+      }
+    }
+    async playIntent(intent, position, signal) {
+      const reference = this.controller.reference();
+      if (!reference || !this.currentTrack) throw new Error("No track selected");
+      const base = this.controller.window.value;
+      if (!base) throw new Error("No playback window");
+      const window = this.detachedHeartTrack ? this.detachedWindow(base) : base;
+      const start = position ?? this.info?.position ?? 0;
+      if (this.options.cast?.active()) {
+        if (this.restored || this.uncertain || this.options.cast.state().phase !== "ready")
+          return this.load(window, intent, true, start, signal);
+        await this.transport(async () => {
+          this.guard(intent, signal);
+          try {
+            if (position !== void 0 && this.currentTrack?.source !== "radio")
+              await this.options.cast.control("seek", position);
+            this.acceptCast(await this.options.cast.control("play"));
+            if (position !== void 0) this.options.playbackStarted?.();
+          } catch (error) {
+            await this.failStopped(error);
+            throw error;
+          }
+        });
+        this.publish();
+        return;
+      }
+      if (this.restored || this.uncertain || !this.options.engine.getQueueToken())
+        return this.load(window, intent, true, start, signal);
+      try {
+        await this.transport(async () => {
+          this.guard(intent, signal);
+          const source = this.options.engine.getQueueSnapshot()[this.info?.queueIndex ?? 0]?.source;
+          if (!source) throw new Error("Native occurrence unavailable");
+          try {
+            const result = await this.options.engine.play(
+              source,
+              start,
+              () => intent === this.intent && !signal?.aborted
+            );
+            if (!result.nativeStarted || result.superseded) throw nativeStartFailure(result);
+            if (position !== void 0) this.options.playbackStarted?.();
+            this.info = await this.options.engine.getPlaybackInfo();
+          } catch (error) {
+            await this.failStopped(error);
+            throw error;
+          }
+        });
+      } catch (error) {
+        this.guard(intent, signal);
+        if (!(error instanceof NativeSourceRejected) || !this.options.sources?.recover) throw error;
+        return this.load(window, intent, true, start, signal, {
+          recover: this.currentTrack,
+          allowRecovery: false
+        });
+      }
+      this.startMaintenance();
+      this.publish();
+    }
+    async pause() {
+      const intent = this.revoke();
+      this.requestedState = "paused";
+      try {
+        await this.pauseTransport();
+      } finally {
+        this.finishPreparation(intent);
+      }
+    }
+    async pauseTransport() {
+      await this.transport(async () => {
+        try {
+          if (this.options.cast?.active()) {
+            if (this.options.cast.state().phase === "ready")
+              this.acceptCast(await this.options.cast.control("pause"));
+            else {
+              await this.options.cast.stop();
+              if (this.info) this.info = { ...this.info, state: "paused" };
+            }
+          } else {
+            await this.options.engine.pause();
+            if (!this.restored && !this.options.cast?.active())
+              this.info = await this.options.engine.getPlaybackInfo();
+            if (this.info?.state === "playing") throw new Error("Native Pause was not acknowledged");
+          }
+        } catch (error) {
+          await this.failStopped(error);
+          throw error;
+        } finally {
+          this.publish();
+        }
+      });
+      this.publish();
+      await this.flush();
+    }
+    async stop() {
+      const intent = this.revoke();
+      this.requestedState = "stopped";
+      try {
+        await this.stopTransport();
+      } finally {
+        this.finishPreparation(intent);
+      }
+    }
+    async stopTransport(current = () => true) {
+      await this.transport(async () => {
+        if (!current()) return;
+        try {
+          await this.clearAbLoop();
+          await this.options.cast?.stop();
+          await this.options.engine.stop();
+          if (this.options.cast?.active() && this.info)
+            this.info = { ...this.info, state: "stopped", position: 0 };
+          else this.info = await this.options.engine.getPlaybackInfo();
+          if (this.info.state !== "stopped") throw new Error("Native Stop was not acknowledged");
+          this.restored = true;
+        } catch (error) {
+          await this.failStopped(error);
+          throw error;
+        } finally {
+          this.publish();
+        }
+      });
+      this.publish();
+      await this.flush();
+    }
+    quiesceForSleep() {
+      this.revoke(false);
+      return this.mutation.then(() => {
+      });
+    }
+    stopForSleep(current) {
+      return this.stopTransport(current);
+    }
+    resumeAfterSleep() {
+      this.startMaintenance();
+    }
+    async setSleepTimerGain(gain) {
+      if (this.options.cast?.active()) {
+        if (this.options.cast.state().phase === "ready") {
+          this.castSleepVolume ??= this.info?.volume ?? 1;
+          await this.options.cast.control("volume", this.castSleepVolume * gain);
+        }
+        if (gain === 1) this.castSleepVolume = null;
+      } else {
+        if (!this.options.setNativeSleepGain) throw new Error("Native sleep gain unavailable");
+        await this.options.setNativeSleepGain(gain);
+      }
+    }
+    async seek(position) {
+      const intent = this.revoke();
+      await this.commit(async () => {
+        this.guard(intent);
+        if (this.restored && this.info) this.info = { ...this.info, position };
+        else if (this.options.cast?.active()) {
+          if (this.currentTrack?.source === "radio") throw new Error("Live radio cannot seek");
+          try {
+            this.acceptCast(await this.options.cast.control("seek", position));
+          } catch (error) {
+            await this.failStopped(error);
+            this.publish();
+            throw error;
+          }
+        } else {
+          await this.options.engine.seek(position);
+          this.info = await this.options.engine.getPlaybackInfo();
+        }
+      });
+      this.startMaintenance();
+      this.publish();
+    }
+    automaticQueue() {
+      const heart = this.heart?.persisted();
+      return !!(this.options.automaticPlaybackAllowed && (this.personalized?.state() || heart?.baseQueue && heart.queueId === this.controller.reference()?.id));
+    }
+    /** A recommendation skip is not an explicit selection of a named song.
+     * Inspect at most 100 existing occurrences and request at most one refill. */
+    async navigateAutomatic(direction, signal, natural = false) {
+      const intent = this.beginPreparation();
+      const current = AbortSignal.any([this.preview.signal, ...signal ? [signal] : []]);
+      try {
+        const selection = await this.commit(async () => {
+          this.guard(intent, current);
+          const native = await this.nativeSelection();
+          return { native, reference: this.controller.reference() };
+        });
+        let reference = selection.reference;
+        if (!reference) return;
+        let cursor = reference.index, budget = 100;
+        const visited = /* @__PURE__ */ new Set();
+        if (!(natural && this.mode === "repeat")) visited.add(reference.entryId);
+        for (let pass = 0; pass < 2 && budget > 0; pass++) {
+          const candidates = [];
+          if (pass === 0 && natural && this.mode === "repeat") {
+            const row = this.controller.window.value?.items[0];
+            if (row?.track) {
+              candidates.push(row);
+              visited.add(row.queueEntryId);
+              budget--;
+            }
+          }
+          while (budget > 0) {
+            const row = await this.options.queues.readNeighbor(
+              reference.id,
+              reference.revision,
+              cursor,
+              direction,
+              !natural || this.mode === "listLoop" || this.mode === "shuffle"
+            );
+            this.guard(intent, current);
+            if (!row?.track || visited.has(row.queueEntryId)) break;
+            visited.add(row.queueEntryId);
+            cursor = row.position;
+            budget--;
+            candidates.push(row);
+          }
+          const mask = await automaticPlaybackMask(
+            candidates.map((row) => libraryQueueTrack(row.track, row.queueEntryId)),
+            this.options.automaticPlaybackAllowed,
+            current
+          );
+          this.guard(intent, current);
+          for (let index = 0; index < candidates.length; index++) {
+            if (!mask[index]) continue;
+            try {
+              await this.load(this.targetWindow(candidates[index]), intent, true, 0, current, {
+                selection: { expected: reference, native: selection.native },
+                automatic: true,
+                automaticOrigin: reference.entryId
+              });
+              return;
+            } catch (error) {
+              if (!(error instanceof AutomaticPlaybackRejected)) throw error;
+            }
+          }
+          if (pass || direction < 0 || !budget) break;
+          const owner = this.personalized?.state() ? this.personalized : this.heart;
+          const added = await owner?.refill();
+          this.guard(intent, current);
+          reference = this.controller.reference();
+          if (!added) break;
+        }
+        this.error = "No available tracks for automatic playback";
+        this.publish();
+        await this.flush();
+      } finally {
+        this.finishPreparation(intent);
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    async navigate(direction, signal) {
+      if (this.automaticQueue()) return this.navigateAutomatic(direction, signal);
+      const intent = this.beginPreparation();
+      try {
+        const selection = await this.commit(async () => {
+          this.guard(intent, signal);
+          const native2 = await this.nativeSelection();
+          return { native: native2, reference: this.controller.reference() };
+        });
+        const { reference, native } = selection;
+        if (!reference) return;
+        const target = await this.options.queues.readNeighbor(
+          reference.id,
+          reference.revision,
+          reference.index,
+          direction,
+          true
+        );
+        this.guard(intent, signal);
+        if (target?.track)
+          await this.load(this.targetWindow(target), intent, true, 0, signal, {
+            selection: { expected: reference, native }
+          });
+      } finally {
+        this.finishPreparation(intent);
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    async select(request, signal) {
+      this.assertReference(request);
+      const intent = this.beginPreparation();
+      try {
+        const native = await this.commit(async () => {
+          this.guard(intent, signal);
+          const native2 = await this.nativeSelection();
+          this.assertReference(request);
+          return native2;
+        });
+        const page2 = await this.options.queues.readQueue(request.id, request.index, 1, {
+          expectedRevision: request.revision
+        });
+        this.guard(intent, signal);
+        if (page2.items[0]?.queueEntryId !== request.occurrenceId)
+          throw Object.assign(new Error("Queue occurrence changed"), { code: "STALE_REVISION" });
+        const target = page2.items[0];
+        if (target.track)
+          await this.load(this.targetWindow(target), intent, true, 0, signal, {
+            selection: { expected: request, native }
+          });
+      } finally {
+        this.finishPreparation(intent);
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    assertReference(expected) {
+      const reference = this.controller.reference();
+      if (!reference || reference.id !== expected.id || reference.revision !== expected.revision)
+        throw Object.assign(new Error("Playback queue changed; refresh its revision"), {
+          code: "STALE_REVISION"
+        });
+    }
+    targetWindow(target) {
+      const window = this.controller.window.value;
+      if (!window) throw new Error("No active queue window");
+      return {
+        ...window,
+        queue: { ...window.queue, index: target.position, selectedEntryId: target.queueEntryId },
+        items: [target]
+      };
+    }
+    async observeDepartingTrack(nextTrack) {
+      const current = this.currentTrack;
+      if (!current || current.id === nextTrack?.id && current.queueEntryId === nextTrack?.queueEntryId)
+        return;
+      if (!this.restored && !this.uncertain) {
+        if (this.options.cast?.active()) {
+          if (this.options.cast.state().phase === "ready")
+            this.acceptCast(await this.options.cast.read());
+        } else if (this.options.engine.getQueueToken()) {
+          const info = await this.options.engine.getPlaybackInfo();
+          const active = this.options.engine.getQueueSnapshot()[info.queueIndex];
+          if (active && active.id === current.id && (!active.queueEntryId || active.queueEntryId === current.queueEntryId)) {
+            this.info = info;
+          }
+        }
+      }
+      if (this.info)
+        this.options.observePlayback?.(current, { ...this.info, playMode: this.mode });
+    }
+    async nativeSelection() {
+      if (this.options.cast?.active() || this.restored || this.uncertain || !this.options.engine.getQueueToken())
+        return null;
+      const info = await this.options.engine.getPlaybackInfo();
+      await this.acceptNative(info);
+      this.info = info;
+      this.options.observePlayback?.(this.currentTrack, { ...this.info, playMode: this.mode });
+      const item = this.options.engine.getQueueSnapshot()[info.queueIndex];
+      return item ? {
+        queueToken: this.options.engine.getQueueToken(),
+        index: info.queueIndex,
+        id: item.id,
+        source: item.source
+      } : null;
+    }
+    async fenceNative(expected) {
+      const current = this.options.engine.getQueueSnapshot()[expected.index];
+      let guarded;
+      try {
+        guarded = current ? await this.options.engine.rebindQueue({
+          expected,
+          items: [{ ...current, logicalQueueEnd: false }],
+          startIndex: 0,
+          playMode: "sequential"
+        }) : null;
+      } catch (error) {
+        await this.failStopped(error);
+        throw error;
+      }
+      if (!guarded)
+        throw Object.assign(new Error("Playback occurrence advanced during source resolution"), {
+          code: "STALE_REVISION"
+        });
+      this.mapping = [this.detachedHeartTrack ? -1 : this.controller.reference().index];
+    }
+    async failStopped(error) {
+      this.uncertain = true;
+      this.error = errorText(error);
+      this.resetAbLoopState();
+      try {
+        await this.options.cast?.stop();
+        await this.options.engine.stop();
+        const stopped = await this.options.engine.getPlaybackInfo();
+        if (stopped.state !== "stopped") throw new Error("Native Stop was not acknowledged");
+        this.info = this.options.cast?.active() && this.info ? { ...this.info, state: "stopped" } : stopped;
+      } catch (stopError) {
+        const fatal = new Error(`Cannot confirm audio stopped: ${errorText(stopError)}`);
+        this.options.fatal(fatal);
+        throw fatal;
+      }
+    }
+    async edit(id2, revision2, edit2, nextMode = this.mode) {
+      this.assertReference({ id: id2, revision: revision2 });
+      if (edit2.kind !== "mode") {
+        this.personalized?.stop();
+        if (this.mode === "heart") {
+          this.clearHeart();
+          this.mode = nextMode = "sequential";
+        }
+      }
+      const intent = this.revoke();
+      try {
+        await this.commit(async () => {
+          this.guard(intent);
+          const native = await this.nativeSelection();
+          this.assertReference({ id: id2, revision: revision2 });
+          if (native) await this.fenceNative(native);
+          this.guard(intent);
+          const previous = this.currentTrack;
+          try {
+            const result = edit2.kind === "undo" ? await this.controller.undo(nextMode, { id: id2, revision: revision2 }) : await this.controller.edit(edit2, nextMode, { id: id2, revision: revision2 });
+            const selected = this.controller.track(result);
+            this.mode = nextMode;
+            if (!selected) this.detachedHeartTrack = false;
+            if (!this.detachedHeartTrack) await this.updateTrack(selected);
+            if (!this.detachedHeartTrack && (selected?.queueEntryId !== previous?.queueEntryId || !selected)) {
+              await this.options.cast?.stop();
+              await this.options.engine.stop();
+              this.info = {
+                ...this.options.cast?.active() ? this.info : await this.options.engine.getPlaybackInfo(),
+                state: selected ? "paused" : "stopped",
+                position: 0,
+                duration: selected?.duration ?? 0
+              };
+              this.restored = true;
+            }
+          } catch (error) {
+            await this.failStopped(error);
+            throw error;
+          }
+        });
+        this.publish();
+        await this.flush();
+      } finally {
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    async setMode(mode, signal) {
+      if (mode === this.mode) return;
+      if (mode === "heart") return this.enterHeart(signal);
+      if (this.mode === "heart") {
+        await this.exitHeart(signal);
+        if (mode === "sequential") return;
+      }
+      const reference = this.controller.reference();
+      if (reference) await this.edit(reference.id, reference.revision, { kind: "mode", mode }, mode);
+      else {
+        this.mode = mode;
+        this.publish();
+      }
+    }
+    /** Explicit read recovery after an unknown SQL/native result. It never
+     * replays the failed edit or resumes audio. */
+    async refresh() {
+      this.revoke();
+      await this.transport(async () => {
+        await this.clearAbLoop();
+        await this.options.cast?.stop();
+        await this.options.engine.stop();
+        const info = await this.options.engine.getPlaybackInfo();
+        if (info.state !== "stopped") {
+          const error = new Error("Native Stop was not acknowledged");
+          this.options.fatal(error);
+          throw error;
+        }
+        const window = await this.controller.refresh(this.mode);
+        await this.updateTrack(this.controller.track(window));
+        if (window && this.mode !== "heart")
+          this.mode = libraryQueueResumeMode(window.queue, this.mode);
+        this.detachedHeartTrack = false;
+        this.info = {
+          ...this.options.cast?.active() ? this.info : info,
+          state: this.currentTrack ? "paused" : "stopped",
+          position: 0,
+          duration: this.currentTrack?.duration ?? 0
+        };
+        this.restored = true;
+        this.uncertain = false;
+        this.error = null;
+        this.personalized?.recover();
+        this.heart?.recover();
+      });
+      this.publish();
+      await this.flush();
+    }
+    async setVolume(volume2) {
+      this.interruptSleep();
+      await this.transport(async () => {
+        await this.setUserVolume(volume2);
+      });
+    }
+    /** System clients submit intent; Core chooses from current or pending state. */
+    async control(action, signal) {
+      switch (action.type) {
+        case "toggle-play":
+          return (this.requestedState ?? this.info?.state) === "playing" ? this.pause() : this.play(void 0, signal);
+        case "play":
+          return this.play(void 0, signal);
+        case "pause":
+          return this.pause();
+        case "stop":
+          return this.stop();
+        case "previous":
+          return this.navigate(-1, signal);
+        case "next":
+          return this.navigate(1, signal);
+        case "seek":
+          return this.seek(action.value);
+        case "set-volume":
+          return this.setVolume(action.value);
+        case "queue-jump":
+          return this.select(action, signal);
+        case "volume-step":
+          this.interruptSleep();
+          return this.transport(async () => {
+            const delta = action.direction === "volumeUp" ? 0.05 : -0.05;
+            const volume2 = Math.min(
+              1,
+              Math.max(0, Math.round(((this.info?.volume ?? 0) + delta) * 100) / 100)
+            );
+            await this.setUserVolume(volume2);
+          });
+        case "set-play-mode":
+        case "cycle-play-mode": {
+          const work = this.modeControls.then(async () => {
+            signal?.throwIfAborted();
+            const modes2 = ["sequential", "listLoop", "repeat", "shuffle"];
+            if (this.heart?.state().available) modes2.push("heart");
+            const mode = action.type === "set-play-mode" ? action.value : modes2[(modes2.indexOf(this.mode) + 1) % modes2.length];
+            await this.setMode(mode, signal);
+          });
+          this.modeControls = work.catch(() => {
+          });
+          return work;
+        }
+      }
+    }
+    async setUserVolume(volume2) {
+      await this.applyVolume(volume2);
+      if (this.info && this.info.volume > 0) {
+        this.muted = false;
+        this.lastAudibleVolume = this.info.volume;
+      }
+      this.publish();
+    }
+    async configureMute(muted) {
+      this.interruptSleep();
+      await this.transport(async () => {
+        const volume2 = this.info?.volume ?? 0;
+        const next = muted ?? (!this.muted && volume2 > 0);
+        if (next && volume2 > 0) this.lastAudibleVolume = volume2;
+        await this.applyVolume(next ? 0 : Math.max(0.01, this.lastAudibleVolume));
+        this.muted = next;
+        if (this.info && this.info.volume > 0) this.lastAudibleVolume = this.info.volume;
+        this.publish();
+      });
+    }
+    async applyVolume(volume2) {
+      if (this.options.cast?.active()) {
+        try {
+          this.acceptCast(await this.options.cast.control("volume", volume2));
+        } catch (error) {
+          await this.failStopped(error);
+          this.publish();
+          throw error;
+        }
+        return;
+      }
+      await this.options.engine.setVolume(volume2);
+      const actual = await this.options.engine.getPlaybackInfo();
+      this.info = this.restored && this.info ? { ...this.info, volume: actual.volume } : actual;
+    }
+    clearHeart() {
+      this.heart?.stop();
+      this.heartBase?.dispose();
+      this.heartBase = null;
+      this.detachedHeartTrack = false;
+    }
+    detachedWindow(base) {
+      const track = this.currentTrack;
+      return {
+        ...base,
+        queue: { ...base.queue, index: -1, selectedEntryId: track.queueEntryId },
+        items: [
+          { position: -1, queueEntryId: track.queueEntryId, track: { ...track } },
+          base.items[0]
+        ]
+      };
+    }
+    async startLiked(command, signal) {
+      const owner = this.heart;
+      if (!owner) throw new Error("NCM provider runtime unavailable");
+      const intent = this.beginPreparation(command.play !== false);
+      const current = AbortSignal.any([this.preview.signal, ...signal ? [signal] : []]);
+      try {
+        const liked = await owner.liked(current, command.selectedId);
+        await this.stagePages(
+          liked.produce,
+          {
+            mode: this.mode === "heart" ? "sequential" : this.mode,
+            order: "original",
+            selectedIndex: liked.selectedIndex,
+            play: command.play,
+            onAdopt: () => owner.attach({
+              queueId: this.controller.reference().id,
+              likedPlaylistId: liked.playlistId
+            })
+          },
+          intent,
+          current
+        );
+      } finally {
+        this.finishPreparation(intent);
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    async enterHeart(signal) {
+      const owner = this.heart, context = owner?.persisted();
+      if (!owner?.state().available || !context || this.detachedHeartTrack)
+        throw new Error("Heart mode requires the NCM liked playlist context");
+      const intent = this.beginPreparation(this.info?.state === "playing");
+      const current = AbortSignal.any([this.preview.signal, ...signal ? [signal] : []]);
+      try {
+        const selection = await this.commit(async () => {
+          this.guard(intent, current);
+          const native = await this.nativeSelection();
+          return { native, reference: this.controller.reference(), track: this.currentTrack };
+        });
+        const batch = await owner.fetch(context.likedPlaylistId, selection.track, current);
+        this.guard(intent, current);
+        const seen = /* @__PURE__ */ new Set([selection.track.id]);
+        const additions = batch.filter((track) => !seen.has(track.id) && !!seen.add(track.id));
+        if (!additions.length) {
+          if (this.mode !== "sequential")
+            await this.restoreHeartBase(
+              this.controller,
+              context.likedPlaylistId,
+              selection,
+              intent,
+              current
+            );
+          return;
+        }
+        await this.switchHeartQueue(
+          async (append) => {
+            await append(
+              [selection.track, ...additions].map((track, index) => ({
+                id: track.id,
+                occurrenceId: index ? crypto.randomUUID() : track.queueEntryId,
+                snapshot: { ...toPlaybackQueueSnapshot(track), filePath: "", streamUrl: null }
+              }))
+            );
+          },
+          () => 0,
+          intent,
+          current,
+          selection,
+          (previous) => {
+            this.heartBase = previous;
+            this.mode = "heart";
+            owner.attach({
+              queueId: this.controller.reference().id,
+              likedPlaylistId: context.likedPlaylistId,
+              baseQueue: selection.reference
+            });
+          }
+        );
+      } finally {
+        this.finishPreparation(intent);
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    async exitHeart(signal) {
+      const base = this.heartBase, context = this.heart?.persisted();
+      if (!base || !context?.baseQueue) throw new Error("Heart base queue unavailable");
+      this.heartTransition = true;
+      this.heart.attach(context);
+      const intent = this.revoke();
+      const current = AbortSignal.any([this.preview.signal, ...signal ? [signal] : []]);
+      try {
+        const selection = await this.commit(async () => {
+          this.guard(intent, current);
+          const native = await this.nativeSelection();
+          return { native, reference: this.controller.reference(), track: this.currentTrack };
+        });
+        await this.restoreHeartBase(base, context.likedPlaylistId, selection, intent, current);
+      } finally {
+        this.heartTransition = false;
+        if (intent === this.intent) this.startMaintenance();
+      }
+    }
+    async restoreHeartBase(base, likedPlaylistId, selection, intent, signal) {
+      const restored = await this.options.queues.restoreHeartBaseQueue(
+        base.reference(),
+        selection.track.id
+      );
+      this.guard(intent, signal);
+      await this.switchHeartQueue(
+        restored.queue,
+        () => 0,
+        intent,
+        signal,
+        selection,
+        (previous) => {
+          previous.dispose();
+          this.heartBase = null;
+          if (base !== previous) base.dispose();
+          this.mode = "sequential";
+          this.heart.attach({ queueId: this.controller.reference().id, likedPlaylistId });
+          this.detachedHeartTrack = !restored.matched;
+        }
+      );
+    }
+    /** A queue-only handoff. Source IO and hidden construction never occupy the transport lane. */
+    async switchHeartQueue(produce, selectedIndex, intent, signal, selection, onAdopt) {
+      const candidate = createLibraryPlaybackController({
+        ...this.options.queues,
+        buildQueue: (command) => this.options.queues.restoreNamedPlaybackQueue({
+          ...command,
+          ...command.kind === "begin" ? { playMode: "sequential" } : {}
+        })
+      });
+      let adopted = false, dispatched = false;
+      const handoff = async (window, activate, retain) => {
+        await this.commit(async () => {
+          this.guard(intent, signal);
+          await this.nativeSelection();
+          this.guard(intent, signal);
+          this.assertReference(selection.reference);
+          if (this.controller.reference()?.entryId !== selection.reference.entryId)
+            throw Object.assign(new Error("Heart seed advanced during recommendation lookup"), {
+              code: "STALE_REVISION"
+            });
+          const previous = this.controller;
+          const adopt = async () => {
+            if (adopted) return;
+            activate();
+            this.controller = candidate;
+            adopted = true;
+            onAdopt(previous);
+            await this.updateTrack(
+              this.detachedHeartTrack ? selection.track : candidate.track(window)
+            );
+            if (this.currentTrack && this.currentTrack.id === selection.track.id && this.currentTrack.queueEntryId !== selection.track.queueEntryId)
+              this.options.occurrenceRebound?.(selection.track, this.currentTrack);
+            this.mapping = [this.detachedHeartTrack ? -1 : window.queue.index];
+          };
+          if (selection.native) {
+            const native = this.options.engine.getQueueSnapshot()[selection.native.index];
+            const detached = window.items[0].track?.id !== selection.track.id;
+            const entryId = detached ? selection.track.queueEntryId : window.items[0].queueEntryId;
+            retain();
+            dispatched = true;
+            let result;
+            try {
+              result = await this.options.engine.rebindQueue({
+                expected: selection.native,
+                items: [{ ...native, queueEntryId: entryId, logicalQueueEnd: false }],
+                startIndex: 0,
+                playMode: "sequential"
+              });
+            } catch (error) {
+              await adopt();
+              try {
+                await this.failStopped(error);
+              } finally {
+                this.publish();
+              }
+              throw error;
+            }
+            if (!result)
+              throw Object.assign(new Error("Native occurrence changed before heart handoff"), {
+                code: "STALE_REVISION"
+              });
+          }
+          dispatched = true;
+          retain();
+          await adopt();
+          if (!this.restored && !this.options.cast?.active())
+            this.info = await this.options.engine.getPlaybackInfo();
+          this.publish();
+        });
+      };
+      try {
+        if (typeof produce === "function") {
+          await candidate.stagePages(
+            produce,
+            {
+              id: `core-restore-${crypto.randomUUID()}`,
+              contentRevision: await this.options.queues.libraryRevision(),
+              order: "original",
+              selectedIndex
+            },
+            "sequential",
+            handoff,
+            {
+              guard: () => {
+                if (!dispatched) this.guard(intent, signal);
+              }
+            }
+          );
+        } else {
+          const reference = {
+            id: produce.id,
+            revision: produce.revision,
+            index: produce.index,
+            entryId: produce.selectedEntryId
+          };
+          const window = await candidate.adoptStopped(
+            reference,
+            "sequential",
+            () => intent === this.intent && !signal.aborted
+          );
+          this.guard(intent, signal);
+          if (!window) throw new Error("Heart base queue changed before adoption");
+          await handoff(
+            window,
+            () => {
+            },
+            () => {
+            }
+          );
+        }
+        await this.flush();
+      } finally {
+        if (!adopted) candidate.dispose();
+      }
+    }
+    async refillHeart(expected) {
+      this.assertReference(expected);
+      if (!this.heart?.state().active) throw new Error("No active heart queue");
+      return this.heart.refill(true);
+    }
+    async startPersonalized(command, signal) {
+      const owner = this.personalized;
+      if (!owner) throw new Error("Personalized provider runtime is unavailable");
+      const intent = this.beginPreparation(command.play !== false);
+      try {
+        await this.startPersonalizedIntent(owner, command, intent, signal);
+      } finally {
+        this.finishPreparation(intent);
+      }
+    }
+    async startPersonalizedIntent(owner, command, intent, signal) {
+      const current = AbortSignal.any([this.preview.signal, ...signal ? [signal] : []]);
+      const tracks2 = await owner.initial(command.providerId, command.key, current, command.selectedId);
+      this.guard(intent, current);
+      const selected = command.selectedId ? tracks2.find((track) => track.id === command.selectedId) : tracks2[0];
+      if (!selected) throw new Error("Selected recommendation is unavailable");
+      const ordered = [selected, ...shuffleArray(tracks2.filter((track) => track !== selected))];
+      const originalPositions = new Map(tracks2.map((track, index) => [track.id, index]));
+      await this.stagePages(
+        async (append) => {
+          for (let offset = 0; offset < ordered.length; offset += 200)
+            await append(
+              ordered.slice(offset, offset + 200).map((track) => ({
+                id: track.id,
+                snapshot: { ...track },
+                originalPosition: originalPositions.get(track.id)
+              }))
+            );
+        },
+        {
+          mode: "shuffle",
+          play: command.play !== false,
+          automatic: !command.selectedId,
+          onAdopt: () => owner.attach({
+            providerId: command.providerId,
+            key: command.key,
+            queueId: this.controller.reference().id
+          })
+        },
+        intent,
+        current
+      );
+    }
+    async refillPersonalized(expected) {
+      this.assertReference(expected);
+      if (!this.personalized?.state()) throw new Error("No active personalized stream");
+      return this.personalized.refill(true);
+    }
+    async extendPersonalized(id2, tracks2, current) {
+      let added = 0;
+      for (let offset = 0; offset < tracks2.length; offset += 200) {
+        await this.commit(async () => {
+          if (!current() || this.controller.reference()?.id !== id2) return;
+          await this.nativeSelection();
+          if (!current() || this.controller.reference()?.id !== id2) return;
+          const previous = this.controller.snapshot.value.total;
+          try {
+            const window = await this.controller.extend(
+              tracks2.slice(offset, offset + 200).map((track) => ({ id: track.id, snapshot: { ...track } })),
+              this.mode
+            );
+            if (!window) throw new Error("Automatic queue extension was not acknowledged");
+            added += window.queue.total - previous;
+            await this.updateTrack(this.controller.track(window));
+            this.publish();
+          } catch (error) {
+            await this.failStopped(error);
+            throw error;
+          }
+        });
+        if (!current()) break;
+      }
+      if (added) {
+        void this.maintainer?.tick();
+        await this.flush();
+      }
+      return added;
+    }
+    /** Invalidate prepared sources and pin every acknowledged native resource.
+     * Filesystem IO stays outside the transport lane, so Pause/Stop remain usable. */
+    async maintainSources(action) {
+      const resume = this.maintainer?.isActive();
+      const intent = this.revoke();
+      let release;
+      this.sourceBarrier = new Promise((resolve) => {
+        release = resolve;
+      });
+      try {
+        const sources = await this.commit(async () => {
+          const actual = await this.options.engine.getPlaybackInfo();
+          return [...this.options.engine.getQueueSnapshot().map((item) => item.source), actual.source];
+        });
+        return await action(sources);
+      } finally {
+        this.sourceBarrier = null;
+        release();
+        if (this.info?.state === "playing" || intent === this.intent && resume)
+          this.startMaintenance();
+      }
+    }
+    scheduleSave() {
+      if (this.scheduledSave) return;
+      this.scheduledSave = this.flush().catch((error) => {
+        this.error = errorText(error);
+        this.publish();
+      }).finally(() => {
+        this.scheduledSave = null;
+      });
+    }
+    captureWorkspace() {
+      return this.commit(async () => {
+        if (this.uncertain || this.stopped) throw new Error("Playback selection is unavailable");
+        await this.nativeSelection();
+        if (this.options.cast?.state().phase === "ready")
+          this.acceptCast(await this.options.cast.read());
+        const reference = this.controller.reference();
+        if (!reference || !this.info) throw new Error("No active queue to save");
+        this.publish();
+        return {
+          reference,
+          position: this.detachedHeartTrack ? 0 : Math.max(0, this.info.position),
+          mode: this.mode
+        };
+      });
+    }
+    flush() {
+      const capture = this.commit(async () => {
+        if (!this.initialized || !this.info || this.uncertain) return void 0;
+        if (this.options.resumeMode() === "off" || !this.currentTrack) return null;
+        const reference = this.controller.reference();
+        if (!reference) return null;
+        return structuredClone({
+          version: 1,
+          savedAt: new Date(this.options.now()).toISOString(),
+          mode: this.options.resumeMode(),
+          playMode: this.mode,
+          track: this.currentTrack,
+          position: this.options.resumeMode() === "trackAndPosition" ? Math.max(0, this.info.position) : 0,
+          libraryQueue: reference,
+          personalizedStream: this.personalized?.persisted(),
+          heart: this.heart?.persisted(),
+          ...this.detachedHeartTrack ? { detachedHeartTrack: true } : {},
+          ...this.options.sleepTimer?.persisted() ? { sleepTimer: this.options.sleepTimer.persisted() } : {}
+        });
+      });
+      const save = this.persistence.then(async () => {
+        const session = await capture;
+        if (session === void 0) return;
+        if (session === null) {
+          const saved2 = await this.options.repository.clear(this.revision);
+          this.revision = saved2.revision;
+          return;
+        }
+        const saved = await this.options.repository.save(session, this.revision);
+        this.revision = saved.revision;
+        this.lastSavedAt = this.options.now();
+      });
+      this.persistence = save.catch(() => {
+      });
+      return save;
+    }
+    async shutdown() {
+      if (this.stopped) return;
+      await this.personalized?.shutdown();
+      await this.heart?.shutdown();
+      this.revoke();
+      await this.mutation;
+      await this.observing;
+      if (!this.restored && !this.uncertain) {
+        if (this.options.cast?.active()) this.acceptCast(await this.options.cast.read());
+        else this.info = await this.options.engine.getPlaybackInfo();
+      }
+      this.publish();
+      await this.flush();
+      await this.clearAbLoop();
+      await this.options.cast?.shutdown();
+      await this.options.engine.stop();
+      this.resetStreamBuffering();
+      this.stopped = true;
+      this.options.engine.off("playback-info", this.listen);
+      this.options.engine.off("playback-sample", this.listen);
+      this.options.engine.off("audio-service-crash", this.crash);
+      this.controller.dispose();
+      this.heartBase?.dispose();
+    }
+  }
+  function errorText(error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  function nativeStartFailure(result) {
+    const message = result.fallbackReason ? `Native playback did not start: ${result.fallbackReason}` : "Native playback did not start";
+    return result.superseded ? new Error(message) : new NativeSourceRejected(message);
+  }
+  class NativeSourceRejected extends Error {
+  }
+  class AutomaticPlaybackRejected extends Error {
+    constructor() {
+      super("Track is excluded from automatic playback");
+    }
+  }
+  const LIBRARY_QUEUE_BUILD_IDLE_MS = 12e4;
+  const LIBRARY_QUEUE_BUILD_MAX_ENTRIES = 1e6;
+  class CoreQueueSubmission {
+    submissions = /* @__PURE__ */ new Map();
+    options;
+    constructor(options) {
+      this.options = options;
+    }
+    async insert(command, signal) {
+      const items = await this.options.resolve(command.items, signal);
+      signal.throwIfAborted();
+      await this.options.playback.edit(command.id, command.revision, {
+        kind: "insert",
+        afterEntryId: command.afterEntryId,
+        beforeEntryId: command.beforeEntryId,
+        items: items.map((item) => ({ id: item.id, snapshot: item.localSnapshot ?? item.snapshot }))
+      });
+      return this.options.playback.snapshot().queue;
+    }
+    async submit(clientId, command) {
+      if (command.kind === "begin") return this.begin(clientId, command);
+      const submission = this.submissions.get(command.id);
+      if (!submission || submission.clientId !== clientId)
+        throw new Error("队列提交已结束，请重新选择");
+      if (command.kind === "abort") {
+        submission.controller.abort(new Error("队列提交已取消"));
+        await submission.work.catch(() => {
+        });
+        return this.reply(submission, "aborted");
+      }
+      if (submission.busy || submission.committing) throw new Error("请等待上一批队列提交完成");
+      if (command.sequence !== submission.sequence + 1)
+        throw new Error("队列批次已变化，不可重放旧批次");
+      submission.controller.signal.throwIfAborted();
+      submission.busy = true;
+      submission.cancelTimer();
+      try {
+        if (command.kind === "append") {
+          if (submission.total + command.items.length > LIBRARY_QUEUE_BUILD_MAX_ENTRIES)
+            throw new Error("队列已达到容量上限");
+          const items = await this.options.resolve(command.items, submission.controller.signal);
+          submission.controller.signal.throwIfAborted();
+          await submission.append(items);
+          submission.sequence = command.sequence;
+          submission.total += items.length;
+          this.arm(submission);
+          return this.reply(submission, "building");
+        }
+        if (submission.selectedIndex >= submission.total) throw new Error("队列选中项不存在");
+        submission.committing = true;
+        submission.sequence = command.sequence;
+        submission.finish();
+        await submission.work;
+        return this.reply(submission, "committed");
+      } catch (error) {
+        submission.controller.abort(error);
+        await submission.work.catch(() => {
+        });
+        throw error;
+      } finally {
+        submission.busy = false;
+      }
+    }
+    async begin(clientId, command) {
+      await this.disconnect(clientId);
+      const controller = new AbortController();
+      let ready;
+      const started = new Promise((resolve) => {
+        ready = resolve;
+      });
+      let finish;
+      const complete = new Promise((resolve, reject) => {
+        finish = resolve;
+        controller.signal.addEventListener("abort", () => reject(controller.signal.reason), {
+          once: true
+        });
+      });
+      void complete.catch(() => {
+      });
+      const submission = {
+        id: this.options.newId(),
+        clientId,
+        sequence: 0,
+        total: 0,
+        selectedIndex: command.selectedIndex,
+        controller,
+        append: null,
+        finish,
+        work: Promise.resolve(),
+        busy: false,
+        committing: false,
+        cancelTimer: () => {
+        }
+      };
+      this.submissions.set(submission.id, submission);
+      submission.work = this.options.playback.fromPages(
+        async (append) => {
+          submission.append = append;
+          ready();
+          await complete;
+        },
+        { selectedIndex: command.selectedIndex, position: command.position, play: command.play },
+        controller.signal
+      ).finally(() => {
+        submission.cancelTimer();
+        this.submissions.delete(submission.id);
+      });
+      await Promise.race([started, submission.work]);
+      if (!submission.append) throw new Error("无法创建队列");
+      void submission.work.catch(() => {
+      });
+      this.arm(submission);
+      return this.reply(submission, "building");
+    }
+    reply(submission, state) {
+      return { id: submission.id, state, sequence: submission.sequence, total: submission.total };
+    }
+    arm(submission) {
+      submission.cancelTimer = this.options.schedule(() => {
+        submission.controller.abort(new Error("队列提交已超时"));
+      }, LIBRARY_QUEUE_BUILD_IDLE_MS);
+    }
+    async disconnect(clientId) {
+      const work = [];
+      for (const submission of this.submissions.values()) {
+        if (submission.clientId !== clientId || submission.committing) continue;
+        submission.controller.abort(new Error("队列提交窗口已断开"));
+        work.push(submission.work);
+      }
+      await Promise.allSettled(work);
+    }
+    async shutdown() {
+      const submissions = [...this.submissions.values()];
+      for (const submission of submissions)
+        submission.controller.abort(new Error("Core is shutting down"));
+      await Promise.allSettled(submissions.map((submission) => submission.work));
+    }
+  }
+  function normalizeAutoMixStemDevice(value) {
+    return value === "gpu" || value === "cpu" ? value : "auto";
+  }
+  function normalizeAutoMixStemCacheMiB(value) {
+    return value === 0 || value === 256 || value === 1024 || value === 2048 ? value : 512;
+  }
+  typeof __TWILIGHT_AUTOMIX_EVALUATION__ !== "undefined" && __TWILIGHT_AUTOMIX_EVALUATION__;
+  function normalizeAutoMixStemMode(value) {
+    return value === "off" ? "off" : "auto";
+  }
+  function normalizeAutoMixMode(value) {
+    return value === "natural" || value === "dj" ? value : "off";
+  }
+  function effectiveAutoMixMode(value) {
+    return normalizeAutoMixMode(value);
+  }
+  class CoreSettingsService {
+    pending = Promise.resolve();
+    pendingVolume = null;
+    cancelVolumeTimer = null;
+    options;
+    constructor(options) {
+      this.options = options;
+    }
+    getRevision() {
+      return this.options.repository.getRevision();
+    }
+    state() {
+      return {
+        revision: this.options.repository.getRevision(),
+        settings: this.options.repository.read()
+      };
+    }
+    async initialize() {
+      await this.options.configureLibrary(null, this.options.repository.read());
+      const mode = effectiveAutoMixMode(this.options.repository.read().autoMixMode);
+      if (mode !== "off" && !await this.options.audio.setAutoMixMode(mode))
+        throw new Error("音频引擎未能恢复 AutoMix 模式");
+    }
+    /** Same 350 ms debounce/rounding as the existing main-owned volume preference. */
+    rememberVolume(volume2) {
+      this.pendingVolume = Math.min(1, Math.max(0, Math.round(volume2 * 1e3) / 1e3));
+      this.cancelVolumeTimer?.();
+      this.cancelVolumeTimer = this.options.schedule(() => {
+        this.cancelVolumeTimer = null;
+        try {
+          this.persistVolume();
+        } catch (error) {
+          this.options.failed(error);
+        }
+      }, 350);
+    }
+    persistVolume() {
+      const volume2 = this.pendingVolume;
+      if (volume2 === null) return;
+      if (Math.abs(volume2 - this.options.repository.read().softwareVolume) >= 5e-4)
+        this.options.repository.update({ softwareVolume: volume2 });
+      this.pendingVolume = null;
+    }
+    edit(request, signal) {
+      return this.applyEdit(request, signal, false);
+    }
+    /** Other Core owners commit preferences in the same lane, using its current revision. */
+    editOwned(patch) {
+      return this.applyEdit({ revision: 0, patch }, new AbortController().signal, true);
+    }
+    applyEdit(request, signal, owned) {
+      const work = this.pending.then(
+        () => this.options.serialize(async () => {
+          const repository = this.options.repository;
+          if (owned) request = { ...request, revision: repository.getRevision() };
+          const check = () => {
+            signal.throwIfAborted();
+            if (request.revision !== repository.getRevision())
+              throw Object.assign(new Error("Settings changed; read their current revision"), {
+                code: "STALE_REVISION"
+              });
+          };
+          check();
+          const previous = repository.read();
+          for (const key of Object.keys(request.patch)) {
+            if (!Object.hasOwn(previous, key) || CORE_SPECIALIZED_SETTINGS.includes(key))
+              throw new Error(`Use the domain command for setting: ${key}`);
+          }
+          let patch = { ...request.patch };
+          const normalized = repository.normalize(patch);
+          const paths = {};
+          if (Object.hasOwn(patch, "libraryFolders")) paths.libraryFolders = normalized.libraryFolders;
+          if (Object.hasOwn(patch, "downloadFolder")) paths.downloadFolder = normalized.downloadFolder;
+          if (Object.hasOwn(patch, "cachePath") || Object.hasOwn(patch, "musicCachePath"))
+            paths.musicCachePath = normalized.musicCachePath;
+          if (Object.keys(paths).length) {
+            const authorized = await this.options.authorizePaths(paths, signal);
+            patch = { ...patch, ...authorized };
+            if (authorized.musicCachePath !== void 0) patch.cachePath = authorized.musicCachePath;
+          }
+          check();
+          const next = repository.normalize(patch);
+          const autoMixChanged = next.autoMixMode !== previous.autoMixMode;
+          if (autoMixChanged) {
+            const accepted = await this.options.audio.setAutoMixMode(
+              effectiveAutoMixMode(next.autoMixMode)
+            );
+            if (!accepted) throw new Error("音频引擎未能应用 AutoMix 模式");
+          }
+          try {
+            check();
+            repository.update(patch);
+          } catch (error) {
+            if (autoMixChanged) {
+              try {
+                if (!await this.options.audio.setAutoMixMode(
+                  effectiveAutoMixMode(previous.autoMixMode)
+                ))
+                  throw new Error("AutoMix rollback failed");
+              } catch {
+                await this.options.audio.stop();
+              }
+            }
+            throw error;
+          }
+          if (Object.hasOwn(patch, "autoMixStemMode") || Object.hasOwn(patch, "autoMixStemDevice"))
+            this.options.audio.invalidateAutoMixSource();
+          if (Object.hasOwn(patch, "libraryFolders") || Object.hasOwn(patch, "watchLibrary"))
+            await this.options.configureLibrary(previous, repository.read());
+          return this.state();
+        })
+      );
+      this.pending = work.catch(() => {
+      });
+      return work;
+    }
+    /** Internal backup entry point. Ordinary clients still use the domain-specific commands. */
+    restore(revision2, candidate, signal) {
+      const work = this.pending.then(
+        () => this.options.serialize(async () => {
+          const repository = this.options.repository;
+          const effects = this.options.importEffects;
+          if (!effects) throw new Error("Settings import is not configured");
+          const check = () => {
+            signal.throwIfAborted();
+            if (revision2 !== repository.getRevision())
+              throw Object.assign(new Error("Settings changed; read their current revision"), {
+                code: "STALE_REVISION"
+              });
+          };
+          check();
+          const previous = repository.read();
+          let next = repository.normalize(candidate);
+          const paths = await this.options.authorizePaths(
+            {
+              libraryFolders: next.libraryFolders,
+              downloadFolder: next.downloadFolder,
+              musicCachePath: next.musicCachePath
+            },
+            signal
+          );
+          next = repository.normalize({ ...next, ...paths, cachePath: paths.musicCachePath });
+          next = await effects.prepare(next, signal);
+          check();
+          try {
+            const applied = await effects.apply(previous, next);
+            repository.update({ ...next, ...applied });
+          } catch (error) {
+            await effects.rollback(previous);
+            throw error;
+          }
+          this.options.audio.invalidateAutoMixSource();
+          await this.options.configureLibrary(previous, repository.read());
+          return this.state();
+        })
+      );
+      this.pending = work.catch(() => {
+      });
+      return work;
+    }
+    async flush() {
+      await this.pending;
+      this.cancelVolumeTimer?.();
+      this.cancelVolumeTimer = null;
+      this.persistVolume();
+    }
+  }
+  function normalizeNavigationPagePreferences(value) {
+    const input = value && typeof value === "object" ? value : {};
+    function ids(value2) {
+      if (!Array.isArray(value2)) return [];
+      return [
+        ...new Set(
+          value2.filter(
+            (id2) => typeof id2 === "string" && id2.length > 0 && id2.length <= 256
+          )
+        )
+      ].slice(0, 512);
+    }
+    return { version: 1, order: ids(input.order), hidden: ids(input.hidden) };
+  }
+  const defaultMusicIdentificationSettings = () => ({
+    newImports: false,
+    history: false,
+    sources: ["musicbrainz", "vocadb", "theaudiodb", "discogs", "platform.ncm"],
+    ncmLocalFallback: true,
+    setup: "pending"
+  });
+  function normalizeMusicIdentificationSettings(raw) {
+    if (raw === void 0) return defaultMusicIdentificationSettings();
+    const v = raw && typeof raw === "object" ? raw : {};
+    return {
+      newImports: v.newImports === true,
+      history: v.history === true,
+      ...validMetadataLanguage(v.language) ? { language: v.language } : {},
+      ...typeof v.ncmLocalFallback === "boolean" ? { ncmLocalFallback: v.ncmLocalFallback } : {},
+      ...["pending", "accepted", "declined"].includes(v.setup ?? "") ? { setup: v.setup } : {},
+      sources: Array.isArray(v.sources) ? [
+        ...new Set(
+          v.sources.filter(
+            (s) => typeof s === "string" && /^(musicbrainz|vocadb|theaudiodb|discogs|platform\.[a-z0-9][a-z0-9._-]{0,118})$/.test(
+              s
+            )
+          )
+        )
+      ].slice(0, 16) : defaultMusicIdentificationSettings().sources
+    };
+  }
+  const SHORTCUT_IDS = [
+    "closeWindow",
+    "commandPalette",
+    "playbackSpace",
+    "volumeUp",
+    "volumeDown",
+    "previous",
+    "next",
+    "playPause",
+    "toggleDesktopLyrics",
+    "toggleDesktopLyricsLock",
+    "MediaPreviousTrack",
+    "MediaNextTrack",
+    "MediaPlayPause",
+    "MediaStop"
+  ];
+  function normalizeShortcutEnabled(raw) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    return Object.fromEntries(
+      SHORTCUT_IDS.filter((id2) => value[id2] === false).map((id2) => [id2, false])
+    );
+  }
+  const DEFAULT_DOWNLOAD_PREFERENCES = {
+    naming: "provider",
+    embedMetadata: false,
+    saveLyrics: false
+  };
+  function normalizeDownloadPreferences(raw) {
+    const value = raw && typeof raw === "object" ? raw : {};
+    return {
+      naming: ["provider", "artist-title", "title-artist", "title"].includes(String(value.naming)) ? value.naming : "provider",
+      embedMetadata: value.embedMetadata === true,
+      saveLyrics: value.saveLyrics === true
+    };
+  }
+  const LIQUID_GLASS_BOUNDS = {
+    // Percent of the physically correct lens amplitude, not a pixel count. 100 means
+    // a boundary pixel samples exactly one corner-radius inward, which is the most a
+    // real lens edge can bend without reading as a duplicate of unrelated content.
+    displacementScale: { min: 0, max: 100 },
+    blurAmount: { min: 0, max: 40 },
+    saturation: { min: 80, max: 200 },
+    aberrationIntensity: { min: 0, max: 8 },
+    elasticity: { min: 0, max: 100 },
+    specularOpacity: { min: 0, max: 100 },
+    tintOpacity: { min: 0, max: 100 }
+  };
+  const DEFAULT_LIQUID_GLASS_LIGHT = {
+    displacementScale: 95,
+    blurAmount: 5,
+    saturation: 150,
+    aberrationIntensity: 1.1,
+    elasticity: 12,
+    specularOpacity: 74,
+    tintOpacity: 4
+  };
+  const DEFAULT_LIQUID_GLASS_DARK = {
+    displacementScale: 100,
+    blurAmount: 5,
+    saturation: 155,
+    aberrationIntensity: 1.2,
+    elasticity: 10,
+    specularOpacity: 76,
+    tintOpacity: 4
+  };
+  const DEFAULT_LIQUID_GLASS_HOME_CARDS = {
+    enabled: false,
+    overLight: false,
+    light: { ...DEFAULT_LIQUID_GLASS_LIGHT },
+    dark: { ...DEFAULT_LIQUID_GLASS_DARK }
+  };
+  const DEFAULT_LIQUID_GLASS = {
+    coverage: "functional",
+    followPointer: true,
+    overLight: false,
+    adaptiveTone: true,
+    light: DEFAULT_LIQUID_GLASS_LIGHT,
+    dark: DEFAULT_LIQUID_GLASS_DARK,
+    navigationEnabled: false,
+    playbarEnabled: false,
+    settingsNavigationEnabled: false,
+    homeCards: DEFAULT_LIQUID_GLASS_HOME_CARDS
+  };
+  function clamp$2(value, bound, fallback) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(bound.max, Math.max(bound.min, value));
+  }
+  function normalizeSurfaceMaterial(value) {
+    return value === "liquidGlass" || value === "transparent" ? value : "standard";
+  }
+  function normalizeLiquidGlassCoverage(value) {
+    return value === "expanded" ? "expanded" : "functional";
+  }
+  function normalizeLiquidGlassTheme(raw, defaults) {
+    const t = typeof raw === "object" && raw !== null ? raw : {};
+    return {
+      displacementScale: clamp$2(
+        t.displacementScale,
+        LIQUID_GLASS_BOUNDS.displacementScale,
+        defaults.displacementScale
+      ),
+      blurAmount: clamp$2(t.blurAmount, LIQUID_GLASS_BOUNDS.blurAmount, defaults.blurAmount),
+      saturation: clamp$2(t.saturation, LIQUID_GLASS_BOUNDS.saturation, defaults.saturation),
+      aberrationIntensity: clamp$2(
+        t.aberrationIntensity,
+        LIQUID_GLASS_BOUNDS.aberrationIntensity,
+        defaults.aberrationIntensity
+      ),
+      elasticity: clamp$2(t.elasticity, LIQUID_GLASS_BOUNDS.elasticity, defaults.elasticity),
+      specularOpacity: clamp$2(
+        t.specularOpacity,
+        LIQUID_GLASS_BOUNDS.specularOpacity,
+        defaults.specularOpacity
+      ),
+      tintOpacity: clamp$2(t.tintOpacity, LIQUID_GLASS_BOUNDS.tintOpacity, defaults.tintOpacity)
+    };
+  }
+  function normalizeLiquidGlass(raw) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    const homeCards = typeof value.homeCards === "object" && value.homeCards !== null ? value.homeCards : {};
+    return {
+      coverage: normalizeLiquidGlassCoverage(value.coverage),
+      followPointer: value.followPointer !== false,
+      overLight: value.overLight === true,
+      adaptiveTone: value.adaptiveTone !== false,
+      light: normalizeLiquidGlassTheme(value.light, DEFAULT_LIQUID_GLASS_LIGHT),
+      dark: normalizeLiquidGlassTheme(value.dark, DEFAULT_LIQUID_GLASS_DARK),
+      navigationEnabled: value.navigationEnabled === true,
+      playbarEnabled: value.playbarEnabled === true,
+      settingsNavigationEnabled: value.settingsNavigationEnabled === true,
+      homeCards: {
+        enabled: homeCards.enabled === true,
+        overLight: homeCards.overLight === true,
+        light: normalizeLiquidGlassTheme(homeCards.light, DEFAULT_LIQUID_GLASS_HOME_CARDS.light),
+        dark: normalizeLiquidGlassTheme(homeCards.dark, DEFAULT_LIQUID_GLASS_HOME_CARDS.dark)
+      }
+    };
+  }
+  const PLAYER_BAR_CONTROL_IDS = [
+    "cover",
+    "trackInfo",
+    "transport",
+    "playPause",
+    "time",
+    "favorite",
+    "playMode",
+    "volume",
+    "queue",
+    "hifi",
+    "equalizer",
+    "desktopLyrics",
+    "miniPlayer",
+    "exitPlayingPage"
+  ];
+  const PLAYER_BAR_REGION_NAMES = ["left", "center", "right"];
+  const DEFAULT_PLAYER_BAR_LAYOUT = {
+    standard: {
+      left: ["cover", "trackInfo"],
+      center: ["transport"],
+      right: ["favorite", "playMode", "volume", "queue", "miniPlayer", "desktopLyrics", "hifi"]
+    },
+    mini: {
+      left: ["playPause"],
+      center: [],
+      right: ["playMode", "volume", "queue", "hifi", "exitPlayingPage"]
+    },
+    compact: {
+      // The artwork leads this strip and opens the now-playing page. With a cover placed,
+      // `trackTitleOpensPlayingPage` stands down and the title is plain text again.
+      left: ["cover", "trackInfo", "favorite", "miniPlayer"],
+      center: ["playMode", "transport", "equalizer"],
+      // `exitPlayingPage` renders only while the now-playing page is open, so it
+      // costs the main window nothing and is what gets you back out. Mini's default
+      // carries it for the same reason; without it the page was reachable from the
+      // strip but could only be dismissed by clicking the same entry again.
+      right: ["time", "hifi", "volume", "desktopLyrics", "queue", "exitPlayingPage"]
+    }
+  };
+  const PREVIOUS_NOW_PLAYING_REGIONS = {
+    left: ["trackInfo", "favorite", "miniPlayer"],
+    center: ["playMode", "transport", "volume"],
+    right: ["hifi", "desktopLyrics", "queue"]
+  };
+  const PREVIOUS_STANDARD_REGIONS = {
+    left: ["cover", "trackInfo"],
+    center: ["playMode", "transport", "volume"],
+    right: ["favorite", "queue", "miniPlayer", "desktopLyrics", "hifi"]
+  };
+  function isPreviousDefaultPlayerBar(raw) {
+    return sameRegions(raw, PREVIOUS_STANDARD_REGIONS) || sameRegions(raw, PREVIOUS_NOW_PLAYING_REGIONS);
+  }
+  function sameRegions(raw, expected) {
+    if (!isRecord$1(raw)) return false;
+    return PLAYER_BAR_REGION_NAMES.every((name) => {
+      const items = raw[name];
+      return Array.isArray(items) && items.length === expected[name].length && items.every((item, index) => item === expected[name][index]);
+    });
+  }
+  const PLAY_CONTROL_IDS = ["transport", "playPause"];
+  function isRecord$1(value) {
+    return typeof value === "object" && value !== null;
+  }
+  function isControlId(value) {
+    return typeof value === "string" && PLAYER_BAR_CONTROL_IDS.includes(value);
+  }
+  function defaultPlayControlPlacement(mode) {
+    const regions = DEFAULT_PLAYER_BAR_LAYOUT[mode];
+    for (const region of PLAYER_BAR_REGION_NAMES) {
+      for (const id2 of regions[region]) {
+        if (PLAY_CONTROL_IDS.includes(id2)) return { region, id: id2 };
+      }
+    }
+    return { region: "center", id: "transport" };
+  }
+  function normalizeRegions(raw, fallback, mode) {
+    const value = isRecord$1(raw) ? raw : null;
+    const placed = /* @__PURE__ */ new Set();
+    const result = { left: [], center: [], right: [] };
+    for (const region of PLAYER_BAR_REGION_NAMES) {
+      const stored = value?.[region];
+      const items = Array.isArray(stored) ? stored : fallback[region];
+      for (const item of items) {
+        if (!isControlId(item) || placed.has(item)) continue;
+        placed.add(item);
+        result[region].push(item);
+      }
+    }
+    if (!PLAY_CONTROL_IDS.some((id2) => placed.has(id2))) {
+      const placement = defaultPlayControlPlacement(mode);
+      result[placement.region].push(placement.id);
+    }
+    return result;
+  }
+  function normalizePlayerBarLayout(raw) {
+    const value = isRecord$1(raw) ? raw : {};
+    const result = {};
+    for (const mode of Object.keys(DEFAULT_PLAYER_BAR_LAYOUT)) {
+      const stored = mode === "standard" && isPreviousDefaultPlayerBar(value[mode]) ? void 0 : value[mode];
+      result[mode] = normalizeRegions(stored, DEFAULT_PLAYER_BAR_LAYOUT[mode], mode);
+    }
+    return result;
+  }
+  function clonePlayerBarLayout(value) {
+    const result = {};
+    for (const mode of Object.keys(DEFAULT_PLAYER_BAR_LAYOUT)) {
+      const regions = value[mode] ?? DEFAULT_PLAYER_BAR_LAYOUT[mode];
+      result[mode] = {
+        left: [...regions.left],
+        center: [...regions.center],
+        right: [...regions.right]
+      };
+    }
+    return result;
+  }
+  const PLAYER_BAR_BOUNDS = {
+    revealThresholdPx: { min: 24, max: 400 },
+    hideDelayMs: { min: 0, max: 5e3 }
+  };
+  const DEFAULT_PLAYER_BAR_SETTINGS = {
+    mode: "standard",
+    modeSource: "theme",
+    playingPageMode: "inherit",
+    visibility: "visible",
+    playingPageVisibility: "inherit",
+    compactVisualizerEnabled: true,
+    // Cloned rather than aliased: the default layout is reachable from here, and
+    // an in-place edit of a settings object would otherwise rewrite the default.
+    layout: clonePlayerBarLayout(DEFAULT_PLAYER_BAR_LAYOUT),
+    revealThresholdPx: 120,
+    hideDelayMs: 900
+  };
+  function clamp$1(value, bound, fallback) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.round(Math.min(bound.max, Math.max(bound.min, value)));
+  }
+  function normalizePlayerBarMode(value) {
+    return value === "mini" || value === "compact" ? value : "standard";
+  }
+  function normalizePlayerBarModeSource(value) {
+    return value === "user" ? "user" : "theme";
+  }
+  function normalizePlayerBarPageMode(value) {
+    if (value === "mini" || value === "standard" || value === "compact") return value;
+    return "inherit";
+  }
+  function normalizePlayerBarVisibility(value) {
+    return value === "autoHide" || value === "hidden" ? value : "visible";
+  }
+  function normalizePlayerBarPageVisibility(value) {
+    if (value === "visible" || value === "autoHide" || value === "hidden") return value;
+    return "inherit";
+  }
+  function resolvePlayingPageVisibility(value) {
+    if (value.playingPageVisibility !== void 0) {
+      return normalizePlayerBarPageVisibility(value.playingPageVisibility);
+    }
+    return value.autoHideOnPlayingPage === true ? "autoHide" : "inherit";
+  }
+  function normalizePlayerBarSettings(raw) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    return {
+      mode: normalizePlayerBarMode(value.mode),
+      modeSource: normalizePlayerBarModeSource(value.modeSource),
+      playingPageMode: normalizePlayerBarPageMode(value.playingPageMode),
+      visibility: normalizePlayerBarVisibility(value.visibility),
+      playingPageVisibility: resolvePlayingPageVisibility(value),
+      compactVisualizerEnabled: value.compactVisualizerEnabled !== false,
+      layout: normalizePlayerBarLayout(value.layout),
+      revealThresholdPx: clamp$1(
+        value.revealThresholdPx,
+        PLAYER_BAR_BOUNDS.revealThresholdPx,
+        DEFAULT_PLAYER_BAR_SETTINGS.revealThresholdPx
+      ),
+      hideDelayMs: clamp$1(
+        value.hideDelayMs,
+        PLAYER_BAR_BOUNDS.hideDelayMs,
+        DEFAULT_PLAYER_BAR_SETTINGS.hideDelayMs
+      )
+    };
+  }
+  function clonePlayerBarSettings(value) {
+    return { ...value, layout: clonePlayerBarLayout(value.layout) };
+  }
+  const APPEARANCE_LAYER_SCOPES = [
+    "inner-panel",
+    "outer-panel",
+    "controls",
+    "navigation",
+    "material",
+    "player-bar",
+    "card"
+  ];
+  function defaultComponentMaterial(tone = "light") {
+    return {
+      mode: "theme",
+      colorSource: "auto",
+      color: tone === "dark" ? "#202226" : "#ffffff",
+      opacity: 58,
+      blur: 20,
+      saturation: 115,
+      refraction: 2
+    };
+  }
+  function defaultAppearanceLayers() {
+    return {
+      version: 1,
+      innerRadius: 8,
+      scopes: Object.fromEntries(
+        APPEARANCE_LAYER_SCOPES.map((scope) => [
+          scope,
+          Object.fromEntries(
+            ["light", "dark"].map((tone) => [
+              tone,
+              {
+                material: defaultComponentMaterial(tone),
+                body: {
+                  enabled: false,
+                  color: tone === "dark" ? "#202226" : "#ffffff",
+                  opacity: 100
+                },
+                skin: {
+                  enabled: false,
+                  image: "",
+                  opacity: 100,
+                  scale: 100,
+                  x: 0,
+                  y: 0,
+                  placement: "outside",
+                  fit: "fill",
+                  frame: { top: 0, right: 0, bottom: 0, left: 0 }
+                },
+                effect: {
+                  enabled: false,
+                  image: "",
+                  imageScale: 100,
+                  imageX: 0,
+                  imageY: 0,
+                  color: tone === "dark" ? "#aab6d2" : "#637695",
+                  opacity: 30,
+                  spread: 6,
+                  blur: 16,
+                  motion: "none",
+                  placement: "outside"
+                }
+              }
+            ])
+          )
+        ])
+      )
+    };
+  }
+  function object$1(value) {
+    return value && typeof value === "object" ? value : {};
+  }
+  function bounded(value, max, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(max, value)) : fallback;
+  }
+  function signed(value, min, max, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+  }
+  function normalizeBody(raw, fallback) {
+    const value = object$1(raw);
+    return {
+      enabled: value.enabled === true,
+      color: typeof value.color === "string" && /^#[a-f\d]{6}$/i.test(value.color) ? value.color.toLowerCase() : fallback.color,
+      opacity: bounded(value.opacity, 100, fallback.opacity)
+    };
+  }
+  function imageHandle(value) {
+    return typeof value === "string" && /^background:\/\/[a-zA-Z0-9_-]+\.(?:png|webp|jpe?g)$/i.test(value) ? value : "";
+  }
+  function normalizeSkin(raw, fallback) {
+    const value = object$1(raw);
+    const frame = object$1(value.frame);
+    return {
+      enabled: value.enabled === true,
+      image: imageHandle(value.image),
+      opacity: bounded(value.opacity, 100, fallback.opacity),
+      scale: signed(value.scale, 20, 300, fallback.scale),
+      x: signed(value.x, -100, 100, fallback.x),
+      y: signed(value.y, -100, 100, fallback.y),
+      placement: value.placement === "inside" ? "inside" : "outside",
+      fit: value.fit === "contain" || value.fit === "cover" ? value.fit : "fill",
+      frame: {
+        top: bounded(frame.top, 45, 0),
+        right: bounded(frame.right, 45, 0),
+        bottom: bounded(frame.bottom, 45, 0),
+        left: bounded(frame.left, 45, 0)
+      }
+    };
+  }
+  function normalizeAppearanceLayers(raw) {
+    const value = object$1(raw);
+    const scopes = object$1(value.scopes);
+    const result = defaultAppearanceLayers();
+    result.innerRadius = bounded(value.innerRadius, 48, result.innerRadius);
+    for (const scope of APPEARANCE_LAYER_SCOPES) {
+      const tones = object$1(scopes[scope]);
+      for (const tone of ["light", "dark"]) {
+        const layers = object$1(tones[tone]);
+        const fallback = result.scopes[scope][tone];
+        const effect = object$1(layers.effect);
+        const legacyImage = imageHandle(effect.image);
+        const migrateImage = scope !== "controls" && layers.skin === void 0 && !!legacyImage;
+        result.scopes[scope][tone] = {
+          material: normalizeComponentMaterial(layers.material, tone),
+          body: normalizeBody(layers.body, fallback.body),
+          skin: normalizeSkin(
+            migrateImage ? {
+              enabled: effect.enabled,
+              image: legacyImage,
+              opacity: effect.opacity,
+              scale: effect.imageScale,
+              x: effect.imageX,
+              y: effect.imageY,
+              placement: effect.placement,
+              fit: "contain"
+            } : layers.skin,
+            fallback.skin
+          ),
+          effect: {
+            ...normalizeBody(effect, fallback.effect),
+            enabled: migrateImage ? false : effect.enabled === true,
+            image: legacyImage,
+            imageScale: signed(effect.imageScale, 20, 300, fallback.effect.imageScale),
+            imageX: signed(effect.imageX, -100, 100, fallback.effect.imageX),
+            imageY: signed(effect.imageY, -100, 100, fallback.effect.imageY),
+            spread: bounded(effect.spread, 48, fallback.effect.spread),
+            blur: bounded(effect.blur, 64, fallback.effect.blur),
+            motion: effect.motion === "breathe" || effect.motion === "drift" ? effect.motion : "none",
+            placement: effect.placement === "inside" ? "inside" : "outside"
+          }
+        };
+      }
+    }
+    return result;
+  }
+  function normalizeComponentMaterial(raw, tone = "light") {
+    const value = object$1(raw);
+    const defaults = defaultComponentMaterial(tone);
+    return {
+      colorSource: value.colorSource === "custom" ? "custom" : "auto",
+      color: typeof value.color === "string" && /^#[a-f\d]{6}$/i.test(value.color) ? value.color.toLowerCase() : defaults.color,
+      mode: ["solid", "frosted", "liquidGlass"].includes(String(value.mode)) ? value.mode : "theme",
+      opacity: bounded(value.opacity, 100, defaults.opacity),
+      blur: bounded(value.blur, 40, defaults.blur),
+      saturation: signed(value.saturation, 50, 180, defaults.saturation),
+      refraction: bounded(value.refraction, 8, defaults.refraction)
+    };
+  }
+  const THEME_SHELL_SLOT_IDS = ["titleBar", "navigation", "content", "playerBar"];
+  const THEME_SHELL_TRACK_IDS = [
+    "auto",
+    "content",
+    "narrow",
+    "standard",
+    "wide",
+    "fill",
+    "double"
+  ];
+  const THEME_SHELL_MANAGED_DATA_ATTRIBUTES = [
+    "data-te-shell-layout",
+    "data-te-shell-navigation"
+  ];
+  new Set(THEME_SHELL_SLOT_IDS);
+  new Set(THEME_SHELL_TRACK_IDS);
+  const lightFont = "'Inter', 'Plus Jakarta Sans', 'MiSans', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const THEME_DOCUMENT_SCHEMA_VERSION = 1;
+  const THEME_PROFILE_SCHEMA_VERSION = 2;
+  const TWILIGHT_DEFAULT_THEME_ID = "builtin:twilight-echo-default";
+  function token(id2, cssVariable, label, group, surface, kind, pureWhite, dark, control = {}) {
+    return {
+      id: id2,
+      cssVariable,
+      label,
+      group,
+      surface,
+      kind,
+      defaults: { pureWhite, dark },
+      ...control
+    };
+  }
+  const THEME_TOKEN_DEFINITIONS = Object.freeze([
+    token(
+      "color.primary.500",
+      "--te-primary-500",
+      "主强调色",
+      "colors",
+      "global",
+      "color",
+      "#2563eb",
+      "#2563eb",
+      {
+        adaptive: "cover-accent"
+      }
+    ),
+    token(
+      "color.primary.400",
+      "--te-primary-400",
+      "主强调色悬浮",
+      "colors",
+      "global",
+      "color",
+      "#3b82f6",
+      "#3b82f6",
+      {
+        adaptive: "cover-accent"
+      }
+    ),
+    token(
+      "color.primary.300",
+      "--te-primary-300",
+      "主强调色柔和",
+      "colors",
+      "global",
+      "color",
+      "#93c5fd",
+      "#93c5fd",
+      {
+        adaptive: "cover-accent"
+      }
+    ),
+    token(
+      "color.primary.rgb",
+      "--te-primary-rgb",
+      "主强调色 RGB",
+      "colors",
+      "global",
+      "raw",
+      "37, 99, 235",
+      "37, 99, 235",
+      {
+        adaptive: "cover-accent"
+      }
+    ),
+    token(
+      "color.favorite",
+      "--te-favorite-500",
+      "收藏色",
+      "colors",
+      "global",
+      "color",
+      "#db2777",
+      "#d94f7d"
+    ),
+    token(
+      "color.success",
+      "--te-success-500",
+      "成功色",
+      "colors",
+      "global",
+      "color",
+      "#16a34a",
+      "#14b881"
+    ),
+    token(
+      "color.warning",
+      "--te-warning-500",
+      "警告色",
+      "colors",
+      "global",
+      "color",
+      "#d97706",
+      "#f59e0b"
+    ),
+    token("color.info", "--te-info-500", "信息色", "colors", "global", "color", "#2563eb", "#38bdf8"),
+    token(
+      "color.accentCyan",
+      "--te-accent-cyan",
+      "青色辅助色",
+      "colors",
+      "global",
+      "color",
+      "#0891b2",
+      "#2dd4bf"
+    ),
+    token(
+      "color.neutral.50",
+      "--te-neutral-50",
+      "最低层背景",
+      "colors",
+      "global",
+      "color",
+      "#ffffff",
+      "#050505"
+    ),
+    token(
+      "color.neutral.100",
+      "--te-neutral-100",
+      "柔和背景",
+      "colors",
+      "global",
+      "color",
+      "#f8fafc",
+      "#111111"
+    ),
+    token(
+      "color.neutral.200",
+      "--te-neutral-200",
+      "浅边界",
+      "colors",
+      "global",
+      "color",
+      "#e5e7eb",
+      "#1f1f1f"
+    ),
+    token(
+      "color.neutral.300",
+      "--te-neutral-300",
+      "中边界",
+      "colors",
+      "global",
+      "color",
+      "#d1d5db",
+      "#343434"
+    ),
+    token(
+      "color.neutral.500",
+      "--te-neutral-500",
+      "次要文字",
+      "colors",
+      "global",
+      "color",
+      "#64748b",
+      "#9b9b9b"
+    ),
+    token(
+      "color.neutral.700",
+      "--te-neutral-700",
+      "正文辅助",
+      "colors",
+      "global",
+      "color",
+      "#334155",
+      "#d8d8d8"
+    ),
+    token(
+      "color.neutral.900",
+      "--te-neutral-900",
+      "主要文字",
+      "colors",
+      "global",
+      "color",
+      "#0f172a",
+      "#f7f7f2"
+    ),
+    token("surface.app", "--te-app-bg", "应用背景", "colors", "app", "color", "#f4f4f7", "#17181a"),
+    token(
+      "surface.local",
+      "--te-local-bg",
+      "本地音乐背景",
+      "colors",
+      "local",
+      "color",
+      "#f4f4f7",
+      "#17181a"
+    ),
+    token(
+      "surface.settings",
+      "--te-settings-bg",
+      "设置背景",
+      "colors",
+      "settings",
+      "color",
+      "#f5f6f8",
+      "#17181a"
+    ),
+    token(
+      "surface.streaming",
+      "--te-streaming-bg",
+      "流媒体背景",
+      "colors",
+      "streaming",
+      "color",
+      "#f4f4f7",
+      "#17181a"
+    ),
+    token(
+      "surface.player",
+      "--te-player-bg",
+      "播放页背景",
+      "colors",
+      "player",
+      "color",
+      "#f4f4f7",
+      "#17181a"
+    ),
+    token(
+      "background.gradientStart",
+      "--te-background-gradient-start",
+      "渐变起始色",
+      "colors",
+      "app-background",
+      "color",
+      "#eff6ff",
+      "#111827"
+    ),
+    token(
+      "background.gradientEnd",
+      "--te-background-gradient-end",
+      "渐变结束色",
+      "colors",
+      "app-background",
+      "color",
+      "#f5f3ff",
+      "#1d1728"
+    ),
+    token(
+      "background.gradientAngle",
+      "--te-background-gradient-angle",
+      "渐变角度",
+      "materials",
+      "app-background",
+      "number",
+      "135deg",
+      "135deg",
+      { min: 0, max: 360, step: 1, unit: "deg" }
+    ),
+    token(
+      "background.coverBlur",
+      "--te-background-cover-blur",
+      "封面背景模糊",
+      "materials",
+      "app-background",
+      "length",
+      "28px",
+      "36px",
+      { min: 0, max: 64, step: 1, unit: "px" }
+    ),
+    token(
+      "background.overlayOpacity",
+      "--te-background-overlay-opacity",
+      "背景叠层强度",
+      "materials",
+      "app-background",
+      "number",
+      "12%",
+      "38%",
+      { min: 0, max: 80, step: 1, unit: "%" }
+    ),
+    token(
+      "shell.control.text",
+      "--te-shell-control-text",
+      "应用壳控制文字",
+      "colors",
+      "app-shell",
+      "color",
+      "#0f172a",
+      "#f7f7f2"
+    ),
+    token(
+      "shell.control.hoverSurface",
+      "--te-shell-control-hover",
+      "应用壳控制悬浮",
+      "materials",
+      "app-shell",
+      "color",
+      "rgba(37, 99, 235, 0.08)",
+      "rgba(245, 158, 11, 0.12)"
+    ),
+    token(
+      "settings.text.primary",
+      "--te-settings-text",
+      "设置主要文字",
+      "colors",
+      "settings",
+      "color",
+      "#1a1a1a",
+      "#f7f7f2"
+    ),
+    token(
+      "settings.text.muted",
+      "--te-settings-text-muted",
+      "设置辅助文字",
+      "colors",
+      "settings",
+      "color",
+      "#626b78",
+      "#9b9b9b"
+    ),
+    token(
+      "settings.control.surface",
+      "--te-settings-control-bg",
+      "设置控件表面",
+      "materials",
+      "settings",
+      "color",
+      "#ffffff",
+      "#181818"
+    ),
+    token(
+      "settings.control.border",
+      "--te-settings-control-border",
+      "设置控件边框",
+      "materials",
+      "settings",
+      "color",
+      "rgba(15, 23, 42, 0.06)",
+      "rgba(255, 255, 255, 0.1)"
+    ),
+    token(
+      "settings.panel.border",
+      "--te-settings-panel-border",
+      "设置面板边框",
+      "materials",
+      "settings",
+      "color",
+      "transparent",
+      "transparent"
+    ),
+    token(
+      "settings.navigation.text",
+      "--te-settings-nav-text",
+      "设置导航文字",
+      "colors",
+      "settings-navigation",
+      "color",
+      "#5c6370",
+      "#d8d8d8"
+    ),
+    token(
+      "settings.navigation.hoverSurface",
+      "--te-settings-nav-hover",
+      "设置导航悬浮",
+      "materials",
+      "settings-navigation",
+      "color",
+      "rgba(15, 23, 42, 0.04)",
+      "rgba(255, 255, 255, 0.065)"
+    ),
+    token(
+      "settings.navigation.activeSurface",
+      "--te-settings-nav-active",
+      "设置导航选中",
+      "materials",
+      "settings-navigation",
+      "color",
+      "#ffffff",
+      "rgba(255, 255, 255, 0.1)"
+    ),
+    token(
+      "navigation.surface",
+      "--te-navigation-bg",
+      "导航表面",
+      "materials",
+      "navigation",
+      "color",
+      "rgba(255, 255, 255, 0.94)",
+      "#17181a"
+    ),
+    token(
+      "navigation.border",
+      "--te-navigation-border",
+      "导航边框",
+      "materials",
+      "navigation",
+      "color",
+      "rgba(0, 0, 0, 0.05)",
+      "transparent"
+    ),
+    token(
+      "navigation.shadow",
+      "--te-navigation-shadow",
+      "导航阴影",
+      "materials",
+      "navigation",
+      "shadow",
+      "4px 0 24px rgba(15, 23, 42, 0.03)",
+      "none"
+    ),
+    token(
+      "navigation.text",
+      "--te-navigation-text",
+      "导航文字",
+      "colors",
+      "navigation",
+      "color",
+      "#475569",
+      "#d8d8d8"
+    ),
+    token(
+      "navigation.icon",
+      "--te-navigation-icon",
+      "导航图标",
+      "colors",
+      "navigation",
+      "color",
+      "#64748b",
+      "#9b9b9b"
+    ),
+    token(
+      "navigation.hoverSurface",
+      "--te-navigation-hover",
+      "导航悬浮表面",
+      "materials",
+      "navigation",
+      "color",
+      "rgba(15, 23, 42, 0.04)",
+      "rgba(255, 255, 255, 0.065)"
+    ),
+    token(
+      "navigation.hoverText",
+      "--te-navigation-hover-text",
+      "导航悬浮文字",
+      "colors",
+      "navigation",
+      "color",
+      "#0f172a",
+      "#f7f7f2"
+    ),
+    token(
+      "navigation.activeSurface",
+      "--te-navigation-active",
+      "导航选中表面",
+      "materials",
+      "navigation",
+      "color",
+      "rgba(37, 99, 235, 0.08)",
+      "rgba(245, 158, 11, 0.16)"
+    ),
+    token(
+      "navigation.activeText",
+      "--te-navigation-active-text",
+      "导航选中文字",
+      "colors",
+      "navigation",
+      "color",
+      "#2563eb",
+      "#f59e0b"
+    ),
+    token(
+      "navigation.indicator",
+      "--te-navigation-indicator",
+      "导航指示器",
+      "colors",
+      "navigation",
+      "color",
+      "#2563eb",
+      "#f59e0b"
+    ),
+    token(
+      "navigation.opacity",
+      "--te-navigation-opacity",
+      "导航表面透明度",
+      "materials",
+      "navigation",
+      "number",
+      "94%",
+      "100%",
+      { min: 35, max: 100, step: 1, unit: "%" }
+    ),
+    token(
+      "navigation.radius",
+      "--te-navigation-radius",
+      "导航外框圆角",
+      "shape",
+      "navigation",
+      "length",
+      "0px",
+      "0px",
+      { min: 0, max: 28, step: 1, unit: "px" }
+    ),
+    token(
+      "library.page.surface",
+      "--te-library-bg",
+      "媒体库页面表面",
+      "materials",
+      "library",
+      "gradient",
+      "linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.9))",
+      "linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.9))"
+    ),
+    token(
+      "library.table.surface",
+      "--te-library-table-bg",
+      "媒体库列表表面",
+      "materials",
+      "library",
+      "color",
+      "rgba(255, 255, 255, 0.16)",
+      "rgba(255, 255, 255, 0.16)"
+    ),
+    token(
+      "library.table.border",
+      "--te-library-table-border",
+      "媒体库列表边框",
+      "materials",
+      "library",
+      "color",
+      "rgba(255, 255, 255, 0.52)",
+      "rgba(255, 255, 255, 0.52)"
+    ),
+    token(
+      "library.table.shadow",
+      "--te-library-table-shadow",
+      "媒体库列表阴影",
+      "materials",
+      "library",
+      "shadow",
+      "0 26px 78px rgba(86, 70, 160, 0.1)",
+      "0 26px 78px rgba(86, 70, 160, 0.1)"
+    ),
+    token(
+      "library.row.text",
+      "--te-library-row-text",
+      "媒体库行文字",
+      "colors",
+      "library",
+      "color",
+      "#334155",
+      "#d8d8d8"
+    ),
+    token(
+      "library.row.hoverSurface",
+      "--te-library-row-hover",
+      "媒体库行悬浮",
+      "materials",
+      "library",
+      "color",
+      "rgba(255, 255, 255, 0.22)",
+      "rgba(255, 255, 255, 0.065)"
+    ),
+    token(
+      "library.selection.surface",
+      "--te-library-selection-bg",
+      "媒体库选中表面",
+      "materials",
+      "library",
+      "color",
+      "rgba(15, 23, 42, 0.045)",
+      "rgba(255, 255, 255, 0.06)"
+    ),
+    token(
+      "library.selection.hoverSurface",
+      "--te-library-selection-hover",
+      "媒体库选中悬浮",
+      "materials",
+      "library",
+      "color",
+      "rgba(15, 23, 42, 0.07)",
+      "rgba(255, 255, 255, 0.09)"
+    ),
+    token(
+      "library.selection.indicator",
+      "--te-library-selection-indicator",
+      "媒体库选中指示器",
+      "colors",
+      "library",
+      "color",
+      "rgba(15, 23, 42, 0.55)",
+      "rgba(255, 255, 255, 0.72)"
+    ),
+    token(
+      "library.icon",
+      "--te-library-icon",
+      "媒体库图标颜色",
+      "colors",
+      "library",
+      "color",
+      "#64748b",
+      "#b8b8b2"
+    ),
+    token(
+      "library.iconSize",
+      "--te-library-icon-size",
+      "媒体库图标大小",
+      "shape",
+      "library",
+      "length",
+      "18px",
+      "18px",
+      { min: 14, max: 32, step: 1, unit: "px" }
+    ),
+    token(
+      "library.selection.radius",
+      "--te-library-selection-radius",
+      "选中曲目圆角",
+      "shape",
+      "library-selection",
+      "length",
+      "10px",
+      "10px",
+      { min: 0, max: 24, step: 1, unit: "px" }
+    ),
+    token(
+      "library.selection.inlineInset",
+      "--te-library-selection-inline-inset",
+      "选中曲目左右边距",
+      "shape",
+      "library-selection",
+      "length",
+      "0px",
+      "0px",
+      { min: 0, max: 18, step: 1, unit: "px" }
+    ),
+    token(
+      "library.coverRadius",
+      "--te-library-cover-radius",
+      "媒体库封面圆角",
+      "shape",
+      "library-cover",
+      "length",
+      "8px",
+      "8px",
+      { min: 0, max: 28, step: 1, unit: "px" }
+    ),
+    token(
+      "library.titleOverlayOpacity",
+      "--te-library-title-overlay-opacity",
+      "标题区叠层强度",
+      "materials",
+      "library-header",
+      "number",
+      "72%",
+      "72%",
+      { min: 0, max: 100, step: 1, unit: "%" }
+    ),
+    token(
+      "library.actionSurface",
+      "--te-library-action-bg",
+      "底部操作区背景",
+      "materials",
+      "library-actions",
+      "color",
+      "rgba(37, 99, 235, 0.08)",
+      "rgba(56, 189, 248, 0.12)"
+    ),
+    token(
+      "library.actionRadius",
+      "--te-library-action-radius",
+      "底部操作区圆角",
+      "shape",
+      "library-actions",
+      "length",
+      "12px",
+      "12px",
+      { min: 0, max: 24, step: 1, unit: "px" }
+    ),
+    token(
+      "surface.card",
+      "--te-card-bg",
+      "卡片背景",
+      "materials",
+      "card",
+      "color",
+      "#ffffff",
+      "#181818"
+    ),
+    token(
+      "surface.cardBorder",
+      "--te-card-border",
+      "卡片边框",
+      "materials",
+      "card",
+      "color",
+      "rgba(15, 23, 42, 0.08)",
+      "rgba(255, 255, 255, 0.1)"
+    ),
+    token(
+      "surface.subtle",
+      "--te-subtle-bg",
+      "次级表面",
+      "materials",
+      "global",
+      "color",
+      "#f8fafc",
+      "#121212"
+    ),
+    token(
+      "surface.hover",
+      "--te-hover-bg",
+      "悬浮表面",
+      "materials",
+      "global",
+      "color",
+      "#f3f4f6",
+      "rgba(255, 255, 255, 0.065)"
+    ),
+    token(
+      "surface.active",
+      "--te-active-bg",
+      "选中表面",
+      "materials",
+      "global",
+      "color",
+      "#e8e8e8",
+      "rgba(245, 158, 11, 0.16)"
+    ),
+    token(
+      "material.glass",
+      "--te-glass-bg",
+      "玻璃表面",
+      "materials",
+      "global",
+      "color",
+      "rgba(255, 255, 255, 0.94)",
+      "rgba(24, 24, 24, 0.82)"
+    ),
+    token(
+      "material.glassStrong",
+      "--te-glass-bg-strong",
+      "强化玻璃表面",
+      "materials",
+      "global",
+      "color",
+      "rgba(255, 255, 255, 0.98)",
+      "rgba(29, 29, 29, 0.94)"
+    ),
+    token(
+      "material.glassBorder",
+      "--te-glass-border",
+      "玻璃边框",
+      "materials",
+      "global",
+      "color",
+      "rgba(15, 23, 42, 0.1)",
+      "rgba(255, 255, 255, 0.09)"
+    ),
+    token(
+      "material.glassShadow",
+      "--te-glass-shadow",
+      "玻璃阴影",
+      "materials",
+      "global",
+      "shadow",
+      "0 16px 42px rgba(15, 23, 42, 0.08)",
+      "0 18px 54px rgba(0, 0, 0, 0.34)"
+    ),
+    token(
+      "material.surfaceOpacity",
+      "--te-surface-opacity",
+      "全局表面透明度",
+      "materials",
+      "global",
+      "number",
+      "100%",
+      "100%",
+      {
+        min: 40,
+        max: 100,
+        step: 1,
+        unit: "%"
+      }
+    ),
+    token(
+      "material.glowMain",
+      "--te-glow-main",
+      "主色光晕",
+      "materials",
+      "global",
+      "color",
+      "rgba(37, 99, 235, 0.12)",
+      "rgba(245, 158, 11, 0.18)",
+      {
+        adaptive: "cover-accent"
+      }
+    ),
+    token(
+      "material.glowSoft",
+      "--te-glow-soft",
+      "柔和光晕",
+      "materials",
+      "global",
+      "color",
+      "rgba(59, 130, 246, 0.08)",
+      "rgba(217, 79, 125, 0.12)"
+    ),
+    token(
+      "material.glowCyan",
+      "--te-glow-cyan",
+      "青色光晕",
+      "materials",
+      "global",
+      "color",
+      "rgba(8, 145, 178, 0.08)",
+      "rgba(45, 212, 191, 0.1)"
+    ),
+    token(
+      "typography.sans",
+      "--te-font-sans",
+      "界面字体",
+      "typography",
+      "global",
+      "font",
+      lightFont,
+      lightFont
+    ),
+    token(
+      "typography.display",
+      "--te-font-display",
+      "标题字体",
+      "typography",
+      "global",
+      "font",
+      lightFont,
+      lightFont
+    ),
+    token(
+      "typography.rounded",
+      "--te-font-rounded",
+      "圆体字体",
+      "typography",
+      "global",
+      "font",
+      lightFont,
+      lightFont
+    ),
+    token(
+      "typography.titleWeight",
+      "--te-text-title",
+      "标题字重",
+      "typography",
+      "global",
+      "number",
+      "700",
+      "700",
+      {
+        min: 400,
+        max: 900,
+        step: 100
+      }
+    ),
+    token(
+      "typography.bodyWeight",
+      "--te-text-body",
+      "正文字重",
+      "typography",
+      "global",
+      "number",
+      "500",
+      "500",
+      {
+        min: 300,
+        max: 700,
+        step: 100
+      }
+    ),
+    token(
+      "typography.metaWeight",
+      "--te-text-meta",
+      "辅助字重",
+      "typography",
+      "global",
+      "number",
+      "400",
+      "400",
+      {
+        min: 300,
+        max: 700,
+        step: 100
+      }
+    ),
+    token(
+      "typography.bodySize",
+      "--te-font-size-body",
+      "界面字号",
+      "typography",
+      "global",
+      "length",
+      "14px",
+      "14px",
+      { min: 12, max: 20, step: 1, unit: "px" }
+    ),
+    token(
+      "typography.chromeText",
+      "--te-chrome-text",
+      "导航与底栏文字",
+      "typography",
+      "app-chrome",
+      "color",
+      "#475569",
+      "#d8d8d8"
+    ),
+    token(
+      "shape.cardRadius",
+      "--te-card-radius",
+      "卡片圆角",
+      "shape",
+      "card",
+      "length",
+      "16px",
+      "16px",
+      {
+        min: 0,
+        max: 24,
+        step: 1,
+        unit: "px"
+      }
+    ),
+    token(
+      "shape.globalRadius",
+      "--te-radius-global",
+      "全局圆角",
+      "shape",
+      "global",
+      "length",
+      "10px",
+      "10px",
+      {
+        min: 0,
+        max: 24,
+        step: 1,
+        unit: "px"
+      }
+    ),
+    token(
+      "shape.dialogRadius",
+      "--te-dialog-radius",
+      "对话框圆角",
+      "shape",
+      "dialog",
+      "length",
+      "8px",
+      "8px",
+      { min: 0, max: 24, step: 1, unit: "px" }
+    ),
+    token(
+      "shape.searchRadius",
+      "--te-search-radius",
+      "搜索框圆角",
+      "shape",
+      "search",
+      "length",
+      "10px",
+      "10px",
+      { min: 0, max: 24, step: 1, unit: "px" }
+    ),
+    token(
+      "shape.toastRadius",
+      "--te-toast-radius",
+      "提示圆角",
+      "shape",
+      "toast",
+      "length",
+      "8px",
+      "8px",
+      { min: 0, max: 24, step: 1, unit: "px" }
+    ),
+    token(
+      "shape.trackTitleRadius",
+      "--te-track-title-radius",
+      "曲目标题背景圆角",
+      "shape",
+      "track-title",
+      "length",
+      "6px",
+      "6px",
+      { min: 0, max: 24, step: 1, unit: "px" }
+    ),
+    token(
+      "material.trackTitleOpacity",
+      "--te-track-title-opacity",
+      "曲目标题背景透明度",
+      "materials",
+      "track-title",
+      "number",
+      "0%",
+      "0%",
+      { min: 0, max: 100, step: 1, unit: "%" }
+    ),
+    token(
+      "shape.cardBorderWidth",
+      "--te-card-border-width",
+      "卡片边框宽度",
+      "shape",
+      "card",
+      "length",
+      "1px",
+      "1px",
+      {
+        min: 0,
+        max: 3,
+        step: 0.5,
+        unit: "px"
+      }
+    ),
+    token(
+      "material.cardBlur",
+      "--te-card-blur",
+      "卡片模糊",
+      "materials",
+      "card",
+      "length",
+      "20px",
+      "20px",
+      {
+        min: 0,
+        max: 40,
+        step: 1,
+        unit: "px"
+      }
+    ),
+    token(
+      "material.cardSaturation",
+      "--te-card-saturate",
+      "卡片饱和度",
+      "materials",
+      "card",
+      "number",
+      "150%",
+      "150%",
+      {
+        min: 80,
+        max: 180,
+        step: 1,
+        unit: "%"
+      }
+    ),
+    token(
+      "layout.uiScale",
+      "--te-ui-scale",
+      "界面缩放",
+      "layout",
+      "global",
+      "number",
+      "0.94",
+      "0.94",
+      {
+        min: 0.85,
+        max: 1.1,
+        step: 0.01
+      }
+    ),
+    token(
+      "layout.menuWidth",
+      "--te-menu-width",
+      "侧边栏宽度",
+      "layout",
+      "sidebar",
+      "length",
+      "clamp(224px, 18vw, 260px)",
+      "clamp(224px, 18vw, 260px)"
+    ),
+    token(
+      "playback.text.page",
+      "--te-playback-page-text",
+      "播放页正文",
+      "playback",
+      "player",
+      "color",
+      "#f4f7fb",
+      "#f4f7fb"
+    ),
+    token(
+      "playback.accent",
+      "--te-playback-accent",
+      "播放强调色",
+      "playback",
+      "player",
+      "color",
+      "#7c4dff",
+      "#7c4dff",
+      { adaptive: "cover-accent" }
+    ),
+    token(
+      "playback.backdrop.filter",
+      "--te-playback-backdrop-filter",
+      "封面背景滤镜",
+      "playback",
+      "player",
+      "filter",
+      "blur(58px) saturate(1.22) brightness(0.52)",
+      "blur(58px) saturate(1.32) brightness(0.36)"
+    ),
+    token(
+      "playback.backdrop.scrim",
+      "--te-playback-backdrop-scrim",
+      "播放背景遮罩",
+      "playback",
+      "player",
+      "gradient",
+      "linear-gradient(180deg, rgba(5, 7, 11, 0.72) 0%, rgba(5, 7, 11, 0.74) 52%, rgba(5, 7, 11, 0.78) 100%)",
+      "linear-gradient(180deg, rgba(5, 7, 11, 0.72) 0%, rgba(5, 7, 11, 0.74) 52%, rgba(5, 7, 11, 0.78) 100%)"
+    ),
+    token(
+      "playback.backdrop.highlight",
+      "--te-playback-backdrop-highlight",
+      "播放背景高光",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.12)",
+      "rgba(255, 255, 255, 0.12)"
+    ),
+    token(
+      "playback.backdrop.fluid",
+      "--te-playback-fluid-bg",
+      "动态背景渐变",
+      "playback",
+      "player",
+      "gradient",
+      "linear-gradient(135deg, #0f172a, #1e3a5f, #312e81, #1e3a5f, #0f172a)",
+      "linear-gradient(135deg, #0f172a, #1e3a5f, #312e81, #1e3a5f, #0f172a)"
+    ),
+    token(
+      "playback.backdrop.tempo",
+      "--te-playback-fluid-tempo",
+      "流体光影流转周期",
+      "playback",
+      "player",
+      "number",
+      "18s",
+      "18s",
+      { min: 6, max: 36, step: 1, unit: "s" }
+    ),
+    token(
+      "playback.cover.scale",
+      "--te-playback-cover-scale",
+      "封面缩放比例",
+      "playback",
+      "player",
+      "number",
+      "100%",
+      "100%",
+      { min: 60, max: 115, step: 1, unit: "%" }
+    ),
+    token(
+      "playback.stage.spread",
+      "--te-playback-stage-spread",
+      "封面与歌词间距",
+      "playback",
+      "player",
+      "length",
+      "40px",
+      "40px",
+      { min: 16, max: 96, step: 2, unit: "px" }
+    ),
+    token(
+      "playback.stage.span",
+      "--te-playback-stage-span",
+      "播放舞台展开度",
+      "playback",
+      "player",
+      "length",
+      "820px",
+      "820px",
+      { min: 520, max: 1120, step: 10, unit: "px" }
+    ),
+    token(
+      "playback.cover.surface",
+      "--te-playback-cover-surface",
+      "封面底材",
+      "playback",
+      "player",
+      "color",
+      "rgba(15, 23, 42, 0.08)",
+      "rgba(15, 23, 42, 0.45)"
+    ),
+    token(
+      "playback.cover.shadow",
+      "--te-playback-cover-shadow",
+      "封面阴影",
+      "playback",
+      "player",
+      "shadow",
+      "0 26px 70px rgba(15, 23, 42, 0.28)",
+      "0 26px 70px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.06)"
+    ),
+    token(
+      "playback.cover.border",
+      "--te-playback-cover-border",
+      "封面边框颜色",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.14)",
+      "rgba(255, 255, 255, 0.14)"
+    ),
+    token(
+      "playback.cover.radius",
+      "--te-playback-cover-radius",
+      "封面圆角",
+      "playback",
+      "player",
+      "length",
+      "26px",
+      "26px",
+      { min: 0, max: 40, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.cover.placeholderText",
+      "--te-playback-cover-placeholder-text",
+      "空封面图标",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.34)",
+      "rgba(148, 163, 184, 0.55)"
+    ),
+    token(
+      "playback.track.title",
+      "--te-playback-track-title",
+      "曲目标题",
+      "playback",
+      "player",
+      "color",
+      "#ffffff",
+      "#ffffff"
+    ),
+    token(
+      "playback.track.artist",
+      "--te-playback-track-artist",
+      "曲目艺人",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.78)",
+      "rgba(255, 255, 255, 0.78)"
+    ),
+    token(
+      "playback.track.album",
+      "--te-playback-track-album",
+      "曲目专辑",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.48)",
+      "rgba(255, 255, 255, 0.48)"
+    ),
+    token(
+      "playback.lyrics.text",
+      "--te-playback-lyric-text",
+      "歌词正文",
+      "playback",
+      "lyrics",
+      "color",
+      "rgba(255, 255, 255, 0.42)",
+      "rgba(255, 255, 255, 0.42)"
+    ),
+    token(
+      "playback.lyrics.hoverText",
+      "--te-playback-lyric-hover-text",
+      "歌词悬浮文字",
+      "playback",
+      "lyrics",
+      "color",
+      "rgba(255, 255, 255, 0.74)",
+      "rgba(255, 255, 255, 0.74)"
+    ),
+    token(
+      "playback.lyrics.activeText",
+      "--te-playback-lyric-active-text",
+      "当前歌词",
+      "playback",
+      "lyrics",
+      "color",
+      "#ffffff",
+      "#ffffff"
+    ),
+    token(
+      "playback.lyrics.karaoke",
+      "--te-playback-lyric-karaoke",
+      "逐字歌词高亮",
+      "playback",
+      "lyrics",
+      "color",
+      "#ffffff",
+      "#ffffff"
+    ),
+    token(
+      "playback.lyrics.activeSurface",
+      "--te-playback-lyric-active-surface",
+      "当前歌词表面",
+      "playback",
+      "lyrics",
+      "color",
+      "rgba(255, 255, 255, 0.08)",
+      "rgba(255, 255, 255, 0.08)"
+    ),
+    token(
+      "playback.lyrics.activeBorder",
+      "--te-playback-lyric-active-border",
+      "当前歌词边框",
+      "playback",
+      "lyrics",
+      "color",
+      "rgba(255, 255, 255, 0.1)",
+      "rgba(255, 255, 255, 0.1)"
+    ),
+    token(
+      "playback.lyrics.activeShadow",
+      "--te-playback-lyric-active-shadow",
+      "当前歌词阴影",
+      "playback",
+      "lyrics",
+      "shadow",
+      "0 14px 28px rgba(0, 0, 0, 0.18)",
+      "0 14px 28px rgba(0, 0, 0, 0.18)"
+    ),
+    token(
+      "playback.lyrics.translation",
+      "--te-playback-lyric-translation",
+      "歌词翻译",
+      "playback",
+      "lyrics",
+      "color",
+      "rgba(255, 255, 255, 0.58)",
+      "rgba(255, 255, 255, 0.58)"
+    ),
+    token(
+      "playback.lyrics.translationActive",
+      "--te-playback-lyric-translation-active",
+      "当前歌词翻译",
+      "playback",
+      "lyrics",
+      "color",
+      "rgba(255, 255, 255, 0.82)",
+      "rgba(255, 255, 255, 0.82)"
+    ),
+    token(
+      "playback.lyrics.romanization",
+      "--te-playback-lyric-romanization",
+      "歌词音译",
+      "playback",
+      "lyrics",
+      "color",
+      "rgba(255, 255, 255, 0.46)",
+      "rgba(255, 255, 255, 0.46)"
+    ),
+    token(
+      "playback.lyrics.romanizationActive",
+      "--te-playback-lyric-romanization-active",
+      "当前歌词音译",
+      "playback",
+      "lyrics",
+      "color",
+      "rgba(255, 255, 255, 0.72)",
+      "rgba(255, 255, 255, 0.72)"
+    ),
+    token(
+      "playback.lyrics.density",
+      "--te-playback-lyric-density",
+      "歌词行距间隔",
+      "playback",
+      "lyrics",
+      "length",
+      "10px",
+      "10px",
+      { min: 4, max: 28, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.lyrics.activeScale",
+      "--te-playback-lyric-active-scale",
+      "当前歌词放大比例",
+      "playback",
+      "lyrics",
+      "number",
+      "102%",
+      "102%",
+      { min: 100, max: 118, step: 1, unit: "%" }
+    ),
+    token(
+      "playback.lyrics.inactiveOpacity",
+      "--te-playback-lyric-inactive-opacity",
+      "未唱歌词不透明度",
+      "playback",
+      "lyrics",
+      "number",
+      "66%",
+      "66%",
+      { min: 20, max: 95, step: 5, unit: "%" }
+    ),
+    token(
+      "playback.lyrics.inactiveBlur",
+      "--te-playback-lyric-inactive-blur",
+      "远端歌词景深模糊",
+      "playback",
+      "lyrics",
+      "length",
+      "0.8px",
+      "0.8px",
+      { min: 0, max: 4, step: 0.2, unit: "px" }
+    ),
+    token(
+      "playback.control.surface",
+      "--te-playback-control-surface",
+      "播放控制表面",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.08)",
+      "rgba(255, 255, 255, 0.08)"
+    ),
+    token(
+      "playback.control.border",
+      "--te-playback-control-border",
+      "播放控制边框",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.1)",
+      "rgba(255, 255, 255, 0.1)"
+    ),
+    token(
+      "playback.control.text",
+      "--te-playback-control-text",
+      "播放控制图标",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.7)",
+      "rgba(255, 255, 255, 0.7)"
+    ),
+    token(
+      "playback.control.hoverSurface",
+      "--te-playback-control-hover-surface",
+      "播放控制悬浮表面",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.14)",
+      "rgba(255, 255, 255, 0.14)"
+    ),
+    token(
+      "playback.control.hoverBorder",
+      "--te-playback-control-hover-border",
+      "播放控制悬浮边框",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.16)",
+      "rgba(255, 255, 255, 0.16)"
+    ),
+    token(
+      "playback.control.hoverText",
+      "--te-playback-control-hover-text",
+      "播放控制悬浮图标",
+      "playback",
+      "player",
+      "color",
+      "rgba(255, 255, 255, 0.92)",
+      "rgba(255, 255, 255, 0.92)"
+    ),
+    token(
+      "playback.control.hoverShadow",
+      "--te-playback-control-hover-shadow",
+      "播放控制悬浮阴影",
+      "playback",
+      "player",
+      "shadow",
+      "0 4px 12px rgba(0, 0, 0, 0.18)",
+      "0 4px 12px rgba(0, 0, 0, 0.18)"
+    ),
+    token(
+      "playback.cover.size",
+      "--te-playback-cover-size",
+      "播放页封面尺寸",
+      "playback",
+      "artwork-player",
+      "number",
+      "100%",
+      "100%",
+      { min: 48, max: 100, step: 1, unit: "%" }
+    ),
+    token(
+      "playback.artwork.listRadius",
+      "--te-artwork-list-radius",
+      "列表封面圆角",
+      "playback",
+      "artwork-list",
+      "length",
+      "12px",
+      "12px",
+      { min: 0, max: 28, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.control.size",
+      "--te-player-control-size",
+      "控制按钮大小",
+      "playback",
+      "player-controls",
+      "length",
+      "32px",
+      "32px",
+      { min: 28, max: 48, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.control.playSize",
+      "--te-player-play-size",
+      "播放按钮大小",
+      "playback",
+      "player-controls",
+      "length",
+      "44px",
+      "44px",
+      { min: 36, max: 64, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.control.gap",
+      "--te-player-control-gap",
+      "控制按钮间距",
+      "playback",
+      "player-controls",
+      "length",
+      "12px",
+      "12px",
+      { min: 4, max: 24, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.control.radius",
+      "--te-player-control-radius",
+      "控制按钮圆角",
+      "playback",
+      "player-controls",
+      "length",
+      "999px",
+      "999px",
+      { min: 0, max: 999, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.control.borderWidth",
+      "--te-player-control-border-width",
+      "控制按钮描边",
+      "playback",
+      "player-controls",
+      "length",
+      "0px",
+      "0px",
+      { min: 0, max: 4, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.progress.track",
+      "--te-player-progress-track",
+      "进度条轨道",
+      "playback",
+      "player-progress",
+      "color",
+      "rgba(37, 99, 235, 0.16)",
+      "rgba(255, 255, 255, 0.14)"
+    ),
+    token(
+      "playback.progress.fill",
+      "--te-player-progress-fill",
+      "进度条已播放",
+      "playback",
+      "player-progress",
+      "gradient",
+      "linear-gradient(90deg, #2563eb, #0d9488)",
+      "linear-gradient(90deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.88))"
+    ),
+    token(
+      "playback.progress.height",
+      "--te-player-progress-height",
+      "进度条高度",
+      "playback",
+      "player-progress",
+      "length",
+      "6px",
+      "6px",
+      { min: 2, max: 14, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.progress.radius",
+      "--te-player-progress-radius",
+      "进度条圆角",
+      "playback",
+      "player-progress",
+      "length",
+      "999px",
+      "999px",
+      { min: 0, max: 999, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.progress.thumbSize",
+      "--te-player-progress-thumb-size",
+      "进度滑块大小",
+      "playback",
+      "player-progress",
+      "length",
+      "12px",
+      "12px",
+      { min: 6, max: 22, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.time.surface",
+      "--te-player-time-surface",
+      "时长背景",
+      "playback",
+      "player-time",
+      "color",
+      "rgba(37, 99, 235, 0.08)",
+      "rgba(255, 255, 255, 0.08)"
+    ),
+    token(
+      "playback.time.radius",
+      "--te-player-time-radius",
+      "时长背景圆角",
+      "playback",
+      "player-time",
+      "length",
+      "8px",
+      "8px",
+      { min: 0, max: 24, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.time.opacity",
+      "--te-player-time-opacity",
+      "时长背景透明度",
+      "playback",
+      "player-time",
+      "number",
+      "0%",
+      "0%",
+      { min: 0, max: 100, step: 1, unit: "%" }
+    ),
+    token(
+      "playback.equalizer.panelSurface",
+      "--te-equalizer-panel-bg",
+      "均衡器面板表面",
+      "playback",
+      "equalizer-panel",
+      "color",
+      "#ffffff",
+      "#181818"
+    ),
+    token(
+      "playback.equalizer.panelBorder",
+      "--te-equalizer-panel-border",
+      "均衡器面板边框",
+      "playback",
+      "equalizer-panel",
+      "color",
+      "rgba(15, 23, 42, 0.08)",
+      "rgba(255, 255, 255, 0.1)"
+    ),
+    token(
+      "playback.equalizer.panelRadius",
+      "--te-equalizer-panel-radius",
+      "均衡器面板圆角",
+      "playback",
+      "equalizer-panel",
+      "length",
+      "20px",
+      "20px",
+      { min: 0, max: 32, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.equalizer.sliderTrack",
+      "--te-equalizer-slider-track",
+      "均衡器滑轨",
+      "playback",
+      "equalizer-slider",
+      "color",
+      "rgba(15, 23, 42, 0.06)",
+      "rgba(255, 255, 255, 0.1)"
+    ),
+    token(
+      "playback.equalizer.sliderFill",
+      "--te-equalizer-slider-fill",
+      "均衡器滑轨填充",
+      "playback",
+      "equalizer-slider",
+      "gradient",
+      "linear-gradient(to top, #2563eb, #14b8a6)",
+      "linear-gradient(to top, #38bdf8, #a78bfa)"
+    ),
+    token(
+      "playback.equalizer.sliderThumb",
+      "--te-equalizer-slider-thumb",
+      "均衡器滑块颜色",
+      "playback",
+      "equalizer-slider",
+      "color",
+      "#ffffff",
+      "#f8fafc"
+    ),
+    token(
+      "playback.equalizer.sliderThumbSize",
+      "--te-equalizer-slider-thumb-size",
+      "均衡器滑块大小",
+      "playback",
+      "equalizer-slider",
+      "length",
+      "20px",
+      "20px",
+      { min: 12, max: 30, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.equalizer.grid",
+      "--te-equalizer-grid",
+      "均衡器辅助线",
+      "playback",
+      "equalizer-spectrum",
+      "color",
+      "rgba(15, 23, 42, 0.07)",
+      "rgba(255, 255, 255, 0.1)"
+    ),
+    token(
+      "playback.equalizer.guide",
+      "--te-equalizer-guide",
+      "均衡器频率准线",
+      "playback",
+      "equalizer-spectrum",
+      "color",
+      "rgba(37, 99, 235, 0.45)",
+      "rgba(56, 189, 248, 0.55)"
+    ),
+    token(
+      "playback.equalizer.spectrum",
+      "--te-equalizer-spectrum",
+      "均衡器频谱颜色",
+      "playback",
+      "equalizer-spectrum",
+      "color",
+      "#2563eb",
+      "#38bdf8"
+    ),
+    token(
+      "playback.equalizer.buttonSurface",
+      "--te-equalizer-button-bg",
+      "均衡器按钮表面",
+      "playback",
+      "equalizer-controls",
+      "color",
+      "rgba(37, 99, 235, 0.08)",
+      "rgba(56, 189, 248, 0.12)"
+    ),
+    token(
+      "playback.equalizer.buttonRadius",
+      "--te-equalizer-button-radius",
+      "均衡器按钮圆角",
+      "playback",
+      "equalizer-controls",
+      "length",
+      "10px",
+      "10px",
+      { min: 0, max: 24, step: 1, unit: "px" }
+    ),
+    token(
+      "playback.equalizer.knobSize",
+      "--te-equalizer-knob-size",
+      "音量面板旋钮大小",
+      "playback",
+      "equalizer-controls",
+      "length",
+      "18px",
+      "18px",
+      { min: 12, max: 30, step: 1, unit: "px" }
+    ),
+    token(
+      "motion.enter",
+      "--te-ease-enter",
+      "进入缓动",
+      "motion",
+      "global",
+      "easing",
+      "cubic-bezier(0.4, 0, 0.2, 1)",
+      "cubic-bezier(0.4, 0, 0.2, 1)"
+    ),
+    token(
+      "motion.soft",
+      "--te-ease-soft",
+      "柔和缓动",
+      "motion",
+      "global",
+      "easing",
+      "cubic-bezier(0.22, 1, 0.36, 1)",
+      "cubic-bezier(0.22, 1, 0.36, 1)"
+    )
+  ]);
+  function variantFromDefaults(tone) {
+    return {
+      tokens: Object.fromEntries(
+        THEME_TOKEN_DEFINITIONS.map((definition) => [definition.id, definition.defaults[tone]])
+      )
+    };
+  }
+  const TWILIGHT_DEFAULT_THEME = Object.freeze({
+    schemaVersion: THEME_DOCUMENT_SCHEMA_VERSION,
+    id: TWILIGHT_DEFAULT_THEME_ID,
+    name: "Twilight Echo 默认主题",
+    description: "播放器升级前的原始视觉，所有未覆盖令牌均继承这里的值。",
+    variants: {
+      pureWhite: variantFromDefaults("pureWhite"),
+      dark: variantFromDefaults("dark")
+    },
+    windowDefaults: {
+      miniPlayer: {
+        surfaceColor: "#11121d",
+        accentColor: "#7c4dff",
+        primaryTextColor: "#ffffff",
+        mutedTextColor: "#b8b7c2",
+        fontFamily: lightFont,
+        surfaceOpacity: 94,
+        glassBlur: 18,
+        cornerRadius: 25,
+        borderWidth: 1,
+        borderColor: "#353542",
+        shadowStrength: 80,
+        shadowColor: "#000000"
+      },
+      desktopLyrics: {
+        fontFamily: "system",
+        fontSize: 32,
+        fontWeight: 700,
+        color: "#ffffff",
+        highlightColor: "#3b82f6",
+        backgroundColor: "#000000",
+        backgroundOpacity: 30,
+        shadow: true,
+        shadowBlur: 8,
+        shadowColor: "#000000"
+      }
+    }
+  });
+  const THEME_VISIBILITY_SLOT_IDS = Object.freeze([
+    "playerAlbumArtist",
+    "playerArtwork",
+    "playerTrackMenu",
+    "playerMiscIcons",
+    "playerDuration",
+    "playerWaveform",
+    "playerTrackInfo",
+    "equalizerGrid",
+    "equalizerFrequencyGuides",
+    "equalizerSpectrum",
+    "previousButton",
+    "nextButton",
+    "miniPlayerArtwork"
+  ]);
+  const THEME_MODE_DEFINITIONS = Object.freeze([
+    {
+      id: "appearance.accentSource",
+      dataAttribute: "data-te-accent-source",
+      label: "强调色来源",
+      options: ["fixed", "cover"],
+      defaultValue: "fixed"
+    },
+    {
+      id: "appearance.backgroundTreatment",
+      dataAttribute: "data-te-background-treatment",
+      label: "背景处理",
+      options: ["solid", "gradient", "cover-blur", "image"],
+      defaultValue: "solid"
+    },
+    {
+      id: "appearance.toneScheduling",
+      dataAttribute: "data-te-tone-scheduling",
+      label: "明暗调度",
+      options: ["manual", "system", "timed"],
+      defaultValue: "manual"
+    },
+    {
+      id: "appearance.contrastGuard",
+      dataAttribute: "data-te-contrast-guard",
+      label: "对比度保护",
+      options: ["off", "warn", "enforce"],
+      defaultValue: "warn"
+    },
+    {
+      id: "appearance.effectsMode",
+      dataAttribute: "data-te-effects-mode",
+      label: "特效模式",
+      options: ["full", "reduced"],
+      defaultValue: "full"
+    },
+    {
+      id: "navigation.style",
+      dataAttribute: "data-te-navigation-style",
+      label: "导航样式",
+      options: ["expanded", "compact", "rail"],
+      defaultValue: "expanded"
+    },
+    {
+      id: "navigation.iconScale",
+      dataAttribute: "data-te-navigation-icon-scale",
+      label: "导航图标大小",
+      options: ["sm", "md", "lg"],
+      defaultValue: "md"
+    },
+    {
+      id: "navigation.logo",
+      dataAttribute: "data-te-navigation-logo",
+      label: "导航品牌标识",
+      options: ["show", "hide"],
+      defaultValue: "hide"
+    },
+    {
+      id: "library.density",
+      dataAttribute: "data-te-library-density",
+      label: "媒体库密度",
+      options: ["comfortable", "compact"],
+      defaultValue: "comfortable"
+    },
+    {
+      id: "library.selection",
+      dataAttribute: "data-te-library-selection",
+      label: "媒体库选中样式",
+      options: ["fill", "stroke"],
+      defaultValue: "fill"
+    },
+    {
+      id: "library.titleOverlay",
+      dataAttribute: "data-te-library-title-overlay",
+      label: "媒体库标题叠层",
+      options: ["off", "on"],
+      defaultValue: "off"
+    },
+    {
+      id: "player.layout",
+      dataAttribute: "data-te-player-layout",
+      label: "播放器布局",
+      options: ["standard", "full-cover", "lyrics-focus", "split", "minimal"],
+      defaultValue: "standard"
+    },
+    {
+      id: "player.backdrop",
+      dataAttribute: "data-te-player-backdrop",
+      label: "播放页背景模式",
+      options: ["follow", "cover-blur", "fluid", "solid", "image"],
+      defaultValue: "follow"
+    },
+    {
+      id: "player.controls",
+      dataAttribute: "data-te-player-controls",
+      label: "播放器控制区",
+      options: ["standard", "pro"],
+      defaultValue: "standard"
+    },
+    {
+      id: "player.titleAlign",
+      dataAttribute: "data-te-player-title-align",
+      label: "播放器标题对齐",
+      options: ["left", "center"],
+      defaultValue: "left"
+    },
+    {
+      id: "player.lyricsAlign",
+      dataAttribute: "data-te-player-lyrics-align",
+      label: "播放页歌词对齐",
+      options: ["follow", "left", "center", "right"],
+      defaultValue: "follow"
+    },
+    {
+      id: "player.lyricHighlight",
+      dataAttribute: "data-te-player-lyric-highlight",
+      label: "当前歌词底板样式",
+      options: ["minimal", "surface", "glow"],
+      defaultValue: "minimal"
+    },
+    {
+      id: "player.timeStyle",
+      dataAttribute: "data-te-player-time-style",
+      label: "播放页顶部胶囊",
+      options: ["pill", "minimal", "glass"],
+      defaultValue: "pill"
+    },
+    {
+      id: "player.stageAlign",
+      dataAttribute: "data-te-player-stage-align",
+      label: "播放舞台垂直对齐",
+      options: ["center", "top", "bottom"],
+      defaultValue: "center"
+    },
+    {
+      id: "player.progress",
+      dataAttribute: "data-te-player-progress",
+      label: "播放器进度样式",
+      options: ["line", "ring", "solid", "spectrum"],
+      defaultValue: "line"
+    },
+    {
+      id: "artwork.frame",
+      dataAttribute: "data-te-artwork-frame",
+      label: "封面外框样式",
+      options: ["borderless", "subtle-ring", "glass-frame", "vinyl", "polaroid"],
+      defaultValue: "borderless"
+    },
+    {
+      id: "artwork.spin",
+      dataAttribute: "data-te-artwork-spin",
+      label: "黑胶唱盘旋转",
+      options: ["off", "on"],
+      defaultValue: "off"
+    },
+    {
+      id: "artwork.transition",
+      dataAttribute: "data-te-artwork-transition",
+      label: "封面过渡",
+      options: ["fade", "slide", "none"],
+      defaultValue: "fade"
+    },
+    {
+      id: "artwork.shadow",
+      dataAttribute: "data-te-artwork-shadow",
+      label: "封面阴影",
+      options: ["on", "off"],
+      defaultValue: "on"
+    },
+    {
+      id: "equalizer.panel",
+      dataAttribute: "data-te-equalizer-panel",
+      label: "均衡器面板",
+      options: ["neutral", "tinted", "glass"],
+      defaultValue: "neutral"
+    },
+    {
+      id: "equalizer.slider",
+      dataAttribute: "data-te-equalizer-slider",
+      label: "均衡器滑块",
+      options: ["ring", "solid"],
+      defaultValue: "ring"
+    },
+    {
+      id: "equalizer.knob",
+      dataAttribute: "data-te-equalizer-knob",
+      label: "均衡器旋钮指示",
+      options: ["line", "dot"],
+      defaultValue: "line"
+    },
+    {
+      id: "equalizer.spectrum",
+      dataAttribute: "data-te-equalizer-spectrum",
+      label: "均衡器频谱",
+      options: ["bars", "line", "area"],
+      defaultValue: "line"
+    },
+    {
+      id: "equalizer.button",
+      dataAttribute: "data-te-equalizer-button",
+      label: "均衡器按钮",
+      options: ["soft", "outline", "solid"],
+      defaultValue: "soft"
+    },
+    {
+      id: "icons.family",
+      dataAttribute: "data-te-icon-family",
+      label: "图标族",
+      options: ["outline", "rounded", "filled"],
+      defaultValue: "outline"
+    },
+    {
+      id: "typography.titleCase",
+      dataAttribute: "data-te-title-case",
+      label: "标题字形",
+      options: ["preserve", "uppercase"],
+      defaultValue: "preserve"
+    },
+    {
+      id: "typography.lyricAccent",
+      dataAttribute: "data-te-lyric-accent",
+      label: "歌词强调高亮",
+      options: ["off", "accent"],
+      defaultValue: "off"
+    },
+    {
+      id: "typography.titleColor",
+      dataAttribute: "data-te-title-color",
+      label: "自适应标题颜色",
+      options: ["off", "track", "artist-album"],
+      defaultValue: "off"
+    }
+  ]);
+  const DEFAULT_THEME_MODES = Object.freeze({
+    appearance: Object.freeze({
+      accentSource: "fixed",
+      backgroundTreatment: "solid",
+      toneScheduling: "manual",
+      contrastGuard: "warn",
+      effectsMode: "full"
+    }),
+    navigation: Object.freeze({ style: "expanded", iconScale: "md", logo: "hide" }),
+    library: Object.freeze({ density: "comfortable", selection: "fill", titleOverlay: "off" }),
+    player: Object.freeze({
+      layout: "standard",
+      backdrop: "follow",
+      controls: "standard",
+      titleAlign: "left",
+      lyricsAlign: "follow",
+      lyricHighlight: "minimal",
+      timeStyle: "pill",
+      stageAlign: "center",
+      progress: "line"
+    }),
+    artwork: Object.freeze({ frame: "borderless", spin: "off", transition: "fade", shadow: "on" }),
+    equalizer: Object.freeze({
+      panel: "neutral",
+      slider: "ring",
+      knob: "line",
+      spectrum: "line",
+      button: "soft"
+    }),
+    icons: Object.freeze({ family: "outline" }),
+    typography: Object.freeze({
+      titleCase: "preserve",
+      lyricAccent: "off",
+      titleColor: "off"
+    }),
+    visibility: Object.freeze({})
+  });
+  const allThemeVisibilitySlots = Object.freeze(
+    Object.fromEntries(THEME_VISIBILITY_SLOT_IDS.map((id2) => [id2, true]))
+  );
+  function builtInThemePreset(id2, name, description, overrides, modes2, windowDefaults = {}) {
+    return Object.freeze({
+      schemaVersion: THEME_PROFILE_SCHEMA_VERSION,
+      id: id2,
+      name,
+      description,
+      baseThemeId: TWILIGHT_DEFAULT_THEME_ID,
+      createdAt: (/* @__PURE__ */ new Date(0)).toISOString(),
+      updatedAt: (/* @__PURE__ */ new Date(0)).toISOString(),
+      overrides,
+      modes: modes2,
+      windowDefaults
+    });
+  }
+  const BUILT_IN_THEME_PRESETS = Object.freeze([
+    builtInThemePreset(
+      TWILIGHT_DEFAULT_THEME_ID,
+      "Twilight Default",
+      "Twilight Echo 的基准外观与完整功能可见性。",
+      { pureWhite: {}, dark: {} },
+      { visibility: { ...allThemeVisibilitySlots } },
+      TWILIGHT_DEFAULT_THEME.windowDefaults
+    ),
+    builtInThemePreset(
+      "builtin:aurora-reference",
+      "暮光档案",
+      "唱片客厅：温润纸白、舒展的衬线标题与靛蓝唱片墙，最近收听、音乐库与专辑收藏组成第二套主页。",
+      {
+        pureWhite: {
+          "color.primary.500": "#5144de",
+          "color.primary.400": "#7768ea",
+          "color.primary.300": "#d9d3fa",
+          "color.primary.rgb": "81, 68, 222",
+          "color.accentCyan": "#68867b",
+          "color.neutral.50": "#fdfcfa",
+          "color.neutral.100": "#fbfaf8",
+          "color.neutral.200": "#f1f0f5",
+          "color.neutral.300": "#dedce7",
+          "color.neutral.500": "#777582",
+          "color.neutral.700": "#575563",
+          "color.neutral.900": "#252431",
+          "surface.app": "#fbfaf8",
+          "surface.local": "#fbfaf8",
+          "surface.settings": "#fbfaf8",
+          "surface.streaming": "#fbfaf8",
+          "surface.player": "#f6f5f8",
+          "surface.card": "rgba(253, 252, 250, 0.86)",
+          "surface.cardBorder": "rgba(81, 68, 222, 0.22)",
+          "surface.subtle": "#f1f0f5",
+          "surface.hover": "rgba(81, 68, 222, 0.07)",
+          "surface.active": "rgba(81, 68, 222, 0.13)",
+          "background.gradientStart": "#fbfaf8",
+          "background.gradientEnd": "#f6f5f8",
+          "background.gradientAngle": "168deg",
+          "background.coverBlur": "40px",
+          "background.overlayOpacity": "14%",
+          "shell.control.text": "#252431",
+          "shell.control.hoverSurface": "rgba(81, 68, 222, 0.08)",
+          "settings.text.primary": "#252431",
+          "settings.text.muted": "#777582",
+          "settings.control.surface": "#fdfcfa",
+          "settings.control.border": "rgba(81, 68, 222, 0.2)",
+          "settings.panel.border": "rgba(81, 68, 222, 0.18)",
+          "settings.navigation.text": "#777582",
+          "settings.navigation.hoverSurface": "rgba(81, 68, 222, 0.06)",
+          "settings.navigation.activeSurface": "rgba(81, 68, 222, 0.12)",
+          "navigation.surface": "rgba(251, 250, 248, 0.96)",
+          "navigation.border": "rgba(81, 68, 222, 0.28)",
+          "navigation.shadow": "1px 0 0 rgba(81, 68, 222, 0.14)",
+          "navigation.text": "#575563",
+          "navigation.icon": "#777582",
+          "navigation.hoverSurface": "rgba(81, 68, 222, 0.07)",
+          "navigation.hoverText": "#252431",
+          "navigation.activeSurface": "rgba(81, 68, 222, 0.14)",
+          "navigation.activeText": "#4637c8",
+          "navigation.indicator": "#5144de",
+          "navigation.radius": "7px",
+          "navigation.opacity": "96%",
+          "library.page.surface": "linear-gradient(180deg, rgba(253, 252, 250, 0.92), rgba(246, 245, 248, 0.86))",
+          "library.table.surface": "transparent",
+          "library.table.border": "rgba(81, 68, 222, 0.18)",
+          "library.table.shadow": "none",
+          "library.row.text": "#575563",
+          "library.row.hoverSurface": "rgba(81, 68, 222, 0.05)",
+          "library.selection.surface": "rgba(81, 68, 222, 0.1)",
+          "library.selection.hoverSurface": "rgba(81, 68, 222, 0.16)",
+          "library.selection.indicator": "#5144de",
+          "library.selection.radius": "5px",
+          "library.selection.inlineInset": "4px",
+          "library.icon": "#777582",
+          "library.coverRadius": "4px",
+          "library.actionRadius": "6px",
+          "library.actionSurface": "rgba(81, 68, 222, 0.1)",
+          "library.iconSize": "16px",
+          "typography.display": "'Lora', 'MiSans', 'Microsoft YaHei UI', Georgia, serif",
+          "typography.rounded": "'Inter', 'MiSans', sans-serif",
+          "typography.titleWeight": "600",
+          "typography.bodyWeight": "400",
+          "typography.metaWeight": "500",
+          "typography.chromeText": "#575563",
+          "shape.globalRadius": "8px",
+          "shape.cardRadius": "10px",
+          "shape.dialogRadius": "14px",
+          "shape.searchRadius": "999px",
+          "shape.toastRadius": "10px",
+          "shape.cardBorderWidth": "1px",
+          "material.glass": "rgba(251, 250, 248, 0.88)",
+          "material.glassStrong": "rgba(253, 252, 250, 0.96)",
+          "material.glassBorder": "rgba(81, 68, 222, 0.2)",
+          "material.glassShadow": "0 12px 32px rgba(37, 36, 49, 0.14)",
+          "material.glowMain": "rgba(81, 68, 222, 0.12)",
+          "material.glowSoft": "rgba(104, 134, 123, 0.1)",
+          "material.glowCyan": "rgba(104, 134, 123, 0.12)",
+          "material.cardBlur": "16px",
+          "material.cardSaturation": "104%",
+          "material.surfaceOpacity": "96%",
+          "material.trackTitleOpacity": "0%",
+          "playback.text.page": "#252431",
+          "playback.accent": "#5144de",
+          "playback.backdrop.filter": "blur(56px) saturate(1.08) brightness(1.02)",
+          "playback.backdrop.scrim": "linear-gradient(180deg, rgba(251, 250, 248, 0.74) 0%, rgba(246, 245, 248, 0.86) 100%)",
+          "playback.cover.surface": "rgba(246, 245, 248, 0.72)",
+          "playback.cover.shadow": "0 18px 44px rgba(37, 36, 49, 0.22)",
+          "playback.cover.radius": "8px",
+          "playback.cover.placeholderText": "#777582",
+          "playback.track.title": "#252431",
+          "playback.track.artist": "#666371",
+          "playback.track.album": "#777582",
+          "playback.lyrics.text": "#666371",
+          "playback.lyrics.hoverText": "#252431",
+          "playback.lyrics.activeText": "#4637c8",
+          "playback.lyrics.activeSurface": "rgba(81, 68, 222, 0.1)",
+          "playback.lyrics.activeBorder": "rgba(81, 68, 222, 0.34)",
+          "playback.lyrics.activeShadow": "0 0 0 rgba(81, 68, 222, 0)",
+          "playback.control.surface": "rgba(253, 252, 250, 0.72)",
+          "playback.control.border": "rgba(81, 68, 222, 0.24)",
+          "playback.control.text": "#252431",
+          "playback.control.hoverSurface": "rgba(81, 68, 222, 0.12)",
+          "playback.control.hoverBorder": "rgba(81, 68, 222, 0.44)",
+          "playback.control.hoverText": "#4637c8",
+          "playback.control.hoverShadow": "0 0 0 rgba(81, 68, 222, 0)",
+          "playback.control.size": "34px",
+          "playback.control.playSize": "44px",
+          "playback.control.gap": "8px",
+          "playback.control.radius": "999px",
+          "playback.control.borderWidth": "1px",
+          "playback.progress.track": "rgba(81, 68, 222, 0.2)",
+          "playback.progress.fill": "linear-gradient(90deg, #4637c8, #8675ec)",
+          "playback.progress.height": "3px",
+          "playback.progress.radius": "999px",
+          "playback.progress.thumbSize": "10px",
+          "playback.time.surface": "rgba(81, 68, 222, 0.1)",
+          "playback.time.radius": "4px",
+          "playback.time.opacity": "100%",
+          "playback.artwork.listRadius": "4px",
+          "playback.equalizer.panelSurface": "rgba(253, 252, 250, 0.92)",
+          "playback.equalizer.panelBorder": "rgba(81, 68, 222, 0.2)",
+          "playback.equalizer.panelRadius": "10px",
+          "playback.equalizer.sliderTrack": "rgba(81, 68, 222, 0.18)",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #4637c8, #8675ec)",
+          "playback.equalizer.sliderThumb": "#5144de",
+          "playback.equalizer.sliderThumbSize": "14px",
+          "playback.equalizer.grid": "rgba(81, 68, 222, 0.14)",
+          "playback.equalizer.guide": "rgba(81, 68, 222, 0.28)",
+          "playback.equalizer.spectrum": "#5144de",
+          "playback.equalizer.knobSize": "14px",
+          "playback.equalizer.buttonSurface": "rgba(81, 68, 222, 0.08)",
+          "playback.equalizer.buttonRadius": "6px",
+          "motion.enter": "cubic-bezier(0.23, 1, 0.32, 1)",
+          "motion.soft": "cubic-bezier(0.23, 1, 0.32, 1)"
+        },
+        dark: {
+          "color.primary.500": "#aca0ff",
+          "color.primary.400": "#c6bcff",
+          "color.primary.300": "#dcd6ff",
+          "color.primary.rgb": "172, 160, 255",
+          "color.accentCyan": "#a2c4b7",
+          "color.neutral.50": "#111118",
+          "color.neutral.100": "#181820",
+          "color.neutral.200": "#22222d",
+          "color.neutral.300": "#363542",
+          "color.neutral.500": "#a09dad",
+          "color.neutral.700": "#d3d0e2",
+          "color.neutral.900": "#f4f1ff",
+          "surface.app": "#191920",
+          "surface.local": "#191920",
+          "surface.settings": "#191920",
+          "surface.streaming": "#191920",
+          "surface.player": "#15151d",
+          "surface.card": "rgba(34, 34, 45, 0.78)",
+          "surface.cardBorder": "rgba(172, 160, 255, 0.18)",
+          "surface.subtle": "#22222b",
+          "surface.hover": "rgba(172, 160, 255, 0.07)",
+          "surface.active": "rgba(172, 160, 255, 0.14)",
+          "background.gradientStart": "#191920",
+          "background.gradientEnd": "#191920",
+          "background.gradientAngle": "168deg",
+          "background.coverBlur": "54px",
+          "background.overlayOpacity": "52%",
+          "shell.control.text": "#f4f1ff",
+          "shell.control.hoverSurface": "rgba(172, 160, 255, 0.1)",
+          "settings.text.primary": "#f4f1ff",
+          "settings.text.muted": "#a09dad",
+          "settings.control.surface": "#22222d",
+          "settings.control.border": "rgba(172, 160, 255, 0.18)",
+          "settings.panel.border": "rgba(172, 160, 255, 0.16)",
+          "settings.navigation.text": "#a09dad",
+          "settings.navigation.hoverSurface": "rgba(172, 160, 255, 0.07)",
+          "settings.navigation.activeSurface": "rgba(172, 160, 255, 0.13)",
+          "navigation.surface": "rgba(25, 25, 32, 0.96)",
+          "navigation.border": "rgba(172, 160, 255, 0.2)",
+          "navigation.shadow": "1px 0 0 rgba(172, 160, 255, 0.12)",
+          "navigation.text": "#d3d0e2",
+          "navigation.icon": "#a09dad",
+          "navigation.hoverSurface": "rgba(172, 160, 255, 0.08)",
+          "navigation.hoverText": "#f4f1ff",
+          "navigation.activeSurface": "rgba(172, 160, 255, 0.15)",
+          "navigation.activeText": "#aca0ff",
+          "navigation.indicator": "#aca0ff",
+          "navigation.radius": "7px",
+          "navigation.opacity": "96%",
+          "library.page.surface": "linear-gradient(180deg, rgba(25, 25, 32, 0.92), rgba(25, 25, 32, 0.86))",
+          "library.table.surface": "transparent",
+          "library.table.border": "rgba(172, 160, 255, 0.16)",
+          "library.table.shadow": "none",
+          "library.row.text": "#d3d0e2",
+          "library.row.hoverSurface": "rgba(172, 160, 255, 0.06)",
+          "library.selection.surface": "rgba(172, 160, 255, 0.12)",
+          "library.selection.hoverSurface": "rgba(172, 160, 255, 0.18)",
+          "library.selection.indicator": "#aca0ff",
+          "library.selection.radius": "5px",
+          "library.selection.inlineInset": "4px",
+          "library.icon": "#a09dad",
+          "library.coverRadius": "4px",
+          "library.actionRadius": "6px",
+          "library.actionSurface": "rgba(172, 160, 255, 0.12)",
+          "library.iconSize": "16px",
+          "typography.display": "'Lora', 'MiSans', 'Microsoft YaHei UI', Georgia, serif",
+          "typography.rounded": "'Inter', 'MiSans', sans-serif",
+          "typography.titleWeight": "600",
+          "typography.bodyWeight": "400",
+          "typography.metaWeight": "500",
+          "typography.chromeText": "#d3d0e2",
+          "shape.globalRadius": "8px",
+          "shape.cardRadius": "10px",
+          "shape.dialogRadius": "14px",
+          "shape.searchRadius": "999px",
+          "shape.toastRadius": "10px",
+          "shape.cardBorderWidth": "1px",
+          "material.glass": "rgba(29, 29, 39, 0.86)",
+          "material.glassStrong": "rgba(22, 22, 30, 0.95)",
+          "material.glassBorder": "rgba(172, 160, 255, 0.16)",
+          "material.glassShadow": "0 16px 42px rgba(0, 0, 0, 0.5)",
+          "material.glowMain": "rgba(172, 160, 255, 0.18)",
+          "material.glowSoft": "rgba(162, 196, 183, 0.12)",
+          "material.glowCyan": "rgba(162, 196, 183, 0.14)",
+          "material.cardBlur": "18px",
+          "material.cardSaturation": "108%",
+          "material.surfaceOpacity": "94%",
+          "material.trackTitleOpacity": "0%",
+          "playback.text.page": "#f4f1ff",
+          "playback.accent": "#aca0ff",
+          "playback.backdrop.filter": "blur(64px) saturate(1.2) brightness(0.42)",
+          "playback.backdrop.scrim": "linear-gradient(180deg, rgba(19, 19, 27, 0.62) 0%, rgba(25, 25, 32, 0.76) 100%)",
+          "playback.cover.surface": "rgba(31, 30, 42, 0.72)",
+          "playback.cover.shadow": "0 22px 58px rgba(0, 0, 0, 0.62)",
+          "playback.cover.radius": "8px",
+          "playback.cover.placeholderText": "#a09dad",
+          "playback.track.title": "#f4f1ff",
+          "playback.track.artist": "#d3d0e2",
+          "playback.track.album": "#a09dad",
+          "playback.lyrics.text": "#b8b3c9",
+          "playback.lyrics.hoverText": "#f4f1ff",
+          "playback.lyrics.activeText": "#c6bcff",
+          "playback.lyrics.activeSurface": "rgba(172, 160, 255, 0.1)",
+          "playback.lyrics.activeBorder": "rgba(172, 160, 255, 0.32)",
+          "playback.lyrics.activeShadow": "0 0 0 rgba(172, 160, 255, 0)",
+          "playback.control.surface": "rgba(34, 34, 45, 0.72)",
+          "playback.control.border": "rgba(172, 160, 255, 0.22)",
+          "playback.control.text": "#f4f1ff",
+          "playback.control.hoverSurface": "rgba(172, 160, 255, 0.14)",
+          "playback.control.hoverBorder": "rgba(172, 160, 255, 0.42)",
+          "playback.control.hoverText": "#c6bcff",
+          "playback.control.hoverShadow": "0 0 0 rgba(172, 160, 255, 0)",
+          "playback.control.size": "34px",
+          "playback.control.playSize": "44px",
+          "playback.control.gap": "8px",
+          "playback.control.radius": "999px",
+          "playback.control.borderWidth": "1px",
+          "playback.progress.track": "rgba(172, 160, 255, 0.18)",
+          "playback.progress.fill": "linear-gradient(90deg, #8876df, #aca0ff)",
+          "playback.progress.height": "3px",
+          "playback.progress.radius": "999px",
+          "playback.progress.thumbSize": "10px",
+          "playback.time.surface": "rgba(172, 160, 255, 0.1)",
+          "playback.time.radius": "4px",
+          "playback.time.opacity": "100%",
+          "playback.artwork.listRadius": "4px",
+          "playback.equalizer.panelSurface": "rgba(29, 29, 39, 0.9)",
+          "playback.equalizer.panelBorder": "rgba(172, 160, 255, 0.18)",
+          "playback.equalizer.panelRadius": "10px",
+          "playback.equalizer.sliderTrack": "rgba(172, 160, 255, 0.16)",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #8876df, #aca0ff)",
+          "playback.equalizer.sliderThumb": "#aca0ff",
+          "playback.equalizer.sliderThumbSize": "14px",
+          "playback.equalizer.grid": "rgba(172, 160, 255, 0.12)",
+          "playback.equalizer.guide": "rgba(172, 160, 255, 0.26)",
+          "playback.equalizer.spectrum": "#aca0ff",
+          "playback.equalizer.knobSize": "14px",
+          "playback.equalizer.buttonSurface": "rgba(172, 160, 255, 0.08)",
+          "playback.equalizer.buttonRadius": "6px",
+          "motion.enter": "cubic-bezier(0.23, 1, 0.32, 1)",
+          "motion.soft": "cubic-bezier(0.23, 1, 0.32, 1)"
+        }
+      },
+      {
+        appearance: {
+          accentSource: "fixed",
+          backgroundTreatment: "solid",
+          toneScheduling: "manual",
+          contrastGuard: "enforce",
+          effectsMode: "full"
+        },
+        navigation: { style: "expanded", iconScale: "sm", logo: "hide" },
+        library: { density: "comfortable", selection: "stroke", titleOverlay: "off" },
+        player: {
+          layout: "standard",
+          controls: "pro",
+          titleAlign: "left",
+          progress: "solid"
+        },
+        artwork: { transition: "none", shadow: "off" },
+        equalizer: {
+          panel: "neutral",
+          slider: "solid",
+          knob: "line",
+          spectrum: "bars",
+          button: "outline"
+        },
+        icons: { family: "outline" },
+        typography: { titleCase: "preserve", lyricAccent: "accent", titleColor: "off" },
+        visibility: { ...allThemeVisibilitySlots, playerWaveform: false, playerMiscIcons: true }
+      },
+      {
+        miniPlayer: {
+          surfaceColor: "#1c1b26",
+          accentColor: "#aca0ff",
+          primaryTextColor: "#f4f1ff",
+          mutedTextColor: "#a5a0b9",
+          fontFamily: lightFont,
+          surfaceOpacity: 96,
+          glassBlur: 6,
+          cornerRadius: 12,
+          borderWidth: 1,
+          borderColor: "#363542",
+          shadowStrength: 42,
+          shadowColor: "#111118"
+        },
+        desktopLyrics: {
+          fontFamily: "'Lora', 'MiSans', 'Microsoft YaHei UI', Georgia, serif",
+          fontSize: 34,
+          fontWeight: 600,
+          color: "#f4f1ff",
+          highlightColor: "#aca0ff",
+          backgroundColor: "#191920",
+          backgroundOpacity: 84,
+          shadow: true,
+          shadowBlur: 10,
+          shadowColor: "#111118"
+        }
+      }
+    ),
+    builtInThemePreset(
+      "builtin:obsidian-glass",
+      "夜港 · Night Harbor",
+      "黑胶播放台，珊瑚红与青绿配色，独立播放面板。",
+      {
+        pureWhite: {
+          "color.primary.500": "#b94035",
+          "color.primary.400": "#a5342b",
+          "color.primary.300": "#da786b",
+          "color.primary.rgb": "185, 64, 53",
+          "color.accentCyan": "#247468",
+          "color.neutral.50": "#ffffff",
+          "color.neutral.100": "#f3f4f3",
+          "color.neutral.200": "#e4e7e5",
+          "color.neutral.300": "#c6ccca",
+          "color.neutral.500": "#646e69",
+          "color.neutral.700": "#3f4944",
+          "color.neutral.900": "#202724",
+          "surface.app": "#f8f9f7",
+          "surface.local": "#f8f9f7",
+          "surface.settings": "#f8f9f7",
+          "surface.streaming": "#f8f9f7",
+          "surface.player": "#ffffff",
+          "surface.card": "#f0f2ef",
+          "surface.cardBorder": "rgba(32, 39, 36, 0.14)",
+          "surface.subtle": "#ecefec",
+          "surface.hover": "rgba(36, 116, 104, 0.06)",
+          "surface.active": "rgba(185, 64, 53, 0.1)",
+          "background.gradientStart": "#f8f9f7",
+          "background.gradientEnd": "#f8f9f7",
+          "background.gradientAngle": "168deg",
+          "shell.control.text": "#202724",
+          "shell.control.hoverSurface": "rgba(36, 116, 104, 0.08)",
+          "settings.text.primary": "#202724",
+          "settings.text.muted": "#646e69",
+          "settings.control.surface": "#ffffff",
+          "settings.control.border": "rgba(32, 39, 36, 0.14)",
+          "settings.navigation.text": "#646e69",
+          "settings.navigation.hoverSurface": "rgba(36, 116, 104, 0.06)",
+          "settings.navigation.activeSurface": "rgba(185, 64, 53, 0.1)",
+          "navigation.surface": "#edf0ed",
+          "navigation.border": "rgba(32, 39, 36, 0.12)",
+          "navigation.shadow": "none",
+          "navigation.text": "#3f4944",
+          "navigation.icon": "#646e69",
+          "navigation.hoverSurface": "rgba(36, 116, 104, 0.07)",
+          "navigation.hoverText": "#202724",
+          "navigation.activeSurface": "rgba(185, 64, 53, 0.1)",
+          "navigation.activeText": "#b94035",
+          "navigation.indicator": "#b94035",
+          "library.row.text": "#3f4944",
+          "library.row.hoverSurface": "rgba(36, 116, 104, 0.05)",
+          "library.selection.surface": "rgba(185, 64, 53, 0.08)",
+          "library.selection.hoverSurface": "rgba(185, 64, 53, 0.14)",
+          "library.selection.indicator": "#b94035",
+          "library.icon": "#646e69",
+          "typography.display": "'Space Grotesk', 'MiSans', system-ui, sans-serif",
+          "typography.chromeText": "#3f4944",
+          "shape.globalRadius": "6px",
+          "shape.cardRadius": "8px",
+          "material.glass": "rgba(248, 249, 247, 0.9)",
+          "material.glassStrong": "rgba(248, 249, 247, 0.96)",
+          "material.glassBorder": "rgba(32, 39, 36, 0.12)",
+          "material.glassShadow": "0 12px 32px rgba(32, 39, 36, 0.08)",
+          "material.glowMain": "rgba(185, 64, 53, 0.06)",
+          "material.cardBlur": "12px",
+          "playback.accent": "#b94035",
+          "playback.control.radius": "6px",
+          "playback.progress.height": "3px",
+          "playback.progress.track": "rgba(32, 39, 36, 0.14)",
+          "playback.progress.fill": "#b94035",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #247468, #b94035)",
+          "playback.equalizer.spectrum": "#247468",
+          "playback.equalizer.guide": "rgba(36, 116, 104, 0.5)"
+        },
+        dark: {
+          "color.primary.500": "#ee8978",
+          "color.primary.400": "#f4a697",
+          "color.primary.300": "#f9c4b9",
+          "color.primary.rgb": "238, 137, 120",
+          "color.accentCyan": "#7dbbad",
+          "color.neutral.50": "#141716",
+          "color.neutral.100": "#1a1e1c",
+          "color.neutral.200": "#262c28",
+          "color.neutral.300": "#39413c",
+          "color.neutral.500": "#a0aba4",
+          "color.neutral.700": "#cbd2cb",
+          "color.neutral.900": "#f1f3ed",
+          "surface.app": "#171b19",
+          "surface.local": "#171b19",
+          "surface.settings": "#171b19",
+          "surface.streaming": "#171b19",
+          "surface.player": "#141816",
+          "surface.card": "#202623",
+          "surface.cardBorder": "rgba(241, 243, 237, 0.14)",
+          "surface.subtle": "#1c211e",
+          "surface.hover": "rgba(125, 187, 173, 0.07)",
+          "surface.active": "rgba(238, 137, 120, 0.14)",
+          "background.gradientStart": "#171b19",
+          "background.gradientEnd": "#171b19",
+          "background.gradientAngle": "168deg",
+          "shell.control.text": "#f1f3ed",
+          "shell.control.hoverSurface": "rgba(125, 187, 173, 0.08)",
+          "settings.text.primary": "#f1f3ed",
+          "settings.text.muted": "#a0aba4",
+          "settings.control.surface": "#202623",
+          "settings.control.border": "rgba(241, 243, 237, 0.12)",
+          "settings.navigation.text": "#a0aba4",
+          "settings.navigation.hoverSurface": "rgba(125, 187, 173, 0.07)",
+          "settings.navigation.activeSurface": "rgba(238, 137, 120, 0.14)",
+          "navigation.surface": "#121613",
+          "navigation.border": "rgba(241, 243, 237, 0.12)",
+          "navigation.shadow": "none",
+          "navigation.text": "#cbd2cb",
+          "navigation.icon": "#a0aba4",
+          "navigation.hoverSurface": "rgba(125, 187, 173, 0.07)",
+          "navigation.hoverText": "#f1f3ed",
+          "navigation.activeSurface": "rgba(238, 137, 120, 0.14)",
+          "navigation.activeText": "#ee8978",
+          "navigation.indicator": "#ee8978",
+          "library.row.text": "#cbd2cb",
+          "library.row.hoverSurface": "rgba(125, 187, 173, 0.07)",
+          "library.selection.surface": "rgba(238, 137, 120, 0.1)",
+          "library.selection.hoverSurface": "rgba(238, 137, 120, 0.16)",
+          "library.selection.indicator": "#ee8978",
+          "library.icon": "#a0aba4",
+          "typography.display": "'Space Grotesk', 'MiSans', system-ui, sans-serif",
+          "typography.chromeText": "#cbd2cb",
+          "shape.globalRadius": "6px",
+          "shape.cardRadius": "8px",
+          "material.glass": "rgba(23, 27, 25, 0.9)",
+          "material.glassStrong": "rgba(23, 27, 25, 0.96)",
+          "material.glassBorder": "rgba(241, 243, 237, 0.12)",
+          "material.glassShadow": "0 12px 32px rgba(0, 0, 0, 0.18)",
+          "material.glowMain": "rgba(238, 137, 120, 0.06)",
+          "material.cardBlur": "12px",
+          "playback.accent": "#ee8978",
+          "playback.control.radius": "6px",
+          "playback.progress.height": "3px",
+          "playback.progress.track": "rgba(241, 243, 237, 0.14)",
+          "playback.progress.fill": "#ee8978",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #7dbbad, #ee8978)",
+          "playback.equalizer.spectrum": "#7dbbad",
+          "playback.equalizer.guide": "rgba(125, 187, 173, 0.5)"
+        }
+      },
+      {
+        appearance: {
+          accentSource: "fixed",
+          backgroundTreatment: "gradient",
+          contrastGuard: "enforce",
+          effectsMode: "full"
+        },
+        navigation: { style: "rail", iconScale: "md", logo: "hide" },
+        library: { density: "compact", selection: "stroke", titleOverlay: "off" },
+        player: { ...DEFAULT_THEME_MODES.player },
+        artwork: { transition: "fade", shadow: "on" },
+        equalizer: {
+          panel: "glass",
+          slider: "solid",
+          knob: "dot",
+          spectrum: "area",
+          button: "outline"
+        },
+        icons: { family: "filled" },
+        typography: { ...DEFAULT_THEME_MODES.typography },
+        visibility: { ...allThemeVisibilitySlots }
+      },
+      {
+        miniPlayer: {
+          surfaceColor: "#040506",
+          accentColor: "#ee8978",
+          primaryTextColor: "#edf3f5",
+          mutedTextColor: "#8a969b",
+          fontFamily: lightFont,
+          surfaceOpacity: 78,
+          glassBlur: 34,
+          cornerRadius: 14,
+          borderWidth: 1,
+          borderColor: "#1c3b42",
+          shadowStrength: 96,
+          shadowColor: "#000000"
+        },
+        desktopLyrics: {
+          fontFamily: "'Space Grotesk', 'MiSans', system-ui, sans-serif",
+          fontSize: 30,
+          fontWeight: 600,
+          color: "#dfe9eb",
+          highlightColor: "#ee8978",
+          backgroundColor: "#020304",
+          backgroundOpacity: 56,
+          shadow: true,
+          shadowBlur: 14,
+          shadowColor: "#000000"
+        }
+      }
+    ),
+    builtInThemePreset(
+      "builtin:paper-light",
+      "声场 Sound Field",
+      "暖灰与青绿配色，独立播放面板、圆角专辑画廊和曲目目录。",
+      {
+        pureWhite: {
+          "color.neutral.50": "#ffffff",
+          "color.neutral.100": "#eeeee7",
+          "color.primary.300": "#b6cfc2",
+          "color.accentCyan": "#27745e",
+          "navigation.text": "#56605a",
+          "color.primary.500": "#397963",
+          "color.primary.400": "#58977f",
+          "color.primary.rgb": "57, 121, 99",
+          "color.neutral.200": "#e2e4e2",
+          "color.neutral.500": "#6f7471",
+          "color.neutral.700": "#424845",
+          "color.neutral.900": "#202724",
+          "surface.app": "#f5f4ef",
+          "surface.local": "#f5f4ef",
+          "surface.settings": "#f5f4ef",
+          "surface.streaming": "#f5f4ef",
+          "surface.player": "#f5f4ef",
+          "surface.card": "#ffffff",
+          "surface.cardBorder": "#d7dbd6",
+          "surface.hover": "#e9ece7",
+          "navigation.surface": "#f5f4ef",
+          "navigation.border": "#d7dbd6",
+          "navigation.activeSurface": "rgba(57, 121, 99, 0.07)",
+          "navigation.activeText": "#397963",
+          "navigation.indicator": "#397963",
+          "library.table.surface": "#ffffff",
+          "library.table.border": "#d7dbd6",
+          "library.table.shadow": "none",
+          "library.selection.indicator": "#397963",
+          "library.selection.radius": "2px",
+          "library.coverRadius": "2px",
+          "material.glass": "#ffffff",
+          "material.glassBorder": "#d7dbd6",
+          "material.glassShadow": "none",
+          "material.cardBlur": "0px",
+          "typography.display": "'Space Grotesk', 'MiSans', sans-serif",
+          "typography.titleWeight": "600",
+          "typography.chromeText": "#49514c",
+          "shape.globalRadius": "6px",
+          "shape.cardRadius": "6px",
+          "playback.accent": "#397963",
+          "playback.text.page": "#202724",
+          "playback.backdrop.filter": "blur(56px) saturate(1.08) brightness(1.02)",
+          "playback.backdrop.scrim": "linear-gradient(180deg, rgba(245, 246, 243, 0.74) 0%, rgba(246, 245, 248, 0.86) 100%)",
+          "playback.cover.radius": "2px",
+          "playback.cover.shadow": "none",
+          "playback.track.title": "#202724",
+          "playback.track.artist": "rgba(32, 39, 36, 0.72)",
+          "playback.track.album": "rgba(32, 39, 36, 0.52)",
+          "playback.lyrics.text": "rgba(32, 39, 36, 0.45)",
+          "playback.lyrics.hoverText": "rgba(32, 39, 36, 0.68)",
+          "playback.lyrics.activeText": "#202724",
+          "playback.lyrics.activeSurface": "transparent",
+          "playback.lyrics.activeShadow": "none",
+          "playback.lyrics.translation": "rgba(32, 39, 36, 0.56)",
+          "playback.lyrics.translationActive": "rgba(32, 39, 36, 0.8)",
+          "playback.control.border": "rgba(32, 39, 36, 0.3)",
+          "playback.control.text": "rgba(32, 39, 36, 0.78)",
+          "playback.control.hoverSurface": "rgba(32, 39, 36, 0.06)",
+          "playback.control.hoverText": "#202724",
+          "playback.control.radius": "2px",
+          "playback.progress.track": "rgba(32, 39, 36, 0.16)",
+          "playback.progress.fill": "linear-gradient(90deg, #397963, #397963)",
+          "playback.progress.height": "3px",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #397963, #58977f)",
+          "playback.equalizer.spectrum": "#397963"
+        },
+        dark: {
+          "color.neutral.50": "#1a1c1b",
+          "color.neutral.100": "#242725",
+          "color.primary.300": "#d1e1d8",
+          "color.accentCyan": "#96cdb1",
+          "navigation.text": "#aebbb2",
+          "color.primary.500": "#a4c5b4",
+          "color.primary.400": "#b9d6c7",
+          "color.primary.rgb": "164, 197, 180",
+          "color.neutral.200": "#323733",
+          "color.neutral.500": "#a2aba5",
+          "color.neutral.700": "#cbd2cc",
+          "color.neutral.900": "#ecf0e9",
+          "surface.app": "#171918",
+          "surface.local": "#171918",
+          "surface.settings": "#171918",
+          "surface.streaming": "#171918",
+          "surface.player": "#171918",
+          "surface.card": "#232624",
+          "surface.cardBorder": "#363d38",
+          "surface.hover": "rgba(236, 240, 233, 0.06)",
+          "surface.active": "rgba(164, 197, 180, 0.16)",
+          "navigation.surface": "#171918",
+          "navigation.border": "#363d38",
+          "navigation.activeSurface": "rgba(164, 197, 180, 0.12)",
+          "navigation.activeText": "#a4c5b4",
+          "navigation.indicator": "#a4c5b4",
+          "library.table.surface": "#232624",
+          "library.table.border": "#363d38",
+          "library.table.shadow": "none",
+          "library.selection.indicator": "#a4c5b4",
+          "library.selection.radius": "2px",
+          "library.coverRadius": "2px",
+          "material.glass": "#232624",
+          "material.glassBorder": "#363d38",
+          "material.glassShadow": "none",
+          "material.cardBlur": "0px",
+          "typography.display": "'Space Grotesk', 'MiSans', sans-serif",
+          "typography.titleWeight": "600",
+          "typography.chromeText": "#c3cbc4",
+          "shape.globalRadius": "6px",
+          "shape.cardRadius": "6px",
+          "playback.accent": "#a4c5b4",
+          "playback.text.page": "#ecf0e9",
+          "playback.backdrop.filter": "blur(64px) saturate(1.2) brightness(0.42)",
+          "playback.backdrop.scrim": "linear-gradient(180deg, rgba(28, 34, 31, 0.62) 0%, rgba(28, 34, 31, 0.76) 100%)",
+          "playback.cover.radius": "2px",
+          "playback.cover.shadow": "none",
+          "playback.track.title": "#f5f7f2",
+          "playback.track.artist": "rgba(236, 240, 233, 0.74)",
+          "playback.track.album": "rgba(236, 240, 233, 0.5)",
+          "playback.lyrics.text": "rgba(236, 240, 233, 0.42)",
+          "playback.lyrics.hoverText": "rgba(236, 240, 233, 0.7)",
+          "playback.lyrics.activeText": "#f5f7f2",
+          "playback.lyrics.activeSurface": "transparent",
+          "playback.lyrics.activeShadow": "none",
+          "playback.lyrics.translation": "rgba(236, 240, 233, 0.58)",
+          "playback.lyrics.translationActive": "rgba(236, 240, 233, 0.82)",
+          "playback.control.border": "rgba(236, 240, 233, 0.28)",
+          "playback.control.text": "rgba(236, 240, 233, 0.8)",
+          "playback.control.hoverText": "#f5f7f2",
+          "playback.control.radius": "2px",
+          "playback.progress.track": "rgba(236, 240, 233, 0.18)",
+          "playback.progress.fill": "linear-gradient(90deg, #a4c5b4, #a4c5b4)",
+          "playback.progress.height": "3px",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #a4c5b4, #b9d6c7)",
+          "playback.equalizer.spectrum": "#a4c5b4"
+        }
+      },
+      {
+        appearance: {
+          backgroundTreatment: "solid",
+          contrastGuard: "enforce",
+          effectsMode: "reduced"
+        },
+        navigation: { style: "compact", iconScale: "md", logo: "show" },
+        library: { density: "comfortable", selection: "stroke", titleOverlay: "off" },
+        player: { layout: "standard", controls: "standard", titleAlign: "left", progress: "line" },
+        artwork: { transition: "none", shadow: "off" },
+        equalizer: {
+          panel: "neutral",
+          slider: "solid",
+          knob: "line",
+          spectrum: "line",
+          button: "outline"
+        },
+        icons: { family: "outline" },
+        typography: { titleCase: "preserve", lyricAccent: "accent", titleColor: "off" },
+        visibility: { ...allThemeVisibilitySlots, playerWaveform: false, playerMiscIcons: false }
+      },
+      {
+        miniPlayer: {
+          surfaceColor: "#f5f4ef",
+          accentColor: "#397963",
+          primaryTextColor: "#202724",
+          mutedTextColor: "#6f7471",
+          fontFamily: "'Space Grotesk', 'MiSans', sans-serif",
+          surfaceOpacity: 100,
+          glassBlur: 0,
+          cornerRadius: 3,
+          borderWidth: 1,
+          borderColor: "#d7dbd6",
+          shadowStrength: 0,
+          shadowColor: "#000000"
+        },
+        desktopLyrics: {
+          fontFamily: "'Space Grotesk', 'MiSans', sans-serif",
+          fontSize: 30,
+          fontWeight: 500,
+          color: "#202724",
+          highlightColor: "#397963",
+          backgroundColor: "#f5f4ef",
+          backgroundOpacity: 96,
+          shadow: false,
+          shadowBlur: 0,
+          shadowColor: "#000000"
+        }
+      }
+    ),
+    builtInThemePreset(
+      "builtin:neon-gradient",
+      "Neon Gradient",
+      "霓虹夜城：品红与电青的双色电流点亮近黑紫夜幕，药丸圆角与彩色辉光让整座界面彻夜发光。",
+      {
+        pureWhite: {
+          "color.primary.500": "#db1f8e",
+          "color.primary.400": "#ef4aae",
+          "color.primary.rgb": "219, 31, 142",
+          "color.accentCyan": "#00b3d7",
+          "color.neutral.900": "#2b0a45",
+          "color.neutral.700": "#54246f",
+          "color.neutral.500": "#7d4899",
+          "surface.app": "#fdf2fc",
+          "surface.local": "#fdf2fc",
+          "surface.settings": "#fdf2fc",
+          "surface.streaming": "#fdf2fc",
+          "surface.player": "#fdf2fc",
+          "surface.card": "#ffffff",
+          "surface.cardBorder": "rgba(219, 31, 142, 0.22)",
+          "surface.subtle": "#fce8f9",
+          "surface.hover": "rgba(219, 31, 142, 0.07)",
+          "surface.active": "rgba(219, 31, 142, 0.15)",
+          "background.gradientStart": "#ffbfe6",
+          "background.gradientEnd": "#aaefff",
+          "background.gradientAngle": "128deg",
+          "shell.control.hoverSurface": "rgba(219, 31, 142, 0.1)",
+          "navigation.surface": "rgba(255, 255, 255, 0.82)",
+          "navigation.border": "rgba(219, 31, 142, 0.16)",
+          "navigation.text": "#6d3f8a",
+          "navigation.activeSurface": "rgba(219, 31, 142, 0.14)",
+          "navigation.activeText": "#b3126f",
+          "navigation.indicator": "#00b3d7",
+          "navigation.radius": "26px",
+          "material.glass": "rgba(255, 255, 255, 0.86)",
+          "material.glassStrong": "rgba(255, 255, 255, 0.96)",
+          "material.glassBorder": "rgba(219, 31, 142, 0.2)",
+          "material.glassShadow": "0 20px 55px rgba(219, 31, 142, 0.18), 0 8px 28px rgba(0, 179, 215, 0.12)",
+          "material.glowMain": "rgba(219, 31, 142, 0.22)",
+          "material.glowSoft": "rgba(0, 179, 215, 0.16)",
+          "material.cardBlur": "24px",
+          "typography.display": "'Space Grotesk', 'MiSans', 'Microsoft YaHei UI', system-ui, sans-serif",
+          "typography.titleWeight": "800",
+          "typography.metaWeight": "500",
+          "shape.globalRadius": "24px",
+          "shape.cardRadius": "24px",
+          "shape.searchRadius": "24px",
+          "playback.accent": "#ff3fa4",
+          "playback.cover.radius": "32px",
+          "playback.cover.shadow": "0 30px 84px rgba(219, 31, 142, 0.42), 0 12px 40px rgba(0, 179, 215, 0.26)",
+          "playback.progress.fill": "linear-gradient(90deg, #ff2d96, #22e0ff)",
+          "playback.progress.track": "rgba(255, 63, 164, 0.2)",
+          "playback.control.playSize": "56px",
+          "playback.equalizer.panelBorder": "rgba(219, 31, 142, 0.22)",
+          "playback.equalizer.panelRadius": "28px",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #db1f8e, #00b3d7)",
+          "playback.equalizer.spectrum": "#db1f8e",
+          "playback.equalizer.buttonSurface": "rgba(219, 31, 142, 0.12)",
+          "playback.equalizer.buttonRadius": "18px",
+          "library.row.text": "#54246f",
+          "library.selection.surface": "rgba(219, 31, 142, 0.12)",
+          "library.selection.indicator": "#db1f8e",
+          "library.selection.radius": "18px",
+          "library.coverRadius": "18px",
+          "motion.enter": "cubic-bezier(0.16, 1, 0.3, 1)"
+        },
+        dark: {
+          "color.primary.500": "#ff3fa4",
+          "color.primary.400": "#ff74bf",
+          "color.primary.rgb": "255, 63, 164",
+          "color.accentCyan": "#22e0ff",
+          "color.neutral.900": "#fdeefb",
+          "color.neutral.700": "#e6cdef",
+          "color.neutral.500": "#b98fd0",
+          "surface.app": "#0b0514",
+          "surface.local": "#0b0514",
+          "surface.settings": "#0b0514",
+          "surface.streaming": "#0b0514",
+          "surface.player": "#080310",
+          "surface.card": "#170b26",
+          "surface.cardBorder": "rgba(255, 63, 164, 0.3)",
+          "surface.subtle": "#120820",
+          "surface.hover": "rgba(255, 63, 164, 0.1)",
+          "surface.active": "rgba(255, 63, 164, 0.2)",
+          "background.gradientStart": "#4c0a6f",
+          "background.gradientEnd": "#043c54",
+          "background.gradientAngle": "128deg",
+          "shell.control.hoverSurface": "rgba(255, 63, 164, 0.16)",
+          "navigation.surface": "rgba(17, 7, 30, 0.88)",
+          "navigation.border": "rgba(255, 63, 164, 0.22)",
+          "navigation.text": "#cbaed9",
+          "navigation.activeSurface": "rgba(255, 63, 164, 0.22)",
+          "navigation.activeText": "#ffa3d8",
+          "navigation.indicator": "#22e0ff",
+          "navigation.radius": "26px",
+          "material.glass": "rgba(23, 11, 38, 0.82)",
+          "material.glassStrong": "rgba(28, 13, 46, 0.95)",
+          "material.glassBorder": "rgba(255, 63, 164, 0.26)",
+          "material.glassShadow": "0 24px 64px rgba(255, 45, 150, 0.28), 0 10px 34px rgba(34, 224, 255, 0.16)",
+          "material.glowMain": "rgba(255, 63, 164, 0.38)",
+          "material.glowSoft": "rgba(34, 224, 255, 0.24)",
+          "material.cardBlur": "26px",
+          "typography.display": "'Space Grotesk', 'MiSans', 'Microsoft YaHei UI', system-ui, sans-serif",
+          "typography.titleWeight": "800",
+          "typography.metaWeight": "500",
+          "shape.globalRadius": "24px",
+          "shape.cardRadius": "24px",
+          "shape.searchRadius": "24px",
+          "playback.accent": "#ff3fa4",
+          "playback.cover.radius": "32px",
+          "playback.cover.shadow": "0 32px 90px rgba(255, 45, 150, 0.5), 0 12px 44px rgba(34, 224, 255, 0.32)",
+          "playback.progress.fill": "linear-gradient(90deg, #ff2d96, #22e0ff)",
+          "playback.progress.track": "rgba(255, 63, 164, 0.2)",
+          "playback.control.playSize": "56px",
+          "playback.equalizer.panelBorder": "rgba(255, 63, 164, 0.3)",
+          "playback.equalizer.panelRadius": "28px",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #ff2d96, #22e0ff)",
+          "playback.equalizer.spectrum": "#22e0ff",
+          "playback.equalizer.buttonSurface": "rgba(255, 63, 164, 0.2)",
+          "playback.equalizer.buttonRadius": "18px",
+          "library.row.text": "#e6cdef",
+          "library.selection.surface": "rgba(255, 63, 164, 0.2)",
+          "library.selection.indicator": "#22e0ff",
+          "library.selection.radius": "18px",
+          "library.coverRadius": "18px",
+          "motion.enter": "cubic-bezier(0.16, 1, 0.3, 1)"
+        }
+      },
+      {
+        appearance: { backgroundTreatment: "gradient", contrastGuard: "enforce" },
+        navigation: { style: "compact", iconScale: "lg", logo: "hide" },
+        library: { density: "compact", selection: "fill", titleOverlay: "on" },
+        player: { layout: "minimal", controls: "pro", titleAlign: "center", progress: "spectrum" },
+        artwork: { transition: "slide", shadow: "on" },
+        equalizer: {
+          panel: "tinted",
+          slider: "solid",
+          knob: "dot",
+          spectrum: "bars",
+          button: "solid"
+        },
+        icons: { family: "filled" },
+        typography: { titleCase: "uppercase", lyricAccent: "accent", titleColor: "track" },
+        visibility: {
+          ...allThemeVisibilitySlots,
+          playerAlbumArtist: false,
+          playerTrackMenu: false,
+          playerMiscIcons: false,
+          playerDuration: false,
+          playerWaveform: false,
+          equalizerGrid: false,
+          equalizerFrequencyGuides: false
+        }
+      },
+      {
+        miniPlayer: {
+          surfaceColor: "#12061e",
+          accentColor: "#ff3fa4",
+          primaryTextColor: "#fdeefb",
+          mutedTextColor: "#cbaed9",
+          fontFamily: "'Space Grotesk', 'MiSans', 'Microsoft YaHei UI', system-ui, sans-serif",
+          surfaceOpacity: 84,
+          glassBlur: 28,
+          cornerRadius: 32,
+          borderWidth: 1,
+          borderColor: "#ff3fa4",
+          shadowStrength: 90,
+          shadowColor: "#2b0040"
+        },
+        desktopLyrics: {
+          fontFamily: "'Space Grotesk', 'MiSans', 'Microsoft YaHei UI', system-ui, sans-serif",
+          fontSize: 34,
+          fontWeight: 800,
+          color: "#fdeefb",
+          highlightColor: "#22e0ff",
+          backgroundColor: "#12061e",
+          backgroundOpacity: 46,
+          shadow: true,
+          shadowBlur: 16,
+          shadowColor: "#ff2d96"
+        }
+      }
+    ),
+    builtInThemePreset(
+      "builtin:studio-split",
+      "Studio Split",
+      "机架灰哑光面板、等宽刻度字与信号色仪表线构成的录音棚控制台。",
+      {
+        pureWhite: {
+          "color.primary.500": "#c2410c",
+          "color.primary.400": "#ea580c",
+          "color.primary.300": "#fdba74",
+          "color.primary.rgb": "194, 65, 12",
+          "color.favorite": "#dc2626",
+          "color.warning": "#b45309",
+          "color.neutral.200": "#d4d8da",
+          "color.neutral.300": "#b6bcbf",
+          "color.neutral.500": "#5b6467",
+          "color.neutral.700": "#333a3d",
+          "color.neutral.900": "#14181a",
+          "surface.app": "#e9ebec",
+          "surface.local": "#e9ebec",
+          "surface.settings": "#e9ebec",
+          "surface.streaming": "#e9ebec",
+          "surface.player": "#e9ebec",
+          "surface.card": "#f4f5f6",
+          "surface.cardBorder": "#c6cbcd",
+          "surface.subtle": "#eef0f1",
+          "surface.hover": "#e2e5e6",
+          "surface.active": "rgba(194, 65, 12, 0.1)",
+          "material.glass": "#f4f5f6",
+          "material.glassStrong": "#fafbfb",
+          "material.glassBorder": "#c6cbcd",
+          "material.glassShadow": "none",
+          "material.cardBlur": "0px",
+          "material.cardSaturation": "100%",
+          "material.glowMain": "transparent",
+          "navigation.surface": "#e2e5e6",
+          "navigation.border": "#c6cbcd",
+          "navigation.shadow": "none",
+          "navigation.activeSurface": "rgba(194, 65, 12, 0.1)",
+          "navigation.activeText": "#c2410c",
+          "navigation.indicator": "#c2410c",
+          "typography.sans": "'JetBrains Mono', 'Cascadia Code', 'MiSans', Consolas, monospace",
+          "typography.display": "'JetBrains Mono', 'Cascadia Code', 'MiSans', Consolas, monospace",
+          "typography.titleWeight": "600",
+          "typography.bodyWeight": "400",
+          "typography.bodySize": "13px",
+          "shape.globalRadius": "4px",
+          "shape.cardRadius": "6px",
+          "motion.enter": "cubic-bezier(0.2, 0, 0.4, 1)",
+          "motion.soft": "cubic-bezier(0.23, 1, 0.32, 1)",
+          "library.table.shadow": "none",
+          "library.selection.indicator": "#c2410c",
+          "library.selection.radius": "2px",
+          "library.coverRadius": "2px",
+          "playback.accent": "#fb923c",
+          "playback.backdrop.filter": "blur(72px) saturate(0.55) brightness(0.4)",
+          "playback.backdrop.scrim": "linear-gradient(180deg, rgba(12, 14, 15, 0.78), rgba(12, 14, 15, 0.82))",
+          "playback.cover.radius": "4px",
+          "playback.control.radius": "4px",
+          "playback.control.borderWidth": "1px",
+          "playback.progress.fill": "linear-gradient(90deg, #fb923c, #fb923c)",
+          "playback.progress.height": "3px",
+          "playback.progress.radius": "0px",
+          "playback.equalizer.panelRadius": "6px",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #c2410c, #ea580c)",
+          "playback.equalizer.spectrum": "#c2410c",
+          "playback.equalizer.guide": "rgba(194, 65, 12, 0.5)"
+        },
+        dark: {
+          "color.primary.500": "#3ddc97",
+          "color.primary.400": "#6fe7b2",
+          "color.primary.300": "#a9f0cf",
+          "color.primary.rgb": "61, 220, 151",
+          "color.favorite": "#f87171",
+          "color.warning": "#fbbf24",
+          "color.neutral.200": "#262b2d",
+          "color.neutral.300": "#3a4144",
+          "color.neutral.500": "#8b9591",
+          "color.neutral.700": "#c3cbc7",
+          "color.neutral.900": "#e8ecea",
+          "surface.app": "#121415",
+          "surface.local": "#121415",
+          "surface.settings": "#121415",
+          "surface.streaming": "#121415",
+          "surface.player": "#121415",
+          "surface.card": "#1a1d1f",
+          "surface.cardBorder": "#2e3437",
+          "surface.subtle": "#17191b",
+          "surface.hover": "#1e2224",
+          "surface.active": "rgba(61, 220, 151, 0.12)",
+          "material.glass": "#1a1d1f",
+          "material.glassStrong": "#202527",
+          "material.glassBorder": "#2e3437",
+          "material.glassShadow": "none",
+          "material.cardBlur": "0px",
+          "material.cardSaturation": "100%",
+          "material.glowMain": "transparent",
+          "navigation.surface": "#0e1011",
+          "navigation.border": "#2e3437",
+          "navigation.shadow": "none",
+          "navigation.activeSurface": "rgba(61, 220, 151, 0.12)",
+          "navigation.activeText": "#3ddc97",
+          "navigation.indicator": "#3ddc97",
+          "typography.sans": "'JetBrains Mono', 'Cascadia Code', 'MiSans', Consolas, monospace",
+          "typography.display": "'JetBrains Mono', 'Cascadia Code', 'MiSans', Consolas, monospace",
+          "typography.titleWeight": "600",
+          "typography.bodyWeight": "400",
+          "typography.bodySize": "13px",
+          "shape.globalRadius": "4px",
+          "shape.cardRadius": "6px",
+          "motion.enter": "cubic-bezier(0.2, 0, 0.4, 1)",
+          "motion.soft": "cubic-bezier(0.23, 1, 0.32, 1)",
+          "library.table.shadow": "none",
+          "library.selection.indicator": "#3ddc97",
+          "library.selection.radius": "2px",
+          "library.coverRadius": "2px",
+          "playback.accent": "#3ddc97",
+          "playback.backdrop.filter": "blur(72px) saturate(0.5) brightness(0.26)",
+          "playback.backdrop.scrim": "linear-gradient(180deg, rgba(8, 10, 10, 0.84), rgba(8, 10, 10, 0.88))",
+          "playback.cover.radius": "4px",
+          "playback.control.radius": "4px",
+          "playback.control.borderWidth": "1px",
+          "playback.progress.fill": "linear-gradient(90deg, #3ddc97, #3ddc97)",
+          "playback.progress.height": "3px",
+          "playback.progress.radius": "0px",
+          "playback.equalizer.panelRadius": "6px",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #10b981, #3ddc97)",
+          "playback.equalizer.spectrum": "#3ddc97",
+          "playback.equalizer.guide": "rgba(61, 220, 151, 0.55)"
+        }
+      },
+      {
+        appearance: {
+          accentSource: "fixed",
+          backgroundTreatment: "solid",
+          contrastGuard: "enforce",
+          effectsMode: "reduced"
+        },
+        navigation: { style: "compact", iconScale: "sm", logo: "hide" },
+        library: { density: "compact", selection: "stroke", titleOverlay: "off" },
+        player: { layout: "split", controls: "pro", titleAlign: "left", progress: "line" },
+        artwork: { transition: "none", shadow: "off" },
+        equalizer: {
+          panel: "neutral",
+          slider: "solid",
+          knob: "line",
+          spectrum: "line",
+          button: "outline"
+        },
+        icons: { family: "outline" },
+        typography: { titleCase: "uppercase", lyricAccent: "accent", titleColor: "off" },
+        visibility: { ...allThemeVisibilitySlots, miniPlayerArtwork: false }
+      },
+      {
+        miniPlayer: {
+          surfaceColor: "#0e1011",
+          accentColor: "#3ddc97",
+          primaryTextColor: "#e8ecea",
+          mutedTextColor: "#8b9591",
+          fontFamily: "'JetBrains Mono', 'Cascadia Code', 'MiSans', Consolas, monospace",
+          surfaceOpacity: 100,
+          glassBlur: 0,
+          cornerRadius: 6,
+          borderWidth: 1,
+          borderColor: "#2e3437",
+          shadowStrength: 24,
+          shadowColor: "#000000"
+        },
+        desktopLyrics: {
+          fontFamily: "'JetBrains Mono', 'Cascadia Code', 'MiSans', Consolas, monospace",
+          fontSize: 26,
+          fontWeight: 500,
+          color: "#c3cbc7",
+          highlightColor: "#3ddc97",
+          backgroundColor: "#0e1011",
+          backgroundOpacity: 78,
+          shadow: false,
+          shadowBlur: 0,
+          shadowColor: "#000000"
+        }
+      }
+    ),
+    builtInThemePreset(
+      "builtin:zen-minimal",
+      "Zen Minimal",
+      "墨色与留白之间一抹苔绿静落，如茶室般仅以间距与浓淡安放层级。",
+      {
+        pureWhite: {
+          "color.primary.500": "#47614f",
+          "color.primary.400": "#5b7663",
+          "color.primary.300": "#9db1a3",
+          "color.primary.rgb": "71, 97, 79",
+          "color.neutral.100": "#f1efe9",
+          "color.neutral.200": "#e7e4da",
+          "color.neutral.500": "#6b6e66",
+          "color.neutral.700": "#3d403c",
+          "color.neutral.900": "#26282a",
+          "surface.app": "#f6f5f0",
+          "surface.local": "#f6f5f0",
+          "surface.settings": "#f6f5f0",
+          "surface.streaming": "#f6f5f0",
+          "surface.player": "#f6f5f0",
+          "surface.card": "#fbfaf6",
+          "surface.cardBorder": "#e7e4da",
+          "surface.subtle": "#f1efe9",
+          "surface.hover": "#edebe3",
+          "surface.active": "rgba(71, 97, 79, 0.1)",
+          "material.glass": "#f6f5f0",
+          "material.glassBorder": "#e7e4da",
+          "material.glassShadow": "none",
+          "material.glowMain": "transparent",
+          "material.cardBlur": "0px",
+          "material.cardSaturation": "100%",
+          "shell.control.text": "#26282a",
+          "shell.control.hoverSurface": "rgba(38, 40, 42, 0.05)",
+          "navigation.surface": "#f6f5f0",
+          "navigation.border": "transparent",
+          "navigation.shadow": "none",
+          "navigation.text": "#595c55",
+          "navigation.hoverSurface": "rgba(38, 40, 42, 0.04)",
+          "navigation.activeSurface": "rgba(71, 97, 79, 0.09)",
+          "navigation.activeText": "#47614f",
+          "navigation.indicator": "#47614f",
+          "typography.titleWeight": "500",
+          "typography.bodyWeight": "400",
+          "typography.chromeText": "#595c55",
+          "shape.globalRadius": "10px",
+          "shape.cardRadius": "12px",
+          "library.page.surface": "linear-gradient(180deg, #f6f5f0, #f6f5f0)",
+          "library.row.text": "#3d403c",
+          "library.row.hoverSurface": "rgba(38, 40, 42, 0.035)",
+          "library.selection.surface": "rgba(71, 97, 79, 0.08)",
+          "library.selection.indicator": "#47614f",
+          "library.coverRadius": "8px",
+          "playback.backdrop.filter": "blur(72px) saturate(0.2) brightness(0.42)",
+          "playback.backdrop.scrim": "linear-gradient(180deg, rgba(24, 26, 27, 0.62) 0%, rgba(24, 26, 27, 0.68) 50%, rgba(24, 26, 27, 0.76) 100%)",
+          "playback.cover.radius": "12px",
+          "playback.cover.shadow": "none",
+          "playback.control.radius": "10px",
+          "playback.progress.track": "rgba(255, 255, 255, 0.18)",
+          "playback.progress.fill": "linear-gradient(90deg, #b6c6ba, #b6c6ba)",
+          "playback.progress.height": "2px",
+          "playback.equalizer.panelSurface": "#fbfaf6",
+          "playback.equalizer.panelBorder": "#e7e4da",
+          "playback.equalizer.sliderTrack": "rgba(38, 40, 42, 0.08)",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #47614f, #47614f)",
+          "motion.enter": "cubic-bezier(0.32, 0, 0.16, 1)",
+          "motion.soft": "cubic-bezier(0.22, 1, 0.36, 1)"
+        },
+        dark: {
+          "color.primary.500": "#9eb5a4",
+          "color.primary.400": "#b3c7ba",
+          "color.primary.300": "#c9d7cd",
+          "color.primary.rgb": "158, 181, 164",
+          "color.neutral.100": "#1b1d1f",
+          "color.neutral.200": "#292c2e",
+          "color.neutral.500": "#9a9d97",
+          "color.neutral.700": "#c8c8c0",
+          "color.neutral.900": "#e9e7df",
+          "surface.app": "#17191b",
+          "surface.local": "#17191b",
+          "surface.settings": "#17191b",
+          "surface.streaming": "#17191b",
+          "surface.player": "#17191b",
+          "surface.card": "#1d2022",
+          "surface.cardBorder": "#2c2f31",
+          "surface.subtle": "#1a1d1f",
+          "surface.hover": "rgba(255, 255, 255, 0.045)",
+          "surface.active": "rgba(158, 181, 164, 0.12)",
+          "material.glass": "#17191b",
+          "material.glassBorder": "#2c2f31",
+          "material.glassShadow": "none",
+          "material.glowMain": "transparent",
+          "material.cardBlur": "0px",
+          "material.cardSaturation": "100%",
+          "shell.control.text": "#e9e7df",
+          "shell.control.hoverSurface": "rgba(255, 255, 255, 0.05)",
+          "navigation.surface": "#17191b",
+          "navigation.border": "transparent",
+          "navigation.shadow": "none",
+          "navigation.text": "#b6b9b1",
+          "navigation.hoverSurface": "rgba(255, 255, 255, 0.04)",
+          "navigation.activeSurface": "rgba(158, 181, 164, 0.1)",
+          "navigation.activeText": "#9eb5a4",
+          "navigation.indicator": "#9eb5a4",
+          "typography.titleWeight": "500",
+          "typography.bodyWeight": "400",
+          "typography.chromeText": "#b6b9b1",
+          "shape.globalRadius": "10px",
+          "shape.cardRadius": "12px",
+          "library.page.surface": "linear-gradient(180deg, #17191b, #17191b)",
+          "library.row.text": "#c8c8c0",
+          "library.row.hoverSurface": "rgba(255, 255, 255, 0.04)",
+          "library.selection.surface": "rgba(158, 181, 164, 0.1)",
+          "library.selection.indicator": "#9eb5a4",
+          "library.coverRadius": "8px",
+          "playback.backdrop.filter": "blur(72px) saturate(0.2) brightness(0.3)",
+          "playback.backdrop.scrim": "linear-gradient(180deg, rgba(24, 26, 27, 0.62) 0%, rgba(24, 26, 27, 0.68) 50%, rgba(24, 26, 27, 0.76) 100%)",
+          "playback.cover.radius": "12px",
+          "playback.cover.shadow": "none",
+          "playback.control.radius": "10px",
+          "playback.progress.track": "rgba(255, 255, 255, 0.14)",
+          "playback.progress.fill": "linear-gradient(90deg, #9eb5a4, #9eb5a4)",
+          "playback.progress.height": "2px",
+          "playback.equalizer.panelSurface": "#1d2022",
+          "playback.equalizer.panelBorder": "#2c2f31",
+          "playback.equalizer.sliderTrack": "rgba(255, 255, 255, 0.09)",
+          "playback.equalizer.sliderFill": "linear-gradient(to top, #9eb5a4, #9eb5a4)",
+          "motion.enter": "cubic-bezier(0.32, 0, 0.16, 1)",
+          "motion.soft": "cubic-bezier(0.22, 1, 0.36, 1)"
+        }
+      },
+      {
+        appearance: {
+          accentSource: "fixed",
+          backgroundTreatment: "solid",
+          contrastGuard: "enforce",
+          effectsMode: "reduced"
+        },
+        navigation: { style: "rail", iconScale: "sm", logo: "hide" },
+        library: { density: "comfortable", selection: "stroke", titleOverlay: "off" },
+        player: { layout: "minimal", controls: "standard", titleAlign: "center", progress: "line" },
+        artwork: { transition: "fade", shadow: "off" },
+        equalizer: {
+          panel: "neutral",
+          slider: "solid",
+          knob: "dot",
+          spectrum: "line",
+          button: "outline"
+        },
+        icons: { family: "outline" },
+        typography: { titleCase: "preserve", lyricAccent: "off", titleColor: "off" },
+        visibility: {
+          ...allThemeVisibilitySlots,
+          playerAlbumArtist: false,
+          playerTrackMenu: false,
+          playerMiscIcons: false,
+          playerDuration: false,
+          playerWaveform: false,
+          equalizerGrid: false,
+          equalizerFrequencyGuides: false,
+          equalizerSpectrum: false,
+          miniPlayerArtwork: false
+        }
+      },
+      {
+        miniPlayer: {
+          surfaceColor: "#f6f5f0",
+          accentColor: "#47614f",
+          primaryTextColor: "#26282a",
+          mutedTextColor: "#6b6e66",
+          fontFamily: lightFont,
+          surfaceOpacity: 98,
+          glassBlur: 0,
+          cornerRadius: 12,
+          borderWidth: 1,
+          borderColor: "#e0ddd3",
+          shadowStrength: 0,
+          shadowColor: "#000000"
+        },
+        desktopLyrics: {
+          fontFamily: lightFont,
+          fontSize: 30,
+          fontWeight: 400,
+          color: "#e9e7df",
+          highlightColor: "#b3c7ba",
+          backgroundColor: "#17191b",
+          backgroundOpacity: 62,
+          shadow: false,
+          shadowBlur: 0,
+          shadowColor: "#000000"
+        }
+      }
+    )
+  ]);
+  const builtInThemePresetById = new Map(
+    BUILT_IN_THEME_PRESETS.map((preset2) => [preset2.id, preset2])
+  );
+  function isBuiltInThemePresetId(value) {
+    return typeof value === "string" && builtInThemePresetById.has(value);
+  }
+  function themeIconSlot(domain, glyph) {
+    return Object.freeze({
+      domain,
+      classes: Object.freeze({
+        outline: `ph ph-${glyph}`,
+        rounded: `ph-bold ph-${glyph}`,
+        filled: `ph-fill ph-${glyph}`
+      })
+    });
+  }
+  const THEME_ICON_SLOT_REGISTRY = Object.freeze({
+    "navigation.home": themeIconSlot("navigation", "house"),
+    "navigation.songs": themeIconSlot("navigation", "music-notes-simple"),
+    "navigation.artists": themeIconSlot("navigation", "microphone-stage"),
+    "navigation.albums": themeIconSlot("navigation", "disc"),
+    "navigation.genres": themeIconSlot("navigation", "tag"),
+    "navigation.playlists": themeIconSlot("navigation", "playlist"),
+    "navigation.folders": themeIconSlot("navigation", "folder-open"),
+    "navigation.recent": themeIconSlot("navigation", "clock-counter-clockwise"),
+    "navigation.refresh": themeIconSlot("navigation", "arrows-clockwise"),
+    "navigation.analytics": themeIconSlot("navigation", "chart-bar"),
+    "navigation.streaming": themeIconSlot("navigation", "globe"),
+    "navigation.radio": themeIconSlot("navigation", "radio"),
+    "navigation.import": themeIconSlot("navigation", "plus"),
+    "navigation.plugin": themeIconSlot("navigation", "puzzle-piece"),
+    "navigation.menu": themeIconSlot("navigation", "list"),
+    "navigation.back": themeIconSlot("navigation", "arrow-left"),
+    "navigation.settings": themeIconSlot("navigation", "gear-six"),
+    "navigation.appearance": themeIconSlot("navigation", "t-shirt"),
+    "navigation.day": themeIconSlot("navigation", "sun"),
+    "navigation.night": themeIconSlot("navigation", "moon"),
+    "navigation.layers": themeIconSlot("navigation", "cube"),
+    "navigation.camera": themeIconSlot("navigation", "camera"),
+    "navigation.person": themeIconSlot("navigation", "user-circle"),
+    "navigation.notification": themeIconSlot("navigation", "bell"),
+    "navigation.quiet": themeIconSlot("navigation", "bell-slash"),
+    "navigation.search": themeIconSlot("navigation", "magnifying-glass"),
+    "navigation.favorite": themeIconSlot("navigation", "heart"),
+    "navigation.cloud": themeIconSlot("navigation", "cloud"),
+    "navigation.network": themeIconSlot("navigation", "hard-drives"),
+    "navigation.expand": themeIconSlot("navigation", "caret-right"),
+    "navigation.collapse": themeIconSlot("navigation", "caret-down"),
+    "library.search": themeIconSlot("library", "magnifying-glass"),
+    "library.clear": themeIconSlot("library", "x"),
+    "library.artist": themeIconSlot("library", "microphone-stage"),
+    "library.album": themeIconSlot("library", "disc"),
+    "library.genre": themeIconSlot("library", "tag"),
+    "library.playlist": themeIconSlot("library", "playlist"),
+    "library.folder": themeIconSlot("library", "folder-open"),
+    "library.add": themeIconSlot("library", "plus"),
+    "library.play": themeIconSlot("library", "play"),
+    "library.shuffle": themeIconSlot("library", "shuffle"),
+    "library.empty": themeIconSlot("library", "waveform"),
+    "library.selected": themeIconSlot("library", "check"),
+    "library.playing": themeIconSlot("library", "speaker-high"),
+    "library.filter": themeIconSlot("library", "funnel"),
+    "playback.play": themeIconSlot("playback", "play"),
+    "playback.pause": themeIconSlot("playback", "pause"),
+    "playback.previous": themeIconSlot("playback", "skip-back"),
+    "playback.next": themeIconSlot("playback", "skip-forward"),
+    "playback.volume": themeIconSlot("playback", "speaker-high"),
+    "playback.muted": themeIconSlot("playback", "speaker-x"),
+    "playback.queue": themeIconSlot("playback", "queue"),
+    "playback.equalizer": themeIconSlot("playback", "sliders"),
+    "playback.miniPlayer": themeIconSlot("playback", "picture-in-picture"),
+    "playback.favorite": themeIconSlot("playback", "heart"),
+    "playback.favoriteActive": themeIconSlot("playback", "heart"),
+    "playback.sequential": themeIconSlot("playback", "arrow-right"),
+    "playback.listLoop": themeIconSlot("playback", "repeat"),
+    "playback.repeat": themeIconSlot("playback", "repeat-once"),
+    "playback.shuffle": themeIconSlot("playback", "shuffle"),
+    "playback.heart": themeIconSlot("playback", "heart-half")
+  });
+  Object.freeze(
+    Object.keys(THEME_ICON_SLOT_REGISTRY)
+  );
+  new Map(
+    THEME_TOKEN_DEFINITIONS.map((definition) => [definition.id, definition])
+  );
+  function visibilityDataAttribute(id2) {
+    return `data-te-visible-${id2.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+  }
+  Object.freeze([
+    ...THEME_MODE_DEFINITIONS.map((definition) => definition.dataAttribute),
+    ...THEME_VISIBILITY_SLOT_IDS.map(visibilityDataAttribute),
+    ...THEME_SHELL_MANAGED_DATA_ATTRIBUTES,
+    "data-te-preset-layout",
+    "data-te-liquid-glass-coverage",
+    "data-te-surface-material",
+    "data-te-card-custom",
+    ...["app", "local", "settings", "streaming", "player"].flatMap(
+      (page2) => [
+        `data-te-${page2}-custom-background`,
+        `data-te-${page2}-text-tone`,
+        `data-te-${page2}-text-tone-source`,
+        `data-te-${page2}-image-fallback-tone`,
+        `data-te-${page2}-image-palette`
+      ]
+    )
+  ]);
+  function isThemeSelection(value) {
+    if (!isRecord(value) || typeof value.kind !== "string") return false;
+    if (value.kind === "builtin") return isBuiltInThemePresetId(value.id);
+    if (value.kind === "user") return Boolean(normalizeThemeId(value.id));
+    return value.kind === "plugin" && typeof value.pluginId === "string" && value.pluginId.trim().length > 0 && typeof value.themeId === "string" && value.themeId.trim().length > 0;
+  }
+  function normalizeThemeSelection(value, legacyPluginThemeId = null) {
+    if (isThemeSelection(value)) {
+      if (value.kind === "plugin") {
+        return {
+          kind: "plugin",
+          pluginId: value.pluginId.trim().slice(0, 128),
+          themeId: value.themeId.trim().slice(0, 128)
+        };
+      }
+      if (value.kind === "user") return { kind: "user", id: normalizeThemeId(value.id) };
+      return { kind: "builtin", id: value.id };
+    }
+    if (typeof legacyPluginThemeId === "string") {
+      const separator = legacyPluginThemeId.indexOf(":");
+      if (separator > 0 && separator < legacyPluginThemeId.length - 1) {
+        return {
+          kind: "plugin",
+          pluginId: legacyPluginThemeId.slice(0, separator).trim().slice(0, 128),
+          themeId: legacyPluginThemeId.slice(separator + 1).trim().slice(0, 128)
+        };
+      }
+    }
+    return { kind: "builtin", id: TWILIGHT_DEFAULT_THEME_ID };
+  }
+  function normalizeThemeWindowInheritance(value, fallback = { miniPlayer: true, desktopLyrics: true }) {
+    const record2 = isRecord(value) ? value : {};
+    return {
+      miniPlayer: typeof record2.miniPlayer === "boolean" ? record2.miniPlayer : fallback.miniPlayer,
+      desktopLyrics: typeof record2.desktopLyrics === "boolean" ? record2.desktopLyrics : fallback.desktopLyrics
+    };
+  }
+  function normalizeThemeId(value) {
+    if (typeof value !== "string") return "";
+    const normalized = value.trim();
+    return /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(normalized) ? normalized : "";
+  }
+  function isRecord(value) {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  }
+  const solid = "var(--te-card-bg-solid, var(--te-card-bg))";
+  const ink = "var(--te-neutral-900)";
+  const border = "var(--te-card-border)";
+  const quiet = { ink, border, shadow: "none", filter: "none" };
+  const floatingShadow = "0 12px 36px color-mix(in srgb, var(--te-chrome-shadow-color) 16%, transparent), 0 1px 4px color-mix(in srgb, var(--te-chrome-shadow-color) 8%, transparent)";
+  const MATERIAL_DECLARATIONS = {
+    canvas: {
+      purpose: "Page backdrop; no foreground optics",
+      optical: false,
+      transparent: true,
+      recipe: {
+        ...quiet,
+        background: "var(--te-app-bg)",
+        solid: "var(--te-app-bg)",
+        border: "transparent"
+      }
+    },
+    content: {
+      purpose: "Readable content cards; existing editor inputs remain authoritative",
+      optical: false,
+      transparent: true,
+      recipe: {
+        ...quiet,
+        background: "var(--te-card-bg)",
+        solid,
+        shadow: "var(--te-card-shadow, none)"
+      }
+    },
+    navigation: {
+      purpose: "Attached window navigation and playback queue",
+      optical: true,
+      transparent: true,
+      recipe: {
+        ...quiet,
+        background: "var(--te-chrome-navigation-surface)",
+        solid: "var(--te-chrome-material-solid)",
+        ink: "var(--te-chrome-text, var(--te-navigation-text))",
+        border: "var(--te-navigation-border)",
+        shadow: "var(--te-chrome-navigation-elevation)",
+        filter: "var(--te-chrome-attached-filter)"
+      }
+    },
+    titlebar: {
+      purpose: "Attached window chrome; no extra border or elevation",
+      optical: true,
+      transparent: true,
+      recipe: {
+        ...quiet,
+        background: "var(--te-chrome-attached-surface)",
+        solid: "var(--te-titlebar-material-surface, var(--te-app-bg))",
+        ink: "var(--te-shell-control-text)",
+        border: "transparent",
+        filter: "var(--te-chrome-attached-filter)"
+      }
+    },
+    panel: {
+      purpose: "Account subpage and readable floating panels",
+      optical: false,
+      transparent: false,
+      recipe: {
+        ...quiet,
+        background: "var(--te-chrome-material-solid)",
+        solid: "var(--te-chrome-material-solid)",
+        shadow: floatingShadow
+      }
+    },
+    popover: {
+      purpose: "Anchored tools and secondary filters",
+      optical: false,
+      transparent: false,
+      recipe: {
+        ...quiet,
+        background: "color-mix(in srgb, var(--te-control-bg) 98%, transparent)",
+        solid: "var(--te-control-bg)",
+        ink: "var(--te-control-fg)",
+        border: "var(--te-control-border)",
+        shadow: floatingShadow,
+        filter: "blur(20px) saturate(120%)"
+      }
+    },
+    dialog: {
+      purpose: "Modal decisions; opaque and readable in every material mode",
+      optical: false,
+      transparent: false,
+      recipe: { ...quiet, background: solid, solid, shadow: floatingShadow }
+    },
+    transport: {
+      purpose: "Standard floating playback; mini/compact remain flat",
+      optical: true,
+      transparent: true,
+      recipe: {
+        ...quiet,
+        background: "var(--te-playbar-bg, var(--te-card-bg))",
+        solid,
+        ink: "var(--te-playbar-text, var(--te-neutral-900))",
+        border: "transparent",
+        shadow: "var(--te-bohr-contact), var(--te-bohr-elevation)"
+      }
+    },
+    control: {
+      purpose: "Fields and compact controls without additional glass layers",
+      optical: false,
+      transparent: false,
+      recipe: {
+        ...quiet,
+        background: "var(--te-control-bg)",
+        solid: "var(--te-control-bg)",
+        ink: "var(--te-control-fg)"
+      }
+    }
+  };
+  for (const declaration of Object.values(MATERIAL_DECLARATIONS)) {
+    Object.freeze(declaration.recipe);
+    Object.freeze(declaration);
+  }
+  Object.freeze(MATERIAL_DECLARATIONS);
+  const BACKGROUND_PAGES = [
+    "local",
+    "settings",
+    "streaming",
+    "player"
+  ];
+  const BACKGROUND_EFFECT_RANGES = {
+    blur: { min: 0, max: 30, step: 1, suffix: "px", label: "背景模糊" },
+    dim: { min: 0, max: 80, step: 1, suffix: "%", label: "遮罩浓度" },
+    brightness: { min: 50, max: 120, step: 1, suffix: "%", label: "背景亮度" },
+    scale: { min: 1, max: 3, step: 0.01, suffix: "×", label: "画面缩放" },
+    positionX: { min: 0, max: 100, step: 1, suffix: "%", label: "水平位置" },
+    positionY: { min: 0, max: 100, step: 1, suffix: "%", label: "垂直位置" }
+  };
+  function defaultBackgroundEffect() {
+    return {
+      blur: 0,
+      brightness: 100,
+      dim: 0,
+      scale: 1,
+      positionX: 50,
+      positionY: 50,
+      textTone: "theme"
+    };
+  }
+  function object(value) {
+    return value && typeof value === "object" ? value : {};
+  }
+  function number(value, min, max, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+  }
+  function hex(value, fallback) {
+    return typeof value === "string" && /^#?[a-f\d]{6}$/i.test(value.trim()) ? `#${value.trim().replace(/^#/, "").toLowerCase()}` : fallback;
+  }
+  function normalizeBackgroundImagePalette(raw, image) {
+    const value = object(raw);
+    if (!/^background:\/\/[a-zA-Z0-9._-]+$/.test(image) || value.image !== image || typeof value.average !== "string" || !/^#[a-f\d]{6}$/i.test(value.average) || typeof value.accent !== "string" || !/^#[a-f\d]{6}$/i.test(value.accent))
+      return void 0;
+    return {
+      image,
+      average: value.average.toLowerCase(),
+      accent: value.accent.toLowerCase(),
+      opacity: number(value.opacity, 0, 1, 1)
+    };
+  }
+  function normalizeBackgroundEffect(raw) {
+    const value = object(raw);
+    const result = defaultBackgroundEffect();
+    for (const field of Object.keys(BACKGROUND_EFFECT_RANGES)) {
+      const range = BACKGROUND_EFFECT_RANGES[field];
+      result[field] = number(value[field], range.min, range.max, result[field]);
+    }
+    result.textTone = value.textTone === "light" || value.textTone === "dark" ? value.textTone : "theme";
+    return result;
+  }
+  function defaultBackground(page2 = "global") {
+    const lights = {
+      global: "#f4f4f7",
+      local: "#ffffff",
+      streaming: "#fafbfe",
+      settings: "#f4f4f7",
+      player: "#080e17"
+    };
+    return {
+      kind: "color",
+      image: "",
+      customized: false,
+      light: lights[page2],
+      dark: "#17181a",
+      effects: { light: defaultBackgroundEffect(), dark: defaultBackgroundEffect() }
+    };
+  }
+  function normalizeAppBackgroundSettings(raw, legacy) {
+    const value = object(raw);
+    const pair = (rawPair, page2) => {
+      const source = object(rawPair);
+      const defaults = defaultBackground(page2);
+      const effects = object(source.effects);
+      const followsTheme = source.kind === "theme" || source.kind === "none";
+      const image = typeof source.image === "string" && /^background:\/\/[a-zA-Z0-9._-]+$/.test(source.image) ? source.image : "";
+      const imagePalette = normalizeBackgroundImagePalette(source.imagePalette, image);
+      return {
+        light: hex(source.light, defaults.light),
+        dark: hex(source.dark, defaults.dark),
+        kind: followsTheme ? "theme" : source.kind === "image" ? "image" : "color",
+        image,
+        ...imagePalette ? { imagePalette } : {},
+        customized: !followsTheme && (source.customized === true || hex(source.light, defaults.light) !== defaults.light || hex(source.dark, defaults.dark) !== defaults.dark),
+        effects: {
+          light: normalizeBackgroundEffect(
+            effects.light ?? (source.effects == null && legacy?.enabled ? legacy.light : void 0)
+          ),
+          dark: normalizeBackgroundEffect(
+            effects.dark ?? (source.effects == null && legacy?.enabled ? legacy.dark : void 0)
+          )
+        }
+      };
+    };
+    const global = pair(value.global, "global");
+    const pages = object(value.pages);
+    return {
+      global,
+      pages: Object.fromEntries(
+        BACKGROUND_PAGES.map((page2) => [
+          page2,
+          { ...pair(pages[page2], page2), inherit: object(pages[page2]).inherit !== false }
+        ])
+      )
+    };
+  }
+  const AUDIO_OUTPUT_OPTIONS = [
+    {
+      id: "wasapi",
+      label: "系统音频输出",
+      description: "系统原生输出。关闭独占时使用共享模式，开启独占时直接访问设备。",
+      platform: "win32",
+      supportsExclusive: true
+    },
+    {
+      id: "asio",
+      label: "专业声卡输出",
+      description: "Windows x64 专业声卡驱动输出；自动枚举已安装的 ASIO 驱动。",
+      platform: "win32",
+      supportsExclusive: true
+    },
+    {
+      id: "coreaudio",
+      label: "苹果系统音频",
+      description: "苹果系统原生音频输出后端。开启独占模式时使用 Hog Mode 绕过系统混音器。",
+      platform: "darwin",
+      supportsExclusive: true
+    },
+    {
+      id: "alsa",
+      label: "系统音频输出",
+      description: "系统原生音频输出后端。",
+      platform: "linux",
+      supportsExclusive: false
+    }
+  ];
+  const DEFAULT_EQ_BANDS = [
+    31,
+    62,
+    125,
+    250,
+    500,
+    1e3,
+    2e3,
+    4e3,
+    8e3,
+    16e3
+  ].map((frequency) => ({
+    frequency,
+    gain: 0,
+    q: 1,
+    filterType: "peak"
+  }));
+  const MAX_PARAMETRIC_EQ_BANDS = 32;
+  const EQ_PREAMP_MIN_DB = -24;
+  const EQ_PREAMP_MAX_DB = 24;
+  const GRAPHIC_EQ_GAIN_MIN_DB = -12;
+  const GRAPHIC_EQ_GAIN_MAX_DB = 12;
+  const PARAMETRIC_EQ_GAIN_MIN_DB = -24;
+  const PARAMETRIC_EQ_GAIN_MAX_DB = 24;
+  const GRAPHIC_EQ_Q_MIN = 0.25;
+  const GRAPHIC_EQ_Q_MAX = 8;
+  const PARAMETRIC_EQ_Q_MIN = 0.1;
+  const PARAMETRIC_EQ_Q_MAX = 20;
+  const DEFAULT_AUDIO_PROCESSING = {
+    dspEnabled: false,
+    directMode: false,
+    clipGuard: true,
+    fftEnabled: true,
+    fftResolution: 8192,
+    highResolution: true,
+    dsdToPcm: false,
+    dsdOutputMode: "auto",
+    dsdRatePolicy: "pcm-fallback",
+    dsdRoute: DEFAULT_DSD_ROUTE,
+    sacdProgramMode: "auto",
+    eqEnabled: false,
+    eqMode: "graphic",
+    eqPreamp: 0,
+    eqBands: DEFAULT_EQ_BANDS,
+    volumeNormalization: "off",
+    replayGainPreamp: 0,
+    replayGainFallback: 0,
+    replayGainClip: true,
+    convolverEnabled: false,
+    convolverIrPath: "",
+    crossfeedEnabled: false,
+    crossfeedStrength: 0,
+    crossfeedDelayMs: 0.35,
+    crossfeedCutoffHz: 700,
+    gapless: true,
+    crossfadeSeconds: 0
+  };
+  function isAudioOutputId(output) {
+    return output === "wasapi" || output === "asio" || output === "coreaudio" || output === "alsa";
+  }
+  function getAudioOutputOptions(platform) {
+    return AUDIO_OUTPUT_OPTIONS.filter((option) => option.platform === platform);
+  }
+  function getDefaultAudioOutput(platform) {
+    return getAudioOutputOptions(platform)[0]?.id ?? "alsa";
+  }
+  function normalizeAudioOutput(output, platform) {
+    const options = getAudioOutputOptions(platform);
+    if (isAudioOutputId(output) && options.some((option) => option.id === output)) return output;
+    return getDefaultAudioOutput(platform);
+  }
+  function clampNumber$2(value, min, max, fallback) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, value));
+  }
+  function normalizeEqualizerFilterType(value) {
+    if (value === "lowShelf" || value === "highShelf" || value === "bandPass" || value === "lowPass" || value === "highPass" || value === "allPass" || value === "notch") {
+      return value;
+    }
+    return "peak";
+  }
+  function normalizeAudioProcessingSettings(settings) {
+    const eqMode = settings?.eqMode === "parametric" ? "parametric" : "graphic";
+    const rawBands = Array.isArray(settings?.eqBands) ? settings.eqBands : DEFAULT_EQ_BANDS;
+    const eqBands = eqMode === "parametric" ? rawBands.slice(0, MAX_PARAMETRIC_EQ_BANDS).map((band, index) => {
+      const defaultBand = DEFAULT_EQ_BANDS[index % DEFAULT_EQ_BANDS.length];
+      return {
+        frequency: clampNumber$2(band.frequency, 20, 24e3, defaultBand.frequency),
+        gain: clampNumber$2(band.gain, PARAMETRIC_EQ_GAIN_MIN_DB, PARAMETRIC_EQ_GAIN_MAX_DB, 0),
+        q: clampNumber$2(band.q, PARAMETRIC_EQ_Q_MIN, PARAMETRIC_EQ_Q_MAX, 1),
+        filterType: normalizeEqualizerFilterType(band.filterType),
+        enabled: band.enabled !== false,
+        channelMask: Math.max(
+          0,
+          Math.min(4294967295, Math.trunc(band.channelMask ?? 4294967295))
+        )
+      };
+    }) : DEFAULT_EQ_BANDS.map((defaultBand, index) => {
+      const band = rawBands[index] ?? defaultBand;
+      return {
+        frequency: clampNumber$2(band.frequency, 20, 24e3, defaultBand.frequency),
+        gain: clampNumber$2(band.gain, GRAPHIC_EQ_GAIN_MIN_DB, GRAPHIC_EQ_GAIN_MAX_DB, 0),
+        q: clampNumber$2(band.q, GRAPHIC_EQ_Q_MIN, GRAPHIC_EQ_Q_MAX, 1),
+        filterType: normalizeEqualizerFilterType(band.filterType),
+        enabled: band.enabled !== false,
+        channelMask: Math.max(
+          0,
+          Math.min(4294967295, Math.trunc(band.channelMask ?? 4294967295))
+        )
+      };
+    });
+    const volumeNormalization = settings?.volumeNormalization === "track" || settings?.volumeNormalization === "album" || settings?.volumeNormalization === "loudnorm" ? settings.volumeNormalization : "off";
+    const dsdOutputMode = settings?.dsdOutputMode === "auto" || settings?.dsdOutputMode === "pcm" || settings?.dsdOutputMode === "dop" || settings?.dsdOutputMode === "native" ? settings.dsdOutputMode : settings?.dsdToPcm === true ? "pcm" : "auto";
+    const dsdRatePolicy = settings?.dsdRatePolicy === "exact" || settings?.dsdRatePolicy === "downrate" ? settings.dsdRatePolicy : "pcm-fallback";
+    const sacdProgramMode = settings?.sacdProgramMode === "stereo" || settings?.sacdProgramMode === "multichannel" ? settings.sacdProgramMode : "auto";
+    return {
+      dspEnabled: settings?.dspEnabled === true,
+      directMode: settings?.directMode === true,
+      clipGuard: settings?.clipGuard !== false,
+      fftEnabled: settings?.fftEnabled !== false,
+      fftResolution: clampNumber$2(settings?.fftResolution, 64, 8192, 8192),
+      highResolution: settings?.highResolution !== false,
+      dsdToPcm: dsdOutputMode === "pcm",
+      dsdOutputMode,
+      dsdRatePolicy,
+      dsdRoute: normalizeDsdRouteSettings(settings?.dsdRoute),
+      sacdProgramMode,
+      eqEnabled: settings?.eqEnabled === true,
+      eqMode,
+      eqPreamp: clampNumber$2(settings?.eqPreamp, EQ_PREAMP_MIN_DB, EQ_PREAMP_MAX_DB, 0),
+      eqBands,
+      volumeNormalization,
+      replayGainPreamp: clampNumber$2(settings?.replayGainPreamp, -12, 12, 0),
+      replayGainFallback: clampNumber$2(settings?.replayGainFallback, -12, 12, 0),
+      replayGainClip: settings?.replayGainClip !== false,
+      convolverEnabled: settings?.convolverEnabled === true,
+      convolverIrPath: typeof settings?.convolverIrPath === "string" ? settings.convolverIrPath : "",
+      crossfeedEnabled: settings?.crossfeedEnabled === true,
+      crossfeedStrength: clampNumber$2(settings?.crossfeedStrength, 0, 1, 0),
+      crossfeedDelayMs: clampNumber$2(settings?.crossfeedDelayMs, 0.05, 2, 0.35),
+      crossfeedCutoffHz: clampNumber$2(settings?.crossfeedCutoffHz, 80, 4e3, 700),
+      gapless: settings?.gapless !== false,
+      crossfadeSeconds: clampNumber$2(settings?.crossfadeSeconds, 0, 12, 0),
+      crossfadeCurve: settings?.crossfadeCurve === "equal-power" ? "equal-power" : "linear",
+      crossfadeContent: settings?.crossfadeContent === "all" || settings?.crossfadeContent === "live" ? settings.crossfadeContent : "conservative"
+    };
+  }
+  function normalizeInitialAudioProcessingSettings(settings) {
+    const normalized = normalizeAudioProcessingSettings(settings);
+    return {
+      ...normalized,
+      ...resolveProcessingMasterState(normalized, settings?.dspEnabled, settings?.directMode)
+    };
+  }
+  function resolveProcessingMasterState(processing, explicitDspEnabled, explicitDirectMode) {
+    const moduleActive = processing.eqEnabled || processing.volumeNormalization !== "off" || processing.convolverEnabled || processing.convolverIrPath.length > 0 || processing.crossfeedEnabled && processing.crossfeedStrength > 0 || Math.abs(processing.eqPreamp) > 1e-3;
+    if (explicitDspEnabled === false) {
+      return { dspEnabled: false, directMode: true };
+    }
+    if (explicitDspEnabled === true || moduleActive) {
+      return { dspEnabled: true, directMode: false };
+    }
+    if (explicitDirectMode === true) {
+      return { dspEnabled: false, directMode: true };
+    }
+    if (explicitDirectMode === false) {
+      return { dspEnabled: processing.dspEnabled, directMode: false };
+    }
+    return { dspEnabled: processing.dspEnabled, directMode: processing.directMode };
+  }
+  const DEFAULT_HEADPHONE_COMPENSATION = {
+    enabled: false,
+    productId: "",
+    productName: "",
+    vendorName: "",
+    eqId: "",
+    author: "",
+    details: "",
+    link: "",
+    preampDb: 0,
+    bands: []
+  };
+  function normalizeHeadphoneCompensationSettings(settings) {
+    const rawBands = Array.isArray(settings?.bands) ? settings.bands : [];
+    const normalizedBands = rawBands.length > 0 ? normalizeAudioProcessingSettings({
+      eqMode: "parametric",
+      eqBands: rawBands
+    }).eqBands : [];
+    return {
+      enabled: settings?.enabled === true,
+      productId: typeof settings?.productId === "string" ? settings.productId : "",
+      productName: typeof settings?.productName === "string" ? settings.productName : "",
+      vendorName: typeof settings?.vendorName === "string" ? settings.vendorName : "",
+      eqId: typeof settings?.eqId === "string" ? settings.eqId : "",
+      author: typeof settings?.author === "string" ? settings.author : "",
+      details: typeof settings?.details === "string" ? settings.details : "",
+      link: typeof settings?.link === "string" ? settings.link : "",
+      preampDb: typeof settings?.preampDb === "number" && Number.isFinite(settings.preampDb) ? Math.min(24, Math.max(-24, settings.preampDb)) : 0,
+      bands: normalizedBands
+    };
+  }
+  const MINI_PLAYER_MIN_WIDTH = 300;
+  const MINI_PLAYER_MIN_HEIGHT = 88;
+  const MINI_PLAYER_MAX_WIDTH = 900;
+  const MINI_PLAYER_MAX_HEIGHT = 520;
+  const DEFAULT_MINI_PLAYER_STYLE_ID = "aurora-glass";
+  const PORCELAIN_MINI_PLAYER_STYLE_ID = "porcelain";
+  const DEFAULT_MINI_PLAYER_VISIBILITY = {
+    artwork: true,
+    album: true,
+    equalizer: true,
+    time: true,
+    volume: true,
+    playMode: true,
+    queuePosition: true
+  };
+  const DEFAULT_MINI_PLAYER_THEME_PROFILES = Object.freeze({
+    [DEFAULT_MINI_PLAYER_STYLE_ID]: {
+      background: {
+        kind: "cover",
+        solidColor: "#0a0c10",
+        fallbackColor: "#0a0c10",
+        gradientStart: "#1b252b",
+        gradientEnd: "#080b0f",
+        gradientAngle: 138,
+        imageUrl: "",
+        imageFit: "cover",
+        blur: 40,
+        brightness: 84,
+        saturation: 150,
+        opacity: 72,
+        overlayColor: "#05070b",
+        overlayOpacity: 34
+      },
+      appearance: {
+        accentMode: "track",
+        accentColor: "#8fa8b5",
+        textMode: "auto",
+        primaryTextColor: "#ffffff",
+        mutedTextColor: "#b8b7c2",
+        fontFamily: "'Inter', 'MiSans', 'Microsoft YaHei UI', system-ui, sans-serif",
+        surfaceOpacity: 62,
+        glassBlur: 24,
+        cornerRadius: 22,
+        borderWidth: 1,
+        borderColor: "rgba(255, 255, 255, 0.10)",
+        shadowStrength: 80,
+        shadowColor: "#000000"
+      },
+      layout: { preference: "auto" },
+      visibility: { ...DEFAULT_MINI_PLAYER_VISIBILITY }
+    },
+    [PORCELAIN_MINI_PLAYER_STYLE_ID]: {
+      background: {
+        kind: "cover",
+        solidColor: "#f4f5fb",
+        fallbackColor: "#f4f5fb",
+        gradientStart: "#ffffff",
+        gradientEnd: "#f1f3fc",
+        gradientAngle: 145,
+        imageUrl: "",
+        imageFit: "cover",
+        blur: 40,
+        brightness: 118,
+        saturation: 120,
+        opacity: 34,
+        overlayColor: "#f5f7ff",
+        overlayOpacity: 52
+      },
+      appearance: {
+        accentMode: "custom",
+        accentColor: "#5966d9",
+        textMode: "auto",
+        primaryTextColor: "#1b2034",
+        mutedTextColor: "#656a7b",
+        fontFamily: "'Inter', 'MiSans', 'Microsoft YaHei UI', system-ui, sans-serif",
+        surfaceOpacity: 78,
+        glassBlur: 20,
+        cornerRadius: 22,
+        borderWidth: 1,
+        borderColor: "#d7d9e5",
+        shadowStrength: 35,
+        shadowColor: "#1b2034"
+      },
+      layout: { preference: "auto" },
+      visibility: { ...DEFAULT_MINI_PLAYER_VISIBILITY }
+    }
+  });
+  const BUILT_IN_MINI_PLAYER_STYLE_IDS = new Set(Object.keys(DEFAULT_MINI_PLAYER_THEME_PROFILES));
+  function cloneMiniPlayerThemeProfile(profile) {
+    return {
+      background: { ...profile.background },
+      appearance: { ...profile.appearance },
+      layout: { ...profile.layout },
+      visibility: { ...profile.visibility }
+    };
+  }
+  function createDefaultMiniPlayerThemeProfile(styleId) {
+    const profile = DEFAULT_MINI_PLAYER_THEME_PROFILES[styleId] ?? DEFAULT_MINI_PLAYER_THEME_PROFILES[DEFAULT_MINI_PLAYER_STYLE_ID];
+    return cloneMiniPlayerThemeProfile(profile);
+  }
+  const DEFAULT_MINI_PLAYER_SETTINGS = Object.freeze({
+    windowX: -1,
+    windowY: -1,
+    windowWidth: 440,
+    windowHeight: 184,
+    alwaysOnTop: false,
+    showInTaskbar: true,
+    positionLocked: false,
+    activeStyleId: DEFAULT_MINI_PLAYER_STYLE_ID,
+    profiles: {
+      [DEFAULT_MINI_PLAYER_STYLE_ID]: createDefaultMiniPlayerThemeProfile(
+        DEFAULT_MINI_PLAYER_STYLE_ID
+      ),
+      [PORCELAIN_MINI_PLAYER_STYLE_ID]: createDefaultMiniPlayerThemeProfile(
+        PORCELAIN_MINI_PLAYER_STYLE_ID
+      )
+    }
+  });
+  function cloneMiniPlayerSettings(settings) {
+    return {
+      ...settings,
+      profiles: Object.fromEntries(
+        Object.entries(settings.profiles).map(([id2, profile]) => [
+          id2,
+          cloneMiniPlayerThemeProfile(profile)
+        ])
+      )
+    };
+  }
+  const MAX_STYLE_ID_LENGTH = 64;
+  const MAX_BACKGROUND_IMAGE_URL_LENGTH = 512;
+  const MAX_THEME_PROFILE_COUNT = 32;
+  function normalizeMiniPlayerSettings(raw) {
+    const value = asRecord(raw);
+    const rawProfiles = asRecord(value.profiles);
+    const profiles = {};
+    for (const styleId of BUILT_IN_MINI_PLAYER_STYLE_IDS) {
+      const fallback = createDefaultMiniPlayerThemeProfile(styleId);
+      profiles[styleId] = normalizeMiniPlayerThemeProfile(rawProfiles[styleId], fallback);
+    }
+    let customProfileCount = 0;
+    for (const [rawStyleId, rawProfile] of Object.entries(rawProfiles)) {
+      const styleId = normalizeOptionalStyleId(rawStyleId);
+      if (!styleId || BUILT_IN_MINI_PLAYER_STYLE_IDS.has(styleId)) continue;
+      if (customProfileCount >= MAX_THEME_PROFILE_COUNT) break;
+      profiles[styleId] = normalizeMiniPlayerThemeProfile(
+        rawProfile,
+        createDefaultMiniPlayerThemeProfile(DEFAULT_MINI_PLAYER_STYLE_ID)
+      );
+      customProfileCount += 1;
+    }
+    const hasProfiles = Object.prototype.hasOwnProperty.call(value, "profiles");
+    const legacyStyleId = normalizeOptionalStyleId(value.styleId) ?? DEFAULT_MINI_PLAYER_STYLE_ID;
+    const legacyBackgroundColor = normalizeOptionalHexColor(value.backgroundColor);
+    if (!hasProfiles && (value.styleId !== void 0 || legacyBackgroundColor)) {
+      const existing = profiles[legacyStyleId] ?? createDefaultMiniPlayerThemeProfile(DEFAULT_MINI_PLAYER_STYLE_ID);
+      profiles[legacyStyleId] = {
+        ...existing,
+        background: {
+          ...existing.background,
+          ...legacyBackgroundColor ? { solidColor: legacyBackgroundColor, fallbackColor: legacyBackgroundColor } : {}
+        }
+      };
+    }
+    const requestedStyleId = normalizeOptionalStyleId(value.activeStyleId) ?? normalizeOptionalStyleId(value.styleId) ?? DEFAULT_MINI_PLAYER_STYLE_ID;
+    const activeStyleId = BUILT_IN_MINI_PLAYER_STYLE_IDS.has(requestedStyleId) ? requestedStyleId : DEFAULT_MINI_PLAYER_STYLE_ID;
+    return {
+      windowX: normalizeCoordinate(value.windowX, DEFAULT_MINI_PLAYER_SETTINGS.windowX),
+      windowY: normalizeCoordinate(value.windowY, DEFAULT_MINI_PLAYER_SETTINGS.windowY),
+      windowWidth: clampFiniteNumber(
+        value.windowWidth,
+        MINI_PLAYER_MIN_WIDTH,
+        MINI_PLAYER_MAX_WIDTH,
+        DEFAULT_MINI_PLAYER_SETTINGS.windowWidth,
+        true
+      ),
+      windowHeight: clampFiniteNumber(
+        value.windowHeight,
+        MINI_PLAYER_MIN_HEIGHT,
+        MINI_PLAYER_MAX_HEIGHT,
+        DEFAULT_MINI_PLAYER_SETTINGS.windowHeight,
+        true
+      ),
+      alwaysOnTop: value.alwaysOnTop === true,
+      showInTaskbar: value.showInTaskbar !== false,
+      positionLocked: value.positionLocked === true,
+      activeStyleId,
+      profiles
+    };
+  }
+  function normalizeMiniPlayerThemeProfile(raw, fallback) {
+    const value = asRecord(raw);
+    const backgroundValue = asRecord(value.background);
+    const appearanceValue = asRecord(value.appearance);
+    const layoutValue = asRecord(value.layout);
+    const visibilityValue = asRecord(value.visibility);
+    const imageUrl = normalizeBackgroundImageUrl(backgroundValue.imageUrl);
+    const requestedBackgroundKind = normalizeBackgroundKind(
+      backgroundValue.kind,
+      fallback.background.kind
+    );
+    return {
+      background: {
+        kind: requestedBackgroundKind === "image" && !imageUrl ? "solid" : requestedBackgroundKind,
+        solidColor: normalizeHexColor$1(backgroundValue.solidColor, fallback.background.solidColor),
+        fallbackColor: normalizeHexColor$1(
+          backgroundValue.fallbackColor,
+          fallback.background.fallbackColor
+        ),
+        gradientStart: normalizeHexColor$1(
+          backgroundValue.gradientStart,
+          fallback.background.gradientStart
+        ),
+        gradientEnd: normalizeHexColor$1(backgroundValue.gradientEnd, fallback.background.gradientEnd),
+        gradientAngle: clampFiniteNumber(
+          backgroundValue.gradientAngle,
+          0,
+          360,
+          fallback.background.gradientAngle,
+          true
+        ),
+        imageUrl,
+        imageFit: backgroundValue.imageFit === "contain" ? "contain" : backgroundValue.imageFit === "cover" ? "cover" : fallback.background.imageFit,
+        blur: clampFiniteNumber(backgroundValue.blur, 0, 40, fallback.background.blur, true),
+        brightness: clampFiniteNumber(
+          backgroundValue.brightness,
+          50,
+          150,
+          fallback.background.brightness,
+          true
+        ),
+        saturation: clampFiniteNumber(
+          backgroundValue.saturation,
+          0,
+          200,
+          fallback.background.saturation,
+          true
+        ),
+        opacity: clampFiniteNumber(
+          backgroundValue.opacity,
+          0,
+          100,
+          fallback.background.opacity,
+          true
+        ),
+        overlayColor: normalizeHexColor$1(
+          backgroundValue.overlayColor,
+          fallback.background.overlayColor
+        ),
+        overlayOpacity: clampFiniteNumber(
+          backgroundValue.overlayOpacity,
+          0,
+          90,
+          fallback.background.overlayOpacity,
+          true
+        )
+      },
+      appearance: {
+        accentMode: appearanceValue.accentMode === "custom" || appearanceValue.accentMode === "track" ? appearanceValue.accentMode : fallback.appearance.accentMode,
+        accentColor: normalizeHexColor$1(appearanceValue.accentColor, fallback.appearance.accentColor),
+        textMode: appearanceValue.textMode === "custom" || appearanceValue.textMode === "auto" ? appearanceValue.textMode : fallback.appearance.textMode,
+        primaryTextColor: normalizeHexColor$1(
+          appearanceValue.primaryTextColor,
+          fallback.appearance.primaryTextColor
+        ),
+        mutedTextColor: normalizeHexColor$1(
+          appearanceValue.mutedTextColor,
+          fallback.appearance.mutedTextColor
+        ),
+        fontFamily: normalizeFontFamily$1(appearanceValue.fontFamily, fallback.appearance.fontFamily),
+        surfaceOpacity: clampFiniteNumber(
+          appearanceValue.surfaceOpacity,
+          40,
+          100,
+          fallback.appearance.surfaceOpacity,
+          true
+        ),
+        glassBlur: clampFiniteNumber(
+          appearanceValue.glassBlur,
+          0,
+          40,
+          fallback.appearance.glassBlur,
+          true
+        ),
+        cornerRadius: clampFiniteNumber(
+          appearanceValue.cornerRadius,
+          0,
+          36,
+          fallback.appearance.cornerRadius,
+          true
+        ),
+        borderWidth: clampFiniteNumber(
+          appearanceValue.borderWidth,
+          0,
+          3,
+          fallback.appearance.borderWidth,
+          true
+        ),
+        borderColor: normalizeHexColor$1(appearanceValue.borderColor, fallback.appearance.borderColor),
+        shadowStrength: clampFiniteNumber(
+          appearanceValue.shadowStrength,
+          0,
+          100,
+          fallback.appearance.shadowStrength,
+          true
+        ),
+        shadowColor: normalizeHexColor$1(appearanceValue.shadowColor, fallback.appearance.shadowColor)
+      },
+      layout: {
+        preference: normalizeLayoutPreference(layoutValue.preference, fallback.layout.preference)
+      },
+      visibility: {
+        artwork: normalizeBoolean(visibilityValue.artwork, fallback.visibility.artwork),
+        album: normalizeBoolean(visibilityValue.album, fallback.visibility.album),
+        equalizer: normalizeBoolean(visibilityValue.equalizer, fallback.visibility.equalizer),
+        time: normalizeBoolean(visibilityValue.time, fallback.visibility.time),
+        volume: normalizeBoolean(visibilityValue.volume, fallback.visibility.volume),
+        playMode: normalizeBoolean(visibilityValue.playMode, fallback.visibility.playMode),
+        queuePosition: normalizeBoolean(
+          visibilityValue.queuePosition,
+          fallback.visibility.queuePosition
+        )
+      }
+    };
+  }
+  function normalizeOptionalStyleId(value) {
+    const styleId = normalizeText(value, MAX_STYLE_ID_LENGTH);
+    return /^[a-z0-9][a-z0-9._-]*$/i.test(styleId) ? styleId : null;
+  }
+  function normalizeBackgroundKind(value, fallback) {
+    return value === "solid" || value === "gradient" || value === "cover" || value === "image" ? value : fallback;
+  }
+  function normalizeBackgroundImageUrl(value) {
+    const url = normalizeText(value, MAX_BACKGROUND_IMAGE_URL_LENGTH);
+    return /^background:\/\/[a-f0-9]{24}\.(?:jpg|png|webp)$/i.test(url) ? url : "";
+  }
+  function normalizeLayoutPreference(value, fallback) {
+    return value === "compact" || value === "standard" || value === "wide" || value === "poster" || value === "auto" ? value : fallback;
+  }
+  function normalizeBoolean(value, fallback) {
+    return typeof value === "boolean" ? value : fallback;
+  }
+  function normalizeHexColor$1(value, fallback) {
+    return typeof value === "string" && /^#[\da-f]{6}$/i.test(value.trim()) ? value.trim() : fallback;
+  }
+  function normalizeOptionalHexColor(value) {
+    return typeof value === "string" && /^#[\da-f]{6}$/i.test(value.trim()) ? value.trim() : null;
+  }
+  function normalizeFontFamily$1(value, fallback) {
+    if (typeof value !== "string") return fallback;
+    const normalized = value.trim().slice(0, 240);
+    return normalized && !/[;{}]|url\s*\(|@import|expression\s*\(/i.test(normalized) ? normalized : fallback;
+  }
+  function normalizeCoordinate(value, fallback) {
+    return clampFiniteNumber(value, -1e5, 1e5, fallback, true);
+  }
+  function normalizeText(value, maxLength) {
+    return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+  }
+  function clampFiniteNumber(value, min, max, fallback, integer = false) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    const normalized = integer ? Math.round(value) : value;
+    return Math.min(max, Math.max(min, normalized));
+  }
+  function asRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+  function normalizeMotionPreference(value) {
+    return value === "full" || value === "reduced" || value === "off" ? value : "system";
+  }
+  const LYRICS_STYLE_TARGETS = [
+    "normal",
+    "active",
+    "harmony",
+    "translation",
+    "romanization"
+  ];
+  const LYRICS_FONT_FAMILIES = [
+    "inherit",
+    "system",
+    "inter",
+    "lxgw",
+    "sarasa",
+    "comic",
+    "custom"
+  ];
+  const LYRICS_RANGES = {
+    fontSize: { min: 12, max: 48 },
+    fontWeight: { min: 300, max: 900 },
+    lineHeight: { min: 1.1, max: 2.8 },
+    letterSpacing: { min: -0.05, max: 0.4 },
+    opacity: { min: 10, max: 100 },
+    backgroundOpacity: { min: 0, max: 100 },
+    highlightIntensity: { min: 0, max: 100 },
+    inactiveOpacity: { min: 10, max: 100, step: 5 },
+    coverGap: { min: 0, max: 160 },
+    lyricsMaxWidth: { min: 420, max: 1200 },
+    lyricsOffsetX: { min: -80, max: 160 },
+    coverSize: { min: 60, max: 110 },
+    coverRadius: { min: 0, max: 64 },
+    anchorPosition: { min: 0.15, max: 0.85 },
+    translationSpacing: { min: 0, max: 24 },
+    scaleIntensity: { min: 0, max: 100 },
+    blurIntensity: { min: 0, max: 100 },
+    cascadeSpeed: { min: 0, max: 100 }
+  };
+  const LYRICS_APPEARANCE_SCHEMA_VERSION = 6;
+  const BASE_TEXT_STYLE = {
+    fontFamily: "inherit",
+    customFontFamily: "",
+    fontSize: 18,
+    fontWeight: 600,
+    lineHeight: 1.85,
+    letterSpacing: 0,
+    fontStyle: "normal",
+    align: "center",
+    colorMode: "theme",
+    color: "#ffffff",
+    opacity: 100,
+    backgroundStyle: "none",
+    backgroundColor: "#0f172a",
+    backgroundOpacity: 0,
+    highlightEffect: "none",
+    highlightColor: "#ffffff",
+    highlightIntensity: 30
+  };
+  const DEFAULT_LYRICS_TEXT_STYLES = {
+    normal: { ...BASE_TEXT_STYLE },
+    active: {
+      ...BASE_TEXT_STYLE,
+      lineHeight: 1.65,
+      highlightColor: "#fff8df",
+      highlightIntensity: 32
+    },
+    harmony: {
+      ...BASE_TEXT_STYLE,
+      fontSize: 14,
+      fontWeight: 500,
+      lineHeight: 1.3,
+      opacity: 62,
+      highlightIntensity: 20
+    },
+    translation: {
+      ...BASE_TEXT_STYLE,
+      fontSize: 14,
+      fontWeight: 500,
+      lineHeight: 1.3,
+      opacity: 82,
+      highlightIntensity: 24
+    },
+    romanization: {
+      ...BASE_TEXT_STYLE,
+      fontSize: 13,
+      fontWeight: 400,
+      lineHeight: 1.25,
+      opacity: 70,
+      highlightIntensity: 24
+    }
+  };
+  const DEFAULT_LYRICS_APPEARANCE = {
+    schemaVersion: LYRICS_APPEARANCE_SCHEMA_VERSION,
+    fontFamily: "inherit",
+    fontSize: 18,
+    fontWeight: 600,
+    lineHeight: 1.85,
+    align: "center",
+    inactiveOpacity: 100,
+    focusLineCount: "all",
+    colorMode: "theme",
+    textColor: "#ffffff",
+    activeColor: "#ffffff",
+    karaokeColor: "#fff8df",
+    karaokeEnabled: true,
+    coverGap: 40,
+    lyricsMaxWidth: 820,
+    lyricsOffsetX: 0,
+    coverSize: 100,
+    coverRadius: 26,
+    anchorPosition: 0.5,
+    translationSpacing: 0,
+    hidePassedLines: false,
+    scaleIntensity: 100,
+    blurIntensity: 100,
+    cascadeSpeed: 50,
+    styles: {
+      normal: { ...DEFAULT_LYRICS_TEXT_STYLES.normal },
+      active: { ...DEFAULT_LYRICS_TEXT_STYLES.active },
+      harmony: { ...DEFAULT_LYRICS_TEXT_STYLES.harmony },
+      translation: { ...DEFAULT_LYRICS_TEXT_STYLES.translation },
+      romanization: { ...DEFAULT_LYRICS_TEXT_STYLES.romanization }
+    }
+  };
+  const LEGACY_INERT_INACTIVE_OPACITY = 40;
+  const LEGACY_ABOVE_CENTER_ANCHOR_POSITION = 0.35;
+  function clampNumber$1(value, min, max, fallback) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, value));
+  }
+  function clampRange(value, range, fallback) {
+    return clampNumber$1(value, range.min, range.max, fallback);
+  }
+  function normalizeColor(value, fallback) {
+    return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : fallback;
+  }
+  function normalizeFontWeight(value, fallback) {
+    const numeric = clampRange(value, LYRICS_RANGES.fontWeight, fallback);
+    return Math.round(numeric / 100) * 100;
+  }
+  function normalizeAlign(value, fallback) {
+    return value === "left" || value === "center" || value === "right" ? value : fallback;
+  }
+  function normalizeFontFamily(value, fallback) {
+    return LYRICS_FONT_FAMILIES.includes(value) ? value : fallback;
+  }
+  function normalizeTextStyle(raw, fallback, migrateLegacyDefaultGlow = false) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    const backgroundStyles = ["none", "solid", "glass", "gradient"];
+    const highlightEffects = ["none", "shadow", "glow", "outline"];
+    const isLegacyDefaultGlow = migrateLegacyDefaultGlow && value.highlightEffect === "glow" && value.highlightColor === "#fff8df" && value.highlightIntensity === 32;
+    return {
+      fontFamily: normalizeFontFamily(value.fontFamily, fallback.fontFamily),
+      customFontFamily: typeof value.customFontFamily === "string" ? value.customFontFamily.trim().slice(0, 96) : fallback.customFontFamily,
+      fontSize: clampRange(value.fontSize, LYRICS_RANGES.fontSize, fallback.fontSize),
+      fontWeight: normalizeFontWeight(value.fontWeight, fallback.fontWeight),
+      lineHeight: clampRange(value.lineHeight, LYRICS_RANGES.lineHeight, fallback.lineHeight),
+      letterSpacing: clampRange(
+        value.letterSpacing,
+        LYRICS_RANGES.letterSpacing,
+        fallback.letterSpacing
+      ),
+      fontStyle: value.fontStyle === "italic" ? "italic" : "normal",
+      align: normalizeAlign(value.align, fallback.align),
+      colorMode: value.colorMode === "custom" ? "custom" : "theme",
+      color: normalizeColor(value.color, fallback.color),
+      opacity: clampRange(value.opacity, LYRICS_RANGES.opacity, fallback.opacity),
+      backgroundStyle: backgroundStyles.includes(value.backgroundStyle) ? value.backgroundStyle : fallback.backgroundStyle,
+      backgroundColor: normalizeColor(value.backgroundColor, fallback.backgroundColor),
+      backgroundOpacity: clampRange(
+        value.backgroundOpacity,
+        LYRICS_RANGES.backgroundOpacity,
+        fallback.backgroundOpacity
+      ),
+      highlightEffect: isLegacyDefaultGlow ? "none" : highlightEffects.includes(value.highlightEffect) ? value.highlightEffect : fallback.highlightEffect,
+      highlightColor: normalizeColor(value.highlightColor, fallback.highlightColor),
+      highlightIntensity: clampRange(
+        value.highlightIntensity,
+        LYRICS_RANGES.highlightIntensity,
+        fallback.highlightIntensity
+      )
+    };
+  }
+  function isSchema3DefaultAuxiliaryStyle(target, raw) {
+    const legacyDefault = target === "translation" ? { ...DEFAULT_LYRICS_TEXT_STYLES.translation, fontSize: 18, lineHeight: 1.45 } : { ...DEFAULT_LYRICS_TEXT_STYLES.romanization, fontSize: 15, lineHeight: 1.35 };
+    const normalized = normalizeTextStyle(raw, legacyDefault);
+    return Object.keys(legacyDefault).every(
+      (key) => normalized[key] === legacyDefault[key]
+    );
+  }
+  function migrateLegacyStyles(value) {
+    const fontFamily = normalizeFontFamily(value.fontFamily, DEFAULT_LYRICS_APPEARANCE.fontFamily);
+    const fontSize = clampRange(
+      value.fontSize,
+      LYRICS_RANGES.fontSize,
+      DEFAULT_LYRICS_APPEARANCE.fontSize
+    );
+    const fontWeight = normalizeFontWeight(value.fontWeight, DEFAULT_LYRICS_APPEARANCE.fontWeight);
+    const lineHeight = clampRange(
+      value.lineHeight,
+      LYRICS_RANGES.lineHeight,
+      DEFAULT_LYRICS_APPEARANCE.lineHeight
+    );
+    const align = normalizeAlign(value.align, DEFAULT_LYRICS_APPEARANCE.align);
+    const colorMode = value.colorMode === "custom" ? "custom" : "theme";
+    const textColor = normalizeColor(value.textColor, DEFAULT_LYRICS_APPEARANCE.textColor);
+    const activeColor = normalizeColor(value.activeColor, DEFAULT_LYRICS_APPEARANCE.activeColor);
+    return {
+      normal: {
+        ...DEFAULT_LYRICS_TEXT_STYLES.normal,
+        fontFamily,
+        fontSize,
+        fontWeight,
+        lineHeight,
+        align,
+        colorMode,
+        color: textColor
+      },
+      active: {
+        ...DEFAULT_LYRICS_TEXT_STYLES.active,
+        fontFamily,
+        fontSize,
+        fontWeight,
+        align,
+        colorMode,
+        color: activeColor,
+        highlightColor: normalizeColor(value.karaokeColor, DEFAULT_LYRICS_APPEARANCE.karaokeColor)
+      },
+      harmony: {
+        ...DEFAULT_LYRICS_TEXT_STYLES.harmony,
+        fontFamily,
+        fontSize: clampRange(fontSize - 4, LYRICS_RANGES.fontSize, fontSize),
+        align,
+        colorMode,
+        color: textColor
+      },
+      translation: {
+        ...DEFAULT_LYRICS_TEXT_STYLES.translation,
+        fontFamily,
+        fontSize,
+        align,
+        colorMode,
+        color: textColor
+      },
+      // Romanization was hardcoded three px below the main text before it became a
+      // style layer, so seed it that way rather than at the shared size.
+      romanization: {
+        ...DEFAULT_LYRICS_TEXT_STYLES.romanization,
+        fontFamily,
+        fontSize: clampRange(fontSize - 3, LYRICS_RANGES.fontSize, fontSize),
+        align,
+        colorMode,
+        color: textColor
+      }
+    };
+  }
+  function cloneLyricsAppearance(value) {
+    const styles = {};
+    for (const target of LYRICS_STYLE_TARGETS) {
+      styles[target] = { ...value.styles[target] ?? DEFAULT_LYRICS_TEXT_STYLES[target] };
+    }
+    return { ...value, styles };
+  }
+  function normalizeLyricsAppearance(raw, legacy = {}) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    const storedVersion = typeof value.schemaVersion === "number" ? value.schemaVersion : 0;
+    const fontFamily = normalizeFontFamily(value.fontFamily, DEFAULT_LYRICS_APPEARANCE.fontFamily);
+    const fontSize = clampRange(
+      value.fontSize,
+      LYRICS_RANGES.fontSize,
+      clampNumber$1(legacy.lyricFontSize, 14, 28, DEFAULT_LYRICS_APPEARANCE.fontSize)
+    );
+    const fontWeight = normalizeFontWeight(value.fontWeight, DEFAULT_LYRICS_APPEARANCE.fontWeight);
+    const lineHeight = clampRange(
+      value.lineHeight,
+      LYRICS_RANGES.lineHeight,
+      DEFAULT_LYRICS_APPEARANCE.lineHeight
+    );
+    const align = normalizeAlign(
+      value.align,
+      legacy.lyricAlign === "left" ? "left" : DEFAULT_LYRICS_APPEARANCE.align
+    );
+    const colorMode = value.colorMode === "custom" ? "custom" : "theme";
+    const textColor = normalizeColor(value.textColor, DEFAULT_LYRICS_APPEARANCE.textColor);
+    const activeColor = normalizeColor(value.activeColor, DEFAULT_LYRICS_APPEARANCE.activeColor);
+    const karaokeColor = normalizeColor(value.karaokeColor, DEFAULT_LYRICS_APPEARANCE.karaokeColor);
+    const migratedStyles = migrateLegacyStyles({
+      ...value,
+      fontFamily,
+      fontSize,
+      fontWeight,
+      lineHeight,
+      align,
+      colorMode,
+      textColor,
+      activeColor,
+      karaokeColor
+    });
+    const stylesValue = typeof value.styles === "object" && value.styles !== null ? value.styles : {};
+    const migrateLegacyDefaultGlow = storedVersion < 2;
+    const styles = {};
+    for (const target of LYRICS_STYLE_TARGETS) {
+      styles[target] = normalizeTextStyle(
+        stylesValue[target],
+        migratedStyles[target],
+        migrateLegacyDefaultGlow
+      );
+      if (storedVersion === 3 && (target === "translation" || target === "romanization") && isSchema3DefaultAuxiliaryStyle(target, stylesValue[target])) {
+        styles[target].fontSize = DEFAULT_LYRICS_TEXT_STYLES[target].fontSize;
+        styles[target].lineHeight = DEFAULT_LYRICS_TEXT_STYLES[target].lineHeight;
+      }
+    }
+    return {
+      schemaVersion: LYRICS_APPEARANCE_SCHEMA_VERSION,
+      fontFamily,
+      fontSize,
+      fontWeight,
+      lineHeight,
+      align,
+      inactiveOpacity: normalizeInactiveOpacity(value, legacy, storedVersion),
+      focusLineCount: value.focusLineCount === "all" || value.focusLineCount === 1 || value.focusLineCount === 3 || value.focusLineCount === 5 ? value.focusLineCount : DEFAULT_LYRICS_APPEARANCE.focusLineCount,
+      colorMode,
+      textColor,
+      activeColor,
+      karaokeColor,
+      karaokeEnabled: value.karaokeEnabled !== false,
+      coverGap: clampRange(
+        value.coverGap,
+        LYRICS_RANGES.coverGap,
+        DEFAULT_LYRICS_APPEARANCE.coverGap
+      ),
+      lyricsMaxWidth: clampRange(
+        value.lyricsMaxWidth,
+        LYRICS_RANGES.lyricsMaxWidth,
+        DEFAULT_LYRICS_APPEARANCE.lyricsMaxWidth
+      ),
+      lyricsOffsetX: clampRange(
+        value.lyricsOffsetX,
+        LYRICS_RANGES.lyricsOffsetX,
+        DEFAULT_LYRICS_APPEARANCE.lyricsOffsetX
+      ),
+      coverSize: clampRange(
+        value.coverSize,
+        LYRICS_RANGES.coverSize,
+        DEFAULT_LYRICS_APPEARANCE.coverSize
+      ),
+      coverRadius: clampRange(
+        value.coverRadius,
+        LYRICS_RANGES.coverRadius,
+        DEFAULT_LYRICS_APPEARANCE.coverRadius
+      ),
+      anchorPosition: storedVersion < 6 && value.anchorPosition === LEGACY_ABOVE_CENTER_ANCHOR_POSITION ? DEFAULT_LYRICS_APPEARANCE.anchorPosition : clampRange(
+        value.anchorPosition,
+        LYRICS_RANGES.anchorPosition,
+        DEFAULT_LYRICS_APPEARANCE.anchorPosition
+      ),
+      translationSpacing: clampRange(
+        value.translationSpacing,
+        LYRICS_RANGES.translationSpacing,
+        DEFAULT_LYRICS_APPEARANCE.translationSpacing
+      ),
+      hidePassedLines: value.hidePassedLines === true,
+      scaleIntensity: clampRange(
+        value.scaleIntensity,
+        LYRICS_RANGES.scaleIntensity,
+        DEFAULT_LYRICS_APPEARANCE.scaleIntensity
+      ),
+      blurIntensity: clampRange(
+        value.blurIntensity,
+        LYRICS_RANGES.blurIntensity,
+        DEFAULT_LYRICS_APPEARANCE.blurIntensity
+      ),
+      cascadeSpeed: clampRange(
+        value.cascadeSpeed,
+        LYRICS_RANGES.cascadeSpeed,
+        DEFAULT_LYRICS_APPEARANCE.cascadeSpeed
+      ),
+      styles
+    };
+  }
+  function normalizeInactiveOpacity(value, legacy, storedVersion) {
+    if (storedVersion < 3) {
+      if (value.inactiveOpacity === LEGACY_INERT_INACTIVE_OPACITY) {
+        return DEFAULT_LYRICS_APPEARANCE.inactiveOpacity;
+      }
+    }
+    return clampRange(
+      value.inactiveOpacity,
+      LYRICS_RANGES.inactiveOpacity,
+      clampRange(
+        legacy.lyricDimOpacity,
+        LYRICS_RANGES.inactiveOpacity,
+        DEFAULT_LYRICS_APPEARANCE.inactiveOpacity
+      )
+    );
+  }
+  const DESKTOP_LYRICS_SETTINGS_VERSION = 3;
+  const DESKTOP_LYRICS_VERTICAL_WINDOW_SIZE = { width: 176, height: 610 };
+  const DEFAULT_DESKTOP_LYRICS_SETTINGS = {
+    version: DESKTOP_LYRICS_SETTINGS_VERSION,
+    placement: "desktop",
+    taskbarWidth: 320,
+    taskbarOffset: 8,
+    taskbarFontSize: 18,
+    enabled: false,
+    windowWidth: 960,
+    windowHeight: 196,
+    windowX: -1,
+    windowY: -1,
+    alwaysOnTop: true,
+    locked: false,
+    fontFamily: "MiSans",
+    fontSize: 36,
+    fontWeight: 400,
+    lineGap: 12,
+    palette: "sunset",
+    customActiveColor: "#f3a6a6",
+    customInactiveColor: "#f4e4df",
+    inactiveOpacity: 48,
+    translationVisible: false,
+    romanizationVisible: false,
+    displayMode: "double",
+    writingMode: "horizontal",
+    textAlign: "center",
+    textOutline: true,
+    backgroundOpacity: 0,
+    shadowStrength: 55,
+    motionIntensity: 70,
+    hideWhenPaused: false,
+    pauseHideDelaySeconds: 5
+  };
+  const COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+  function record(raw) {
+    return typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : {};
+  }
+  function clamp(raw, min, max, fallback) {
+    const value = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+  }
+  function color(raw, fallback) {
+    return typeof raw === "string" && COLOR_RE.test(raw.trim()) ? raw.trim().toLowerCase() : fallback;
+  }
+  function normalizeDesktopLyricsSettings(raw, options = {}) {
+    const value = record(raw);
+    const legacy = value.version !== DESKTOP_LYRICS_SETTINGS_VERSION;
+    const source = legacy && options.resetLegacy !== false ? {} : value;
+    const defaults = DEFAULT_DESKTOP_LYRICS_SETTINGS;
+    const fontFamily = typeof source.fontFamily === "string" && source.fontFamily.trim() ? source.fontFamily.trim().slice(0, 64) : defaults.fontFamily;
+    const palette = ["accent", "sunset", "twilight", "warm", "custom"].includes(
+      String(source.palette)
+    ) ? source.palette : defaults.palette;
+    const writingMode = source.writingMode === "vertical" ? "vertical" : defaults.writingMode;
+    const vertical = writingMode === "vertical";
+    const verticalWindowWasHorizontal = vertical && Number(source.windowWidth) >= 480 && Number(source.windowHeight) <= 320;
+    return {
+      version: DESKTOP_LYRICS_SETTINGS_VERSION,
+      placement: source.placement === "taskbar" ? "taskbar" : "desktop",
+      taskbarWidth: clamp(source.taskbarWidth, 160, 800, 320),
+      taskbarOffset: clamp(source.taskbarOffset, 0, 100, 8),
+      taskbarFontSize: clamp(source.taskbarFontSize, 12, 28, 18),
+      enabled: value.enabled === true,
+      windowWidth: clamp(
+        verticalWindowWasHorizontal ? void 0 : source.windowWidth,
+        vertical ? 160 : 480,
+        vertical ? 480 : 1920,
+        vertical ? DESKTOP_LYRICS_VERTICAL_WINDOW_SIZE.width : defaults.windowWidth
+      ),
+      windowHeight: clamp(
+        verticalWindowWasHorizontal ? void 0 : source.windowHeight,
+        vertical ? 360 : 140,
+        vertical ? 960 : 320,
+        vertical ? DESKTOP_LYRICS_VERTICAL_WINDOW_SIZE.height : defaults.windowHeight
+      ),
+      windowX: Number.isFinite(value.windowX) ? Number(value.windowX) : defaults.windowX,
+      windowY: Number.isFinite(value.windowY) ? Number(value.windowY) : defaults.windowY,
+      alwaysOnTop: source.alwaysOnTop !== false,
+      locked: source.locked === true,
+      fontFamily,
+      fontSize: clamp(source.fontSize, 20, 64, defaults.fontSize),
+      fontWeight: clamp(source.fontWeight, 400, 800, defaults.fontWeight),
+      lineGap: clamp(source.lineGap, 0, 24, defaults.lineGap),
+      palette,
+      customActiveColor: color(source.customActiveColor, defaults.customActiveColor),
+      customInactiveColor: color(source.customInactiveColor, defaults.customInactiveColor),
+      inactiveOpacity: clamp(source.inactiveOpacity, 20, 80, defaults.inactiveOpacity),
+      translationVisible: typeof source.translationVisible === "boolean" ? source.translationVisible : defaults.translationVisible,
+      romanizationVisible: source.romanizationVisible === true,
+      displayMode: source.displayMode === "single" ? "single" : defaults.displayMode,
+      writingMode,
+      textAlign: ["left", "center", "right"].includes(String(source.textAlign)) ? source.textAlign : defaults.textAlign,
+      textOutline: source.textOutline !== false,
+      backgroundOpacity: clamp(source.backgroundOpacity, 0, 60, defaults.backgroundOpacity),
+      shadowStrength: clamp(source.shadowStrength, 0, 100, defaults.shadowStrength),
+      motionIntensity: clamp(source.motionIntensity, 0, 100, defaults.motionIntensity),
+      hideWhenPaused: source.hideWhenPaused === true,
+      pauseHideDelaySeconds: clamp(
+        source.pauseHideDelaySeconds,
+        2,
+        30,
+        defaults.pauseHideDelaySeconds
+      )
+    };
+  }
+  function normalizeAppFontRendering(value) {
+    return value === "crisp" || value === "smooth" ? value : "auto";
+  }
+  const APP_FONT_SYSTEM = "system";
+  const APP_FONT_FAMILIES = [
+    "system",
+    "inter",
+    "lxgw",
+    "sarasa",
+    "comic"
+  ];
+  function normalizeAppFontFamily(value) {
+    if (typeof value === "string" && /^local:[^"'\\;{}]{1,96}$/.test(value) && [...value].every(
+      (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127
+    )) {
+      const name = value.slice(6).trim();
+      if (name) return `local:${name}`;
+    }
+    return typeof value === "string" && APP_FONT_FAMILIES.includes(value) ? value : APP_FONT_SYSTEM;
+  }
+  const DEFAULT_LYRICS_PRESET_ID = "default";
+  const MAX_CUSTOM_LYRICS_PRESETS = 20;
+  const MAX_PRESET_NAME_LENGTH = 48;
+  function preset(id2, name, build) {
+    const appearance = cloneLyricsAppearance(DEFAULT_LYRICS_APPEARANCE);
+    build(appearance);
+    return { id: id2, name, builtin: true, appearance: normalizeLyricsAppearance(appearance) };
+  }
+  const BUILTIN_LYRICS_PRESETS = [
+    preset(DEFAULT_LYRICS_PRESET_ID, "默认", () => {
+    }),
+    preset("apple-music", "Apple Music 风", (appearance) => {
+      appearance.inactiveOpacity = 40;
+      appearance.styles.active.highlightEffect = "glow";
+      appearance.styles.active.highlightColor = "#fff8df";
+      appearance.styles.active.highlightIntensity = 34;
+      appearance.styles.active.fontSize = 22;
+      appearance.styles.normal.fontSize = 20;
+      appearance.styles.translation.fontSize = 15;
+      appearance.styles.translation.opacity = 72;
+      appearance.styles.romanization.fontSize = 13;
+      appearance.translationSpacing = 2;
+      appearance.coverGap = 56;
+    }),
+    preset("minimal", "极简", (appearance) => {
+      appearance.scaleIntensity = 0;
+      appearance.blurIntensity = 0;
+      appearance.inactiveOpacity = 55;
+      appearance.styles.normal.lineHeight = 2.2;
+      appearance.styles.active.lineHeight = 2.2;
+      appearance.styles.normal.fontWeight = 400;
+      appearance.styles.active.fontWeight = 600;
+      appearance.styles.translation.fontSize = 15;
+      appearance.lyricsMaxWidth = 720;
+      appearance.translationSpacing = 4;
+    }),
+    preset("large-type", "大字无障碍", (appearance) => {
+      appearance.scaleIntensity = 0;
+      appearance.blurIntensity = 0;
+      appearance.inactiveOpacity = 100;
+      appearance.cascadeSpeed = 80;
+      appearance.styles.normal.fontSize = 28;
+      appearance.styles.normal.fontWeight = 700;
+      appearance.styles.active.fontSize = 32;
+      appearance.styles.active.fontWeight = 800;
+      appearance.styles.translation.fontSize = 22;
+      appearance.styles.translation.opacity = 100;
+      appearance.styles.romanization.fontSize = 20;
+      appearance.lyricsMaxWidth = 1e3;
+      appearance.translationSpacing = 6;
+    }),
+    preset("focus", "专注单行", (appearance) => {
+      appearance.focusLineCount = 3;
+      appearance.hidePassedLines = true;
+      appearance.inactiveOpacity = 45;
+      appearance.styles.active.fontSize = 26;
+      appearance.styles.normal.fontSize = 20;
+      appearance.anchorPosition = 0.5;
+    })
+  ];
+  const DEFAULT_LYRICS_PRESET_CONFIG = {
+    activeId: DEFAULT_LYRICS_PRESET_ID,
+    custom: []
+  };
+  function cloneLyricsPreset(value) {
+    return { ...value, appearance: cloneLyricsAppearance(value.appearance) };
+  }
+  function normalizePresetName(value, fallback) {
+    if (typeof value !== "string") return fallback;
+    const name = value.trim().slice(0, MAX_PRESET_NAME_LENGTH);
+    return name || fallback;
+  }
+  function normalizeCustomPreset(raw, index) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const value = raw;
+    const id2 = typeof value.id === "string" ? value.id.trim().slice(0, 64) : "";
+    if (!id2) return null;
+    if (BUILTIN_LYRICS_PRESETS.some((entry) => entry.id === id2)) return null;
+    return {
+      id: id2,
+      name: normalizePresetName(value.name, `方案 ${index + 1}`),
+      builtin: false,
+      appearance: normalizeLyricsAppearance(value.appearance)
+    };
+  }
+  function normalizeLyricsPresetConfig(raw) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    const rawCustom = Array.isArray(value.custom) ? value.custom : [];
+    const custom = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const entry of rawCustom) {
+      if (custom.length >= MAX_CUSTOM_LYRICS_PRESETS) break;
+      const normalized = normalizeCustomPreset(entry, custom.length);
+      if (!normalized || seen.has(normalized.id)) continue;
+      seen.add(normalized.id);
+      custom.push(normalized);
+    }
+    const activeId = typeof value.activeId === "string" ? value.activeId : "";
+    const known = BUILTIN_LYRICS_PRESETS.some((entry) => entry.id === activeId) || seen.has(activeId);
+    return { activeId: known ? activeId : DEFAULT_LYRICS_PRESET_ID, custom };
+  }
+  function cloneLyricsPresetConfig(value) {
+    return { activeId: value.activeId, custom: value.custom.map(cloneLyricsPreset) };
+  }
+  const DEFAULT_GENRE_SEPARATORS = ",，;；、/";
+  const MAX_GENRE_SEPARATOR_COUNT = 32;
+  function normalizeGenreSeparators(value, fallback = DEFAULT_GENRE_SEPARATORS) {
+    if (typeof value !== "string") return fallback;
+    const separators = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const separator of value) {
+      if (separator === "\r" || separator === "\n" || separator === "	") continue;
+      if (seen.has(separator)) continue;
+      seen.add(separator);
+      separators.push(separator);
+      if (separators.length >= MAX_GENRE_SEPARATOR_COUNT) break;
+    }
+    return separators.length > 0 ? separators.join("") : fallback;
+  }
+  function normalizeEqualizerAutoPreamp(value) {
+    if (!value) return null;
+    const enabled = value.enabled === true;
+    return {
+      enabled,
+      manualDb: enabled && typeof value.manualDb === "number" && Number.isFinite(value.manualDb) && value.manualDb >= -24 && value.manualDb <= 24 ? value.manualDb : null
+    };
+  }
+  const DEFAULT_DESKTOP_LYRICS = DEFAULT_DESKTOP_LYRICS_SETTINGS;
+  const DEFAULT_MUSIC_CACHE_POLICY = {
+    cover: true,
+    lyrics: true,
+    metadata: true,
+    streamingAudio: "provider"
+  };
+  const DEFAULT_GLOBAL_SHORTCUT_BINDINGS = {
+    previous: "CommandOrControl+Alt+Left",
+    next: "CommandOrControl+Alt+Right",
+    playPause: "CommandOrControl+Alt+Space",
+    volumeUp: "CommandOrControl+Alt+Up",
+    volumeDown: "CommandOrControl+Alt+Down",
+    toggleDesktopLyrics: "CommandOrControl+Alt+D",
+    toggleDesktopLyricsLock: "CommandOrControl+Alt+L"
+  };
+  const BASE_SETTINGS = {
+    autoCheckLogin: true,
+    autoLaunch: false,
+    launchAtLogin: false,
+    hardwareAcceleration: true,
+    globalShortcuts: false,
+    shortcutEnabled: {},
+    globalShortcutBindings: { ...DEFAULT_GLOBAL_SHORTCUT_BINDINGS },
+    minimizeToTray: false,
+    musicCachePath: "",
+    cachePath: "",
+    cachePolicy: DEFAULT_MUSIC_CACHE_POLICY,
+    autoAnalyzeBpm: true,
+    closeWindowBehavior: "quit",
+    closeToTray: false,
+    taskbarThumbarButtonsEnabled: true,
+    afterglowAutoEntry: "off",
+    onboardingCompleted: false,
+    developerMode: false,
+    startupHomePage: "local",
+    startupExperience: null,
+    navigationPages: normalizeNavigationPagePreferences(void 0),
+    trackActivationMode: "singleClick",
+    language: DEFAULT_LANGUAGE_PREFERENCE,
+    theme: "system",
+    pluginThemeId: null,
+    activeTheme: { kind: "builtin", id: "builtin:twilight-echo-default" },
+    themeWindowInheritance: { miniPlayer: true, desktopLyrics: true },
+    motionPreference: "system",
+    blurEffect: true,
+    windowTransparency: false,
+    windowTransparencyEffect: {
+      surfaceOpacity: 55,
+      surfaceBlur: 0,
+      cardOpacity: 60,
+      cardBlur: 24
+    },
+    useCoverTheme: true,
+    lyricsAppearance: cloneLyricsAppearance(DEFAULT_LYRICS_APPEARANCE),
+    lyricsPresets: cloneLyricsPresetConfig(DEFAULT_LYRICS_PRESET_CONFIG),
+    libraryFolders: [],
+    lastLibraryFolder: "",
+    downloadPreferences: { ...DEFAULT_DOWNLOAD_PREFERENCES },
+    downloadFolder: "",
+    genreSeparators: DEFAULT_GENRE_SEPARATORS,
+    watchLibrary: true,
+    musicIdentification: defaultMusicIdentificationSettings(),
+    onlineLyricsFallback: false,
+    smtcEnabled: true,
+    discordRpcEnabled: false,
+    accentColor: "blue",
+    lightAccentColor: "blue",
+    darkAccentColor: "blue",
+    fontFamily: "system",
+    fontRendering: "auto",
+    uiDensity: "standard",
+    appBackground: {
+      global: {
+        light: "#f4f4f7",
+        dark: "#17181a",
+        kind: "color",
+        image: ""
+      },
+      pages: {
+        local: { inherit: true, light: "#ffffff", dark: "#17181a", kind: "color", image: "" },
+        settings: { inherit: true, light: "#f4f4f7", dark: "#17181a", kind: "color", image: "" },
+        streaming: { inherit: true, light: "#fafbfe", dark: "#17181a", kind: "color", image: "" },
+        player: { inherit: true, light: "#080e17", dark: "#17181a", kind: "color", image: "" }
+      }
+    },
+    cardAppearance: {
+      enabled: false,
+      light: {
+        blurRadius: 20,
+        blurSaturation: 150,
+        backgroundColor: "#ffffff",
+        backgroundOpacity: 100,
+        borderColor: "#0f172a",
+        borderOpacity: 8,
+        borderWidth: 1,
+        borderRadius: 16,
+        shadowStrength: "medium",
+        hoverEffect: "lift",
+        glassHighlight: true
+      },
+      dark: {
+        blurRadius: 20,
+        blurSaturation: 150,
+        backgroundColor: "#181818",
+        backgroundOpacity: 100,
+        borderColor: "#ffffff",
+        borderOpacity: 10,
+        borderWidth: 1,
+        borderRadius: 16,
+        shadowStrength: "medium",
+        hoverEffect: "lift",
+        glassHighlight: true
+      },
+      background: {
+        enabled: false,
+        light: { blur: 0, brightness: 100, dim: 0 },
+        dark: { blur: 0, brightness: 100, dim: 0 }
+      }
+    },
+    surfaceMaterial: "standard",
+    liquidGlass: DEFAULT_LIQUID_GLASS,
+    playerBar: clonePlayerBarSettings(DEFAULT_PLAYER_BAR_SETTINGS),
+    nowPlayingBackground: "blur",
+    playbackResumeMode: "off",
+    previousButtonAction: "restart",
+    sleepTimer: DEFAULT_SLEEP_TIMER_SETTINGS,
+    ncmPlaybackQuality: "auto",
+    playMode: "sequential",
+    softwareVolume: DEFAULT_SOFTWARE_VOLUME,
+    audioOutput: "wasapi",
+    audioDevice: "auto",
+    audioExclusiveMode: false,
+    audioExclusiveAutoRelease: false,
+    autoMixMode: "off",
+    autoMixStemMode: "auto",
+    autoMixStemDevice: "auto",
+    autoMixStemCacheMiB: 512,
+    audioOutputConfig: {
+      ...normalizeContinuityOutputConfig({}),
+      preferredBufferSize: 0,
+      routingMode: "auto",
+      wasapiExclusivePushMode: false,
+      pcmToDsdMode: "off",
+      dsdMutePreRollFrames: 256,
+      dsdMutePostRollFrames: 256,
+      dsdMuteTimeoutFrames: 4096
+    },
+    audioProcessing: DEFAULT_AUDIO_PROCESSING,
+    dspScenes: [
+      {
+        id: "default",
+        name: "Default",
+        enabled: true,
+        priority: 0,
+        rules: {},
+        graph: createLegacyDspGraph(DEFAULT_AUDIO_PROCESSING)
+      }
+    ],
+    dspPinnedSceneId: null,
+    audioDeviceProfiles: normalizeAudioDeviceProfileSettings(),
+    headphoneCompensation: DEFAULT_HEADPHONE_COMPENSATION,
+    audioEqPresets: [],
+    audioEqAutoPreamp: null,
+    desktopLyrics: { ...DEFAULT_DESKTOP_LYRICS },
+    miniPlayer: cloneMiniPlayerSettings(DEFAULT_MINI_PLAYER_SETTINGS),
+    proxyMode: "auto",
+    proxyHost: "",
+    proxyPort: 0,
+    proxyAllowDirectFallback: false,
+    streamingActiveProvider: "ncm",
+    remoteControlEnabled: false,
+    remoteControlPort: 0
+  };
+  function createDefaultSettings(platform) {
+    return structuredClone({
+      ...BASE_SETTINGS,
+      audioOutput: normalizeAudioOutput(void 0, platform)
+    });
+  }
+  const DEFAULT_SETTINGS = BASE_SETTINGS;
+  function clampNumber(value, min, max, fallback) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, value));
+  }
+  function normalizeProxyMode(value) {
+    if (value === "auto" || value === "custom" || value === "off") return value;
+    return "auto";
+  }
+  function normalizeAudioEqPresets(presets) {
+    if (!Array.isArray(presets)) return [];
+    return presets.map((preset2, index) => {
+      if (!preset2 || typeof preset2 !== "object") return null;
+      const raw = preset2;
+      const normalized = normalizeAudioProcessingSettings({
+        eqMode: raw.eqMode,
+        eqPreamp: raw.eqPreamp,
+        eqBands: raw.eqBands
+      });
+      return {
+        id: typeof raw.id === "string" && raw.id ? raw.id : `custom-${index}`,
+        name: typeof raw.name === "string" && raw.name ? raw.name.slice(0, 40) : `Preset ${index + 1}`,
+        eqMode: normalized.eqMode,
+        eqPreamp: normalized.eqPreamp,
+        eqBands: normalized.eqBands
+      };
+    }).filter((preset2) => Boolean(preset2)).slice(0, 24);
+  }
+  function normalizeAppTheme(theme) {
+    return theme === "system" || theme === "dark" || theme === "pureWhite" ? theme : DEFAULT_SETTINGS.theme;
+  }
+  function normalizePlaybackResumeMode(mode) {
+    return mode === "track" || mode === "trackAndPosition" || mode === "off" ? mode : DEFAULT_SETTINGS.playbackResumeMode;
+  }
+  function normalizePreviousButtonAction(value) {
+    return value === "previous" ? "previous" : DEFAULT_SETTINGS.previousButtonAction;
+  }
+  function normalizeNcmPlaybackQuality(value) {
+    return value === "standard" || value === "exhigh" || value === "lossless" || value === "hires" || value === "auto" ? value : DEFAULT_SETTINGS.ncmPlaybackQuality;
+  }
+  function normalizeStartupHomePage(value) {
+    return value === "streaming" ? "streaming" : "local";
+  }
+  function normalizeTrackActivationMode(value) {
+    return value === "doubleClick" ? "doubleClick" : "singleClick";
+  }
+  function normalizeAfterglowAutoEntry(value) {
+    return value === "minimize" || value === "hide" || value === "minimizeOrHide" ? value : "off";
+  }
+  function normalizeStreamingAudioCachePolicy(value) {
+    return value === "off" ? "off" : "provider";
+  }
+  const ACCELERATOR_PATTERN = /^([A-Za-z0-9+]+)$/;
+  function normalizeShortcutAccelerator(value, fallback) {
+    if (typeof value !== "string") return fallback;
+    const trimmed = value.trim().slice(0, 128);
+    if (!trimmed) return fallback;
+    if (!ACCELERATOR_PATTERN.test(trimmed)) return fallback;
+    return trimmed;
+  }
+  function normalizeGlobalShortcutBindings(raw) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    return {
+      volumeUp: normalizeShortcutAccelerator(
+        value.volumeUp,
+        DEFAULT_GLOBAL_SHORTCUT_BINDINGS.volumeUp
+      ),
+      volumeDown: normalizeShortcutAccelerator(
+        value.volumeDown,
+        DEFAULT_GLOBAL_SHORTCUT_BINDINGS.volumeDown
+      ),
+      previous: normalizeShortcutAccelerator(
+        value.previous,
+        DEFAULT_GLOBAL_SHORTCUT_BINDINGS.previous
+      ),
+      next: normalizeShortcutAccelerator(value.next, DEFAULT_GLOBAL_SHORTCUT_BINDINGS.next),
+      playPause: normalizeShortcutAccelerator(
+        value.playPause,
+        DEFAULT_GLOBAL_SHORTCUT_BINDINGS.playPause
+      ),
+      toggleDesktopLyrics: normalizeShortcutAccelerator(
+        value.toggleDesktopLyrics,
+        DEFAULT_GLOBAL_SHORTCUT_BINDINGS.toggleDesktopLyrics
+      ),
+      toggleDesktopLyricsLock: normalizeShortcutAccelerator(
+        value.toggleDesktopLyricsLock,
+        DEFAULT_GLOBAL_SHORTCUT_BINDINGS.toggleDesktopLyricsLock
+      )
+    };
+  }
+  function normalizeMusicCachePolicy(raw) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    return {
+      cover: value.cover !== false,
+      lyrics: value.lyrics !== false,
+      metadata: value.metadata !== false,
+      streamingAudio: normalizeStreamingAudioCachePolicy(value.streamingAudio)
+    };
+  }
+  function normalizePlayMode(mode) {
+    return mode === "listLoop" || mode === "repeat" || mode === "shuffle" ? mode : "sequential";
+  }
+  const ACCENT_COLORS = ["violet", "blue", "emerald", "rose", "amber", "slate"];
+  function normalizeAccentColor(value) {
+    return typeof value === "string" && ACCENT_COLORS.includes(value) ? value : DEFAULT_SETTINGS.accentColor;
+  }
+  function normalizeLightAccentColor(value) {
+    return typeof value === "string" && ACCENT_COLORS.includes(value) ? value : DEFAULT_SETTINGS.lightAccentColor;
+  }
+  function normalizeDarkAccentColor(value, legacyValue) {
+    if (typeof value === "string" && ACCENT_COLORS.includes(value)) return value;
+    if (typeof legacyValue === "string" && ACCENT_COLORS.includes(legacyValue)) return legacyValue;
+    return DEFAULT_SETTINGS.darkAccentColor;
+  }
+  function normalizeStringArray(value) {
+    if (!Array.isArray(value)) return [];
+    return value.filter((item) => typeof item === "string").map((item) => item.trim()).filter((item) => item.length > 0).slice(0, 64);
+  }
+  function normalizeUiDensity(value) {
+    return value === "compact" || value === "comfortable" ? value : "standard";
+  }
+  function normalizeNowPlayingBackground(value) {
+    return value === "fluid" || value === "solid" ? value : "blur";
+  }
+  function normalizeHexColor(value, fallback) {
+    if (typeof value !== "string") return fallback;
+    const normalized = value.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(normalized)) return normalized.toLowerCase();
+    if (/^[0-9a-fA-F]{6}$/.test(normalized)) return `#${normalized.toLowerCase()}`;
+    return fallback;
+  }
+  const CARD_SHADOW_STRENGTHS = ["none", "subtle", "medium", "strong"];
+  const CARD_HOVER_EFFECTS = ["none", "lift", "zoom", "glow"];
+  function normalizeCardShadowStrength(value) {
+    return typeof value === "string" && CARD_SHADOW_STRENGTHS.includes(value) ? value : "medium";
+  }
+  function normalizeCardHoverEffect(value) {
+    return typeof value === "string" && CARD_HOVER_EFFECTS.includes(value) ? value : "lift";
+  }
+  function normalizeCardAppearanceTheme(raw, defaults) {
+    const t = typeof raw === "object" && raw !== null ? raw : {};
+    return {
+      blurRadius: clampNumber(t.blurRadius, 0, 40, defaults.blurRadius),
+      blurSaturation: clampNumber(t.blurSaturation, 80, 180, defaults.blurSaturation),
+      backgroundColor: normalizeHexColor(t.backgroundColor, defaults.backgroundColor),
+      backgroundOpacity: clampNumber(t.backgroundOpacity, 0, 100, defaults.backgroundOpacity),
+      borderColor: normalizeHexColor(t.borderColor, defaults.borderColor),
+      borderOpacity: clampNumber(t.borderOpacity, 0, 100, defaults.borderOpacity),
+      borderWidth: clampNumber(t.borderWidth, 0, 3, defaults.borderWidth),
+      borderRadius: clampNumber(t.borderRadius, 0, 24, defaults.borderRadius),
+      shadowStrength: normalizeCardShadowStrength(t.shadowStrength),
+      hoverEffect: normalizeCardHoverEffect(t.hoverEffect),
+      glassHighlight: t.glassHighlight !== false
+    };
+  }
+  function normalizeWindowTransparencyEffect(raw) {
+    const defaults = DEFAULT_SETTINGS.windowTransparencyEffect;
+    const t = typeof raw === "object" && raw !== null ? raw : {};
+    return {
+      surfaceOpacity: clampNumber(t.surfaceOpacity, 20, 100, defaults.surfaceOpacity),
+      surfaceBlur: clampNumber(t.surfaceBlur, 0, 60, defaults.surfaceBlur),
+      cardOpacity: clampNumber(t.cardOpacity, 0, 100, defaults.cardOpacity),
+      cardBlur: clampNumber(t.cardBlur, 0, 60, defaults.cardBlur)
+    };
+  }
+  function normalizeBackgroundEffectTheme(raw, defaults) {
+    const t = typeof raw === "object" && raw !== null ? raw : {};
+    return {
+      blur: clampNumber(t.blur, 0, 30, defaults.blur),
+      brightness: clampNumber(t.brightness, 50, 120, defaults.brightness),
+      dim: clampNumber(t.dim, 0, 80, defaults.dim)
+    };
+  }
+  function normalizeCardAppearance(raw) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    const defaults = DEFAULT_SETTINGS.cardAppearance;
+    const bgRaw = typeof value.background === "object" && value.background !== null ? value.background : {};
+    return {
+      enabled: value.enabled === true,
+      light: normalizeCardAppearanceTheme(value.light, defaults.light),
+      dark: normalizeCardAppearanceTheme(value.dark, defaults.dark),
+      background: {
+        enabled: bgRaw.enabled === true,
+        light: normalizeBackgroundEffectTheme(bgRaw.light, defaults.background.light),
+        dark: normalizeBackgroundEffectTheme(bgRaw.dark, defaults.background.dark)
+      }
+    };
+  }
+  function isDefaultAudioDeviceAlias(device) {
+    const normalized = device.trim();
+    const lower = normalized.toLowerCase();
+    return lower === "auto" || lower === "default" || lower === "system default" || lower === "system-default" || normalized === "系统默认";
+  }
+  function normalizeAudioDevice(device) {
+    if (typeof device !== "string") return DEFAULT_SETTINGS.audioDevice;
+    const normalized = device.trim();
+    if (!normalized || isDefaultAudioDeviceAlias(normalized)) return DEFAULT_SETTINGS.audioDevice;
+    return normalized;
+  }
+  function normalizeOutputConfig(config) {
+    if (!config || typeof config !== "object") return { ...DEFAULT_SETTINGS.audioOutputConfig };
+    return normalizeOutputConfig$1(config, 32768);
+  }
+  function normalizeDesktopLyrics(raw) {
+    return normalizeDesktopLyricsSettings(raw);
+  }
+  function normalizeSleepTimerSettings(raw) {
+    const value = typeof raw === "object" && raw !== null ? raw : {};
+    return {
+      defaultMinutes: clampNumber(
+        value.defaultMinutes,
+        1,
+        720,
+        DEFAULT_SLEEP_TIMER_SETTINGS.defaultMinutes
+      ),
+      fadeSeconds: clampNumber(value.fadeSeconds, 0, 120, DEFAULT_SLEEP_TIMER_SETTINGS.fadeSeconds)
+    };
+  }
+  function normalizeAppSettings(settings, environment) {
+    const rawSettings = settings;
+    const deviceProfiles = normalizeAudioDeviceProfileSettings(settings.audioDeviceProfiles);
+    const audioProcessing = normalizeInitialAudioProcessingSettings(settings.audioProcessing);
+    const dspScenes = normalizeDspScenes(settings.dspScenes, audioProcessing);
+    const rawCachePath = typeof settings.cachePath === "string" && settings.cachePath.trim() ? settings.cachePath.trim() : typeof settings.musicCachePath === "string" && settings.musicCachePath.trim() ? settings.musicCachePath.trim() : environment.defaultCachePath;
+    const cachePath = environment.resolvePath(rawCachePath);
+    const launchAtLogin = typeof settings.launchAtLogin === "boolean" ? settings.launchAtLogin : typeof settings.autoLaunch === "boolean" ? settings.autoLaunch : DEFAULT_SETTINGS.launchAtLogin;
+    const autoLaunch = launchAtLogin;
+    const legacyCloseToTray = typeof settings.closeToTray === "boolean" ? settings.closeToTray : typeof settings.minimizeToTray === "boolean" ? settings.minimizeToTray : DEFAULT_SETTINGS.closeToTray;
+    const closeWindowBehavior = settings.closeWindowBehavior === "quit" || settings.closeWindowBehavior === "tray" || settings.closeWindowBehavior === "miniPlayer" ? settings.closeWindowBehavior : legacyCloseToTray ? "tray" : "quit";
+    const closeToTray = closeWindowBehavior === "tray";
+    const minimizeToTray = typeof settings.minimizeToTray === "boolean" ? settings.minimizeToTray : closeToTray;
+    const activeTheme = normalizeThemeSelection(settings.activeTheme, settings.pluginThemeId);
+    const themeWindowInheritance = normalizeThemeWindowInheritance(
+      settings.themeWindowInheritance,
+      Object.prototype.hasOwnProperty.call(settings, "themeWindowInheritance") ? DEFAULT_SETTINGS.themeWindowInheritance : { miniPlayer: false, desktopLyrics: false }
+    );
+    return {
+      autoCheckLogin: settings.autoCheckLogin !== false,
+      autoLaunch,
+      launchAtLogin,
+      hardwareAcceleration: settings.hardwareAcceleration !== false,
+      globalShortcuts: settings.globalShortcuts === true,
+      shortcutEnabled: normalizeShortcutEnabled(settings.shortcutEnabled),
+      globalShortcutBindings: normalizeGlobalShortcutBindings(settings.globalShortcutBindings),
+      minimizeToTray,
+      musicCachePath: cachePath,
+      cachePath,
+      cachePolicy: normalizeMusicCachePolicy(settings.cachePolicy),
+      autoAnalyzeBpm: settings.autoAnalyzeBpm !== false,
+      closeWindowBehavior,
+      closeToTray,
+      taskbarThumbarButtonsEnabled: settings.taskbarThumbarButtonsEnabled !== false,
+      afterglowAutoEntry: normalizeAfterglowAutoEntry(settings.afterglowAutoEntry),
+      onboardingCompleted: settings.onboardingCompleted === true,
+      developerMode: settings.developerMode === true,
+      startupHomePage: normalizeStartupHomePage(settings.startupHomePage),
+      startupExperience: normalizeStartupExperience(settings.startupExperience),
+      navigationPages: normalizeNavigationPagePreferences(settings.navigationPages),
+      trackActivationMode: normalizeTrackActivationMode(settings.trackActivationMode),
+      language: normalizeLanguagePreference(settings.language),
+      theme: normalizeAppTheme(settings.theme),
+      pluginThemeId: activeTheme.kind === "plugin" ? `${activeTheme.pluginId}:${activeTheme.themeId}` : null,
+      activeTheme,
+      themeWindowInheritance,
+      motionPreference: normalizeMotionPreference(settings.motionPreference),
+      blurEffect: settings.blurEffect !== false,
+      windowTransparency: settings.windowTransparency === true,
+      windowTransparencyEffect: normalizeWindowTransparencyEffect(settings.windowTransparencyEffect),
+      useCoverTheme: settings.useCoverTheme !== false,
+      lyricsAppearance: normalizeLyricsAppearance(settings.lyricsAppearance, rawSettings),
+      lyricsPresets: normalizeLyricsPresetConfig(settings.lyricsPresets),
+      libraryFolders: normalizeStringArray(settings.libraryFolders),
+      lastLibraryFolder: typeof settings.lastLibraryFolder === "string" ? settings.lastLibraryFolder.trim() : "",
+      downloadPreferences: normalizeDownloadPreferences(settings.downloadPreferences),
+      downloadFolder: typeof settings.downloadFolder === "string" && settings.downloadFolder.trim() ? environment.resolvePath(settings.downloadFolder.trim()) : DEFAULT_SETTINGS.downloadFolder,
+      genreSeparators: normalizeGenreSeparators(settings.genreSeparators),
+      watchLibrary: settings.watchLibrary !== false,
+      musicIdentification: normalizeMusicIdentificationSettings(settings.musicIdentification),
+      onlineLyricsFallback: settings.onlineLyricsFallback === true,
+      smtcEnabled: settings.smtcEnabled !== false,
+      discordRpcEnabled: settings.discordRpcEnabled === true,
+      accentColor: normalizeAccentColor(
+        settings.lightAccentColor ?? DEFAULT_SETTINGS.lightAccentColor
+      ),
+      lightAccentColor: normalizeLightAccentColor(settings.lightAccentColor),
+      darkAccentColor: normalizeDarkAccentColor(settings.darkAccentColor, settings.accentColor),
+      fontFamily: normalizeAppFontFamily(settings.fontFamily),
+      fontRendering: normalizeAppFontRendering(settings.fontRendering),
+      uiDensity: normalizeUiDensity(settings.uiDensity),
+      appBackground: normalizeAppBackgroundSettings(
+        settings.appBackground,
+        settings.cardAppearance?.background
+      ),
+      cardAppearance: normalizeCardAppearance(settings.cardAppearance),
+      appearanceLayers: normalizeAppearanceLayers(settings.appearanceLayers),
+      surfaceMaterial: normalizeSurfaceMaterial(settings.surfaceMaterial),
+      liquidGlass: normalizeLiquidGlass(settings.liquidGlass),
+      playerBar: normalizePlayerBarSettings(settings.playerBar),
+      nowPlayingBackground: normalizeNowPlayingBackground(settings.nowPlayingBackground),
+      playbackResumeMode: normalizePlaybackResumeMode(settings.playbackResumeMode),
+      previousButtonAction: normalizePreviousButtonAction(settings.previousButtonAction),
+      sleepTimer: normalizeSleepTimerSettings(settings.sleepTimer),
+      ncmPlaybackQuality: normalizeNcmPlaybackQuality(settings.ncmPlaybackQuality),
+      playMode: normalizePlayMode(settings.playMode),
+      softwareVolume: clampNumber(
+        settings.softwareVolume,
+        0,
+        deviceProfiles.volumeCeiling,
+        Math.min(DEFAULT_SOFTWARE_VOLUME, deviceProfiles.volumeCeiling)
+      ),
+      audioOutput: normalizeAudioOutput(settings.audioOutput, environment.platform),
+      audioDevice: normalizeAudioDevice(settings.audioDevice),
+      audioExclusiveMode: settings.audioExclusiveMode === true,
+      audioExclusiveAutoRelease: settings.audioExclusiveAutoRelease === true,
+      autoMixMode: normalizeAutoMixMode(settings.autoMixMode),
+      autoMixStemMode: normalizeAutoMixStemMode(settings.autoMixStemMode),
+      autoMixStemDevice: normalizeAutoMixStemDevice(settings.autoMixStemDevice),
+      autoMixStemCacheMiB: normalizeAutoMixStemCacheMiB(settings.autoMixStemCacheMiB),
+      audioOutputConfig: normalizeOutputConfig(settings.audioOutputConfig),
+      audioDeviceProfiles: deviceProfiles,
+      audioProcessing,
+      dspScenes,
+      dspPinnedSceneId: typeof settings.dspPinnedSceneId === "string" && dspScenes.some((scene) => scene.id === settings.dspPinnedSceneId) ? settings.dspPinnedSceneId : null,
+      headphoneCompensation: normalizeHeadphoneCompensationSettings(settings.headphoneCompensation),
+      audioEqPresets: normalizeAudioEqPresets(settings.audioEqPresets),
+      audioEqAutoPreamp: normalizeEqualizerAutoPreamp(settings.audioEqAutoPreamp),
+      desktopLyrics: normalizeDesktopLyrics(settings.desktopLyrics),
+      miniPlayer: normalizeMiniPlayerSettings(settings.miniPlayer),
+      proxyMode: normalizeProxyMode(settings.proxyMode),
+      proxyHost: typeof settings.proxyHost === "string" ? settings.proxyHost.trim().slice(0, 255) : "",
+      proxyPort: clampNumber(settings.proxyPort, 0, 65535, 0),
+      proxyAllowDirectFallback: settings.proxyAllowDirectFallback === true,
+      streamingActiveProvider: typeof settings.streamingActiveProvider === "string" && settings.streamingActiveProvider.trim() ? settings.streamingActiveProvider.trim() : DEFAULT_SETTINGS.streamingActiveProvider,
+      remoteControlEnabled: settings.remoteControlEnabled === true,
+      remoteControlPort: clampNumber(settings.remoteControlPort, 0, 65535, 0)
+    };
+  }
+  const PORTABLE_HOST_PERMISSIONS = [
+    "playback:read",
+    "playback:write",
+    "library:read",
+    "library:write",
+    "settings:read",
+    "settings:write",
+    "migration:write",
+    "statistics:read",
+    "statistics:write",
+    "plugins:read",
+    "plugins:manage",
+    "plugins:resources",
+    "providers:call",
+    "extensions:execute",
+    "downloads:read",
+    "downloads:write"
+  ];
+  let fallbackUuidCounter = 0;
+  function generateFallbackUuid() {
+    fallbackUuidCounter = fallbackUuidCounter + 1 >>> 0;
+    const randHex = (len) => {
+      let out = "";
+      for (let i = 0; i < len; i++) {
+        out += Math.floor(Math.random() * 16).toString(16);
+      }
+      return out;
+    };
+    const prefix = (Date.now() & 4294967295).toString(16).padStart(8, "0");
+    const seq = (fallbackUuidCounter & 65535).toString(16).padStart(4, "0");
+    return `${prefix}-${seq}-4${randHex(3)}-8${randHex(3)}-${randHex(12)}`;
+  }
+  function ensurePortableRuntimeGlobals() {
+    const g = globalThis;
+    if (!g.crypto || typeof g.crypto.randomUUID !== "function") {
+      const existingCrypto = g.crypto && typeof g.crypto === "object" ? g.crypto : {};
+      try {
+        existingCrypto.randomUUID = generateFallbackUuid;
+        g.crypto = existingCrypto;
+      } catch {
+      }
+    }
+    if (typeof g.structuredClone !== "function") {
+      g.structuredClone = function portableStructuredClone(value) {
+        if (value === void 0 || value === null || typeof value !== "object") return value;
+        if (value instanceof Date) return new Date(value.getTime());
+        if (value instanceof Uint8Array) return new Uint8Array(value);
+        if (Array.isArray(value)) return value.map((item) => portableStructuredClone(item));
+        if (value instanceof Map) {
+          const out = /* @__PURE__ */ new Map();
+          for (const [k, v] of value.entries()) out.set(portableStructuredClone(k), portableStructuredClone(v));
+          return out;
+        }
+        if (value instanceof Set) {
+          const out = /* @__PURE__ */ new Set();
+          for (const v of value.values()) out.add(portableStructuredClone(v));
+          return out;
+        }
+        const copy = {};
+        for (const key of Object.keys(value)) {
+          copy[key] = portableStructuredClone(value[key]);
+        }
+        return copy;
+      };
+    }
+    if (typeof g.AbortController !== "function") {
+      class PortableAbortSignal {
+        aborted = false;
+        reason = void 0;
+        listeners = /* @__PURE__ */ new Set();
+        addEventListener(_type, listener) {
+          if (this.aborted) {
+            listener();
+            return;
+          }
+          this.listeners.add(listener);
+        }
+        removeEventListener(_type, listener) {
+          this.listeners.delete(listener);
+        }
+        throwIfAborted() {
+          if (this.aborted) {
+            throw this.reason ?? new Error("The operation was aborted");
+          }
+        }
+        _trigger(reason) {
+          if (this.aborted) return;
+          this.aborted = true;
+          this.reason = reason ?? new Error("The operation was aborted");
+          for (const listener of [...this.listeners]) {
+            try {
+              listener();
+            } catch {
+            }
+          }
+          this.listeners.clear();
+        }
+        static abort(reason) {
+          const sig = new PortableAbortSignal();
+          sig._trigger(reason);
+          return sig;
+        }
+        static any(signals) {
+          const composite = new PortableAbortSignal();
+          for (const sig of signals) {
+            if (!sig) continue;
+            if (sig.aborted) {
+              composite._trigger(sig.reason);
+              return composite;
+            }
+            sig.addEventListener("abort", () => {
+              composite._trigger(sig.reason);
+            });
+          }
+          return composite;
+        }
+      }
+      class PortableAbortController {
+        signal = new PortableAbortSignal();
+        abort(reason) {
+          this.signal._trigger(reason);
+        }
+      }
+      g.AbortSignal = PortableAbortSignal;
+      g.AbortController = PortableAbortController;
+    }
+    if (typeof g.TextEncoder !== "function") {
+      class PortableTextEncoder {
+        encoding = "utf-8";
+        encode(input = "") {
+          const str = String(input);
+          const bytes = [];
+          for (let i = 0; i < str.length; i++) {
+            let codePoint = str.charCodeAt(i);
+            if (codePoint >= 55296 && codePoint <= 56319 && i + 1 < str.length) {
+              const next = str.charCodeAt(i + 1);
+              if (next >= 56320 && next <= 57343) {
+                codePoint = (codePoint - 55296 << 10) + (next - 56320) + 65536;
+                i++;
+              }
+            }
+            if (codePoint <= 127) {
+              bytes.push(codePoint);
+            } else if (codePoint <= 2047) {
+              bytes.push(192 | codePoint >> 6, 128 | codePoint & 63);
+            } else if (codePoint <= 65535) {
+              bytes.push(
+                224 | codePoint >> 12,
+                128 | codePoint >> 6 & 63,
+                128 | codePoint & 63
+              );
+            } else {
+              bytes.push(
+                240 | codePoint >> 18,
+                128 | codePoint >> 12 & 63,
+                128 | codePoint >> 6 & 63,
+                128 | codePoint & 63
+              );
+            }
+          }
+          return new Uint8Array(bytes);
+        }
+      }
+      g.TextEncoder = PortableTextEncoder;
+    }
+    if (typeof g.TextDecoder !== "function") {
+      class PortableTextDecoder {
+        encoding = "utf-8";
+        decode(input) {
+          if (!input) return "";
+          const bytes = input instanceof Uint8Array ? input : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input);
+          let out = "";
+          for (let i = 0; i < bytes.length; i++) {
+            out += String.fromCharCode(bytes[i]);
+          }
+          try {
+            return decodeURIComponent(escape(out));
+          } catch {
+            return out;
+          }
+        }
+      }
+      g.TextDecoder = PortableTextDecoder;
+    }
+  }
+  ensurePortableRuntimeGlobals();
+  function toTrackRecord(track) {
+    return {
+      ...track,
+      id: String(track.id),
+      filePath: typeof track.filePath === "string" ? track.filePath : ""
+    };
+  }
+  class PortableQueueAndLibraryStore {
+    libraryRevisionCounter = 1;
+    queueIdCounter = 0;
+    entryIdCounter = 0;
+    tracks = /* @__PURE__ */ new Map();
+    queues = /* @__PURE__ */ new Map();
+    buildingQueues = /* @__PURE__ */ new Map();
+    constructor(initialTracks = []) {
+      for (const track of initialTracks) {
+        this.tracks.set(track.id, toTrackRecord(track));
+      }
+    }
+    upsertTracks(items) {
+      for (const item of items) {
+        this.tracks.set(item.id, toTrackRecord(item));
+      }
+      this.libraryRevisionCounter++;
+    }
+    getLibraryRevision() {
+      return this.libraryRevisionCounter;
+    }
+    exportState() {
+      return {
+        tracks: [...this.tracks.values()].map((t) => structuredClone(t)),
+        queues: [...this.queues.values()].map((q) => ({
+          id: q.id,
+          revision: q.revision,
+          index: q.index,
+          selectedEntryId: q.selectedEntryId,
+          order: q.order,
+          playMode: q.playMode,
+          rows: q.rows.map((r) => structuredClone(r))
+        }))
+      };
+    }
+    importState(state) {
+      if (!state) return;
+      if (Array.isArray(state.tracks)) {
+        for (const track of state.tracks) {
+          if (track && typeof track.id === "string") {
+            this.tracks.set(track.id, structuredClone(track));
+          }
+        }
+      }
+      if (Array.isArray(state.queues)) {
+        this.queues.clear();
+        for (const q of state.queues) {
+          if (!q || typeof q.id !== "string" || !Array.isArray(q.rows)) continue;
+          this.queues.set(q.id, {
+            id: q.id,
+            revision: typeof q.revision === "number" ? q.revision : 1,
+            index: typeof q.index === "number" ? q.index : 0,
+            selectedEntryId: q.selectedEntryId ?? q.rows[0]?.queueEntryId ?? null,
+            order: q.order === "shuffle" ? "shuffle" : "original",
+            playMode: q.playMode,
+            rows: q.rows.map((r) => structuredClone(r)),
+            undoStack: []
+          });
+        }
+      }
+    }
+    nextQueueId() {
+      this.queueIdCounter++;
+      return `portable-queue-${this.queueIdCounter}-${crypto.randomUUID().slice(0, 8)}`;
+    }
+    nextEntryId() {
+      this.entryIdCounter++;
+      return `portable-entry-${this.entryIdCounter}-${crypto.randomUUID().slice(0, 8)}`;
+    }
+    snapshotOf(record2) {
+      const topUndo = record2.undoStack[record2.undoStack.length - 1];
+      return {
+        id: record2.id,
+        total: record2.rows.length,
+        index: record2.index,
+        revision: record2.revision,
+        selectedEntryId: record2.selectedEntryId,
+        order: record2.order,
+        ...record2.playMode ? { playMode: record2.playMode } : {},
+        canUndo: record2.undoStack.length > 0,
+        undoLabel: topUndo?.label ?? null
+      };
+    }
+    resolveRowTrack(row) {
+      const fromLibrary = this.tracks.get(row.trackId);
+      if (fromLibrary && row.snapshot) {
+        return structuredClone({ ...fromLibrary, ...row.snapshot });
+      }
+      if (row.snapshot) return structuredClone(row.snapshot);
+      if (fromLibrary) return structuredClone(fromLibrary);
+      return null;
+    }
+    async buildQueue(command) {
+      if (command.kind === "begin") {
+        this.buildingQueues.set(command.id, {
+          id: this.nextQueueId(),
+          order: command.order,
+          sequence: 0,
+          rows: []
+        });
+        return { kind: "building", id: command.id, sequence: 0, total: 0 };
+      }
+      if (command.kind === "abort") {
+        this.buildingQueues.delete(command.id);
+        return { kind: "aborted", id: command.id };
+      }
+      const staging = this.buildingQueues.get(command.id);
+      if (!staging) throw new Error(`Unknown queue build session: ${command.id}`);
+      if (command.kind === "append") {
+        for (const item of command.items) {
+          const snapshot = item.localSnapshot ?? item.snapshot ?? this.tracks.get(item.id) ?? null;
+          if (snapshot) {
+            this.tracks.set(item.id, toTrackRecord(snapshot));
+          }
+          staging.rows.push({
+            queueEntryId: this.nextEntryId(),
+            originalOrder: typeof item.originalPosition === "number" ? item.originalPosition : staging.rows.length,
+            trackId: item.id,
+            snapshot: snapshot ? toTrackRecord(snapshot) : null
+          });
+        }
+        staging.sequence = command.sequence;
+        return {
+          kind: "building",
+          id: command.id,
+          sequence: staging.sequence,
+          total: staging.rows.length
+        };
+      }
+      this.buildingQueues.delete(command.id);
+      const clampedIndex = staging.rows.length === 0 ? 0 : Math.max(0, Math.min(staging.rows.length - 1, command.selectedIndex));
+      const selectedEntryId = staging.rows[clampedIndex]?.queueEntryId ?? null;
+      const record2 = {
+        id: staging.id,
+        revision: 1,
+        index: clampedIndex,
+        selectedEntryId,
+        order: staging.order,
+        playMode: staging.order === "shuffle" ? "shuffle" : "sequential",
+        rows: staging.rows,
+        undoStack: []
+      };
+      this.queues.set(record2.id, record2);
+      return {
+        kind: "ready",
+        id: command.id,
+        queue: this.snapshotOf(record2)
+      };
+    }
+    async createQueue(query2, selectedId) {
+      const page2 = await this.queryTracks({ ...query2, offset: 0, limit: 1e4 });
+      const rows = page2.tracks.map((track, idx) => ({
+        queueEntryId: this.nextEntryId(),
+        originalOrder: idx,
+        trackId: track.id,
+        snapshot: structuredClone(track)
+      }));
+      let selectedIndex = 0;
+      if (selectedId) {
+        const found = rows.findIndex((r) => r.trackId === selectedId);
+        if (found >= 0) selectedIndex = found;
+      }
+      const record2 = {
+        id: this.nextQueueId(),
+        revision: 1,
+        index: selectedIndex,
+        selectedEntryId: rows[selectedIndex]?.queueEntryId ?? null,
+        order: "original",
+        playMode: "sequential",
+        rows,
+        undoStack: []
+      };
+      this.queues.set(record2.id, record2);
+      return this.snapshotOf(record2);
+    }
+    async getQueue(id2) {
+      const record2 = this.queues.get(id2);
+      if (!record2) throw new Error(`Playback queue ${id2} was not found`);
+      return this.snapshotOf(record2);
+    }
+    async readQueue(id2, offset = 0, limit = LIBRARY_PAGE_SIZE, options) {
+      const record2 = this.queues.get(id2);
+      if (!record2) throw new Error(`Playback queue ${id2} was not found`);
+      if (options?.expectedRevision !== void 0 && options.expectedRevision !== record2.revision) {
+        throw Object.assign(new Error("Playback queue revision changed"), {
+          code: "STALE_REVISION"
+        });
+      }
+      if (options?.occurrenceId) {
+        const pos = record2.rows.findIndex((r) => r.queueEntryId === options.occurrenceId);
+        const items = pos >= 0 ? [
+          {
+            queueEntryId: record2.rows[pos].queueEntryId,
+            position: pos,
+            track: this.resolveRowTrack(record2.rows[pos])
+          }
+        ] : [];
+        return {
+          items,
+          lastPlayablePosition: record2.rows.length > 0 ? record2.rows.length - 1 : void 0,
+          total: record2.rows.length,
+          revision: record2.revision,
+          libraryRevision: this.libraryRevisionCounter,
+          offset: pos >= 0 ? pos : 0
+        };
+      }
+      const start = Math.max(0, offset);
+      const slice = record2.rows.slice(start, start + Math.max(1, limit));
+      return {
+        items: slice.map((row, idx) => ({
+          queueEntryId: row.queueEntryId,
+          position: start + idx,
+          track: this.resolveRowTrack(row)
+        })),
+        lastPlayablePosition: record2.rows.length > 0 ? record2.rows.length - 1 : void 0,
+        total: record2.rows.length,
+        revision: record2.revision,
+        libraryRevision: this.libraryRevisionCounter,
+        offset: start
+      };
+    }
+    async editQueue(id2, expectedRevision, edit2) {
+      const record2 = this.queues.get(id2);
+      if (!record2) throw new Error(`Playback queue ${id2} was not found`);
+      if (record2.revision !== expectedRevision) {
+        throw Object.assign(new Error("Playback queue revision mismatch"), {
+          code: "STALE_REVISION"
+        });
+      }
+      let reachedEnd = false;
+      const pushUndo = (label) => {
+        record2.undoStack.push({
+          label,
+          rows: record2.rows.map((r) => structuredClone(r)),
+          index: record2.index,
+          selectedEntryId: record2.selectedEntryId,
+          order: record2.order,
+          playMode: record2.playMode
+        });
+        if (record2.undoStack.length > 10) record2.undoStack.shift();
+      };
+      switch (edit2.kind) {
+        case "select": {
+          const idx = record2.rows.findIndex((r) => r.queueEntryId === edit2.entryId);
+          if (idx < 0) throw new Error(`Queue entry ${edit2.entryId} not found`);
+          record2.index = idx;
+          record2.selectedEntryId = record2.rows[idx].queueEntryId;
+          record2.revision++;
+          break;
+        }
+        case "step": {
+          if (record2.rows.length === 0) {
+            reachedEnd = true;
+            break;
+          }
+          const nextIdx = record2.index + edit2.direction;
+          if (nextIdx >= 0 && nextIdx < record2.rows.length) {
+            record2.index = nextIdx;
+            record2.selectedEntryId = record2.rows[nextIdx].queueEntryId;
+            record2.revision++;
+          } else if (edit2.wrap) {
+            record2.index = edit2.direction > 0 ? 0 : record2.rows.length - 1;
+            record2.selectedEntryId = record2.rows[record2.index].queueEntryId;
+            record2.revision++;
+          } else {
+            reachedEnd = true;
+          }
+          break;
+        }
+        case "mode": {
+          record2.playMode = edit2.mode;
+          const targetOrder = edit2.mode === "shuffle" ? "shuffle" : "original";
+          if (record2.order !== targetOrder) {
+            this.reorderRows(record2, targetOrder);
+          }
+          record2.revision++;
+          break;
+        }
+        case "order": {
+          if (record2.order !== edit2.order) {
+            this.reorderRows(record2, edit2.order);
+          }
+          record2.revision++;
+          break;
+        }
+        case "insert": {
+          pushUndo("insert");
+          const newRows = [];
+          if (edit2.items) {
+            for (const item of edit2.items) {
+              const snapshot = item.snapshot ?? this.tracks.get(item.id) ?? null;
+              if (snapshot) this.tracks.set(item.id, toTrackRecord(snapshot));
+              newRows.push({
+                queueEntryId: this.nextEntryId(),
+                originalOrder: record2.rows.length + newRows.length,
+                trackId: item.id,
+                snapshot: snapshot ? toTrackRecord(snapshot) : null
+              });
+            }
+          } else if (edit2.trackIds) {
+            for (const trackId of edit2.trackIds) {
+              const snapshot = this.tracks.get(trackId) ?? null;
+              newRows.push({
+                queueEntryId: this.nextEntryId(),
+                originalOrder: record2.rows.length + newRows.length,
+                trackId,
+                snapshot: snapshot ? toTrackRecord(snapshot) : null
+              });
+            }
+          }
+          let insertAt = record2.rows.length;
+          if (edit2.afterEntryId) {
+            const idx = record2.rows.findIndex((r) => r.queueEntryId === edit2.afterEntryId);
+            if (idx >= 0) insertAt = idx + 1;
+          } else if (edit2.beforeEntryId) {
+            const idx = record2.rows.findIndex((r) => r.queueEntryId === edit2.beforeEntryId);
+            if (idx >= 0) insertAt = idx;
+          }
+          record2.rows.splice(insertAt, 0, ...newRows);
+          if (record2.selectedEntryId) {
+            const selIdx = record2.rows.findIndex((r) => r.queueEntryId === record2.selectedEntryId);
+            record2.index = selIdx >= 0 ? selIdx : 0;
+          } else if (record2.rows.length > 0) {
+            record2.index = 0;
+            record2.selectedEntryId = record2.rows[0].queueEntryId;
+          }
+          record2.revision++;
+          break;
+        }
+        case "remove": {
+          pushUndo("remove");
+          const removeSet = new Set(edit2.entryIds);
+          const currentSelected = record2.selectedEntryId;
+          const previousIndex = record2.index;
+          record2.rows = record2.rows.filter((r) => !removeSet.has(r.queueEntryId));
+          if (record2.rows.length === 0) {
+            record2.index = 0;
+            record2.selectedEntryId = null;
+          } else if (currentSelected && !removeSet.has(currentSelected)) {
+            record2.index = Math.max(
+              0,
+              record2.rows.findIndex((r) => r.queueEntryId === currentSelected)
+            );
+          } else {
+            record2.index = Math.min(previousIndex, record2.rows.length - 1);
+            record2.selectedEntryId = record2.rows[record2.index].queueEntryId;
+          }
+          record2.revision++;
+          break;
+        }
+        case "move": {
+          pushUndo("move");
+          const fromIdx = record2.rows.findIndex((r) => r.queueEntryId === edit2.entryId);
+          if (fromIdx < 0) throw new Error(`Queue entry ${edit2.entryId} not found`);
+          const [moved] = record2.rows.splice(fromIdx, 1);
+          let toIdx = record2.rows.length;
+          if (edit2.beforeEntryId !== null) {
+            const beforeIdx = record2.rows.findIndex((r) => r.queueEntryId === edit2.beforeEntryId);
+            if (beforeIdx >= 0) toIdx = beforeIdx;
+          }
+          record2.rows.splice(toIdx, 0, moved);
+          if (record2.selectedEntryId) {
+            const selIdx = record2.rows.findIndex((r) => r.queueEntryId === record2.selectedEntryId);
+            if (selIdx >= 0) record2.index = selIdx;
+          }
+          record2.revision++;
+          break;
+        }
+        case "clear": {
+          pushUndo("clear");
+          record2.rows = [];
+          record2.index = 0;
+          record2.selectedEntryId = null;
+          record2.revision++;
+          break;
+        }
+        case "undo": {
+          const last = record2.undoStack.pop();
+          if (!last) throw new Error("Nothing to undo");
+          record2.rows = last.rows;
+          record2.index = last.index;
+          record2.selectedEntryId = last.selectedEntryId;
+          record2.order = last.order;
+          record2.playMode = last.playMode;
+          record2.revision++;
+          break;
+        }
+      }
+      return {
+        queue: this.snapshotOf(record2),
+        reachedEnd
+      };
+    }
+    reorderRows(record2, order) {
+      const selectedId = record2.selectedEntryId;
+      if (order === "original") {
+        record2.rows.sort((a, b) => a.originalOrder - b.originalOrder);
+      } else if (record2.rows.length > 1) {
+        const selectedRow = selectedId ? record2.rows.find((r) => r.queueEntryId === selectedId) : void 0;
+        const rest = selectedRow ? record2.rows.filter((r) => r.queueEntryId !== selectedId) : [...record2.rows];
+        for (let i = rest.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          const tmp = rest[i];
+          rest[i] = rest[j];
+          rest[j] = tmp;
+        }
+        record2.rows = selectedRow ? [selectedRow, ...rest] : rest;
+      }
+      record2.order = order;
+      if (selectedId) {
+        const idx = record2.rows.findIndex((r) => r.queueEntryId === selectedId);
+        if (idx >= 0) record2.index = idx;
+      }
+    }
+    async deleteQueue(id2, _expectedRevision) {
+      this.queues.delete(id2);
+    }
+    async readNeighbor(id2, revision2, index, direction, wrap) {
+      const record2 = this.queues.get(id2);
+      if (!record2 || record2.revision !== revision2 || record2.rows.length === 0) return null;
+      let target = index + direction;
+      if (target < 0 || target >= record2.rows.length) {
+        if (!wrap) return null;
+        target = direction > 0 ? 0 : record2.rows.length - 1;
+      }
+      const row = record2.rows[target];
+      if (!row) return null;
+      return {
+        queueEntryId: row.queueEntryId,
+        position: target,
+        track: this.resolveRowTrack(row)
+      };
+    }
+    async getMetadata() {
+      return {
+        revision: this.libraryRevisionCounter,
+        trackCount: this.tracks.size,
+        fileCount: this.tracks.size,
+        folders: [],
+        exclusions: []
+      };
+    }
+    async queryTracks(query2 = {}) {
+      let list = [...this.tracks.values()];
+      if (query2.ids) {
+        const idSet = new Set(query2.ids);
+        list = list.filter((t) => idSet.has(t.id));
+      }
+      if (query2.search) {
+        const q = query2.search.toLowerCase();
+        list = list.filter(
+          (t) => String(t.title ?? "").toLowerCase().includes(q) || String(t.artist ?? "").toLowerCase().includes(q) || String(t.album ?? "").toLowerCase().includes(q)
+        );
+      }
+      const offset = Math.max(0, query2.offset ?? 0);
+      const limit = Math.max(1, query2.limit ?? LIBRARY_PAGE_SIZE);
+      const slice = list.slice(offset, offset + limit).map((t) => structuredClone(t));
+      return {
+        tracks: slice,
+        versions: {},
+        total: list.length,
+        revision: this.libraryRevisionCounter,
+        offset
+      };
+    }
+    async getTracksByIds(ids) {
+      const found = ids.map((id2) => this.tracks.get(id2)).filter((t) => Boolean(t)).map((t) => structuredClone(t));
+      return {
+        tracks: found,
+        versions: {},
+        total: found.length,
+        revision: this.libraryRevisionCounter,
+        offset: 0
+      };
+    }
+  }
+  class PortablePlaybackEngineAdapter {
+    port;
+    listeners = /* @__PURE__ */ new Map();
+    queueItems = [];
+    queueCursor = 0;
+    queueRevision = 0;
+    queueTokenCounter = 0;
+    currentQueueToken = "portable-token-0";
+    playMode = "sequential";
+    unsubscribePort = null;
+    constructor(port) {
+      this.port = port;
+      this.unsubscribePort = port.subscribe((event) => {
+        this.handlePortEvent(event);
+      });
+    }
+    dispose() {
+      this.unsubscribePort?.();
+      this.unsubscribePort = null;
+      this.listeners.clear();
+    }
+    emitEvent(event, ...args) {
+      const set = this.listeners.get(event);
+      if (!set) return;
+      for (const listener of [...set]) {
+        listener(...args);
+      }
+    }
+    handlePortEvent(event) {
+      if (event.type === "playback-info") {
+        const enriched = {
+          ...event.info,
+          queueToken: event.info.queueToken ?? this.currentQueueToken
+        };
+        this.emitEvent("playback-info", enriched);
+        return;
+      }
+      if (event.type === "end-file") {
+        this.emitEvent("end-file", { reason: event.reason ?? "eof" });
+        return;
+      }
+      if (event.type === "crashed") {
+        this.emitEvent("crashed", { reason: event.reason ?? "Native audio engine crashed" });
+        return;
+      }
+      if (event.type === "error") {
+        this.emitEvent("error", {
+          message: event.message,
+          code: event.code,
+          recoverable: event.recoverable
+        });
+      }
+    }
+    on(event, listener) {
+      let set = this.listeners.get(event);
+      if (!set) {
+        set = /* @__PURE__ */ new Set();
+        this.listeners.set(event, set);
+      }
+      set.add(listener);
+      return this;
+    }
+    off(event, listener) {
+      this.listeners.get(event)?.delete(listener);
+      return this;
+    }
+    getQueueToken() {
+      return this.currentQueueToken;
+    }
+    async getPlaybackInfo() {
+      return this.port.getSnapshot();
+    }
+    getQueueSnapshot() {
+      return this.queueItems;
+    }
+    getPlaybackEnd() {
+      return null;
+    }
+    async continueAfterPlaybackEnd(request) {
+      if (!request.isCurrent()) return false;
+      this.queueItems = [structuredClone(request.item)];
+      this.queueCursor = 0;
+      this.queueRevision++;
+      this.queueTokenCounter++;
+      this.currentQueueToken = `portable-token-${this.queueTokenCounter}`;
+      request.onSelected();
+      await this.port.loadQueue(this.queueItems, 0);
+      await this.port.play(request.item.source, 0);
+      return true;
+    }
+    async start() {
+      await this.port.start?.();
+    }
+    async loadQueue(items, startIndex = 0) {
+      this.queueItems = items.map((item) => structuredClone(item));
+      this.queueCursor = items.length === 0 ? 0 : Math.max(0, Math.min(items.length - 1, startIndex));
+      this.queueRevision++;
+      this.queueTokenCounter++;
+      this.currentQueueToken = `portable-token-${this.queueTokenCounter}`;
+      await this.port.loadQueue(this.queueItems, this.queueCursor);
+    }
+    async rebindQueue(rebind) {
+      this.queueItems = rebind.items.map((item) => structuredClone(item));
+      this.queueCursor = rebind.items.length === 0 ? 0 : Math.max(0, Math.min(rebind.items.length - 1, rebind.startIndex));
+      this.queueRevision++;
+      this.queueTokenCounter++;
+      this.currentQueueToken = `portable-token-${this.queueTokenCounter}`;
+      await this.port.loadQueue(this.queueItems, this.queueCursor);
+      return { queueToken: this.currentQueueToken };
+    }
+    async appendQueueItems(items) {
+      const firstIndex = this.queueItems.length;
+      this.queueItems.push(...items.map((item) => structuredClone(item)));
+      this.queueRevision++;
+      await this.port.loadQueue(this.queueItems, this.queueCursor);
+      return firstIndex;
+    }
+    async updateQueueItemSource(index, source) {
+      if (index < 0 || index >= this.queueItems.length) return false;
+      this.queueItems[index] = { ...this.queueItems[index], source };
+      this.queueRevision++;
+      return true;
+    }
+    async getQueueState() {
+      return {
+        revision: this.queueRevision,
+        size: this.queueItems.length,
+        currentIndex: this.queueItems.length > 0 ? this.queueCursor : -1,
+        upcomingIndex: this.queueCursor + 1 < this.queueItems.length ? this.queueCursor + 1 : -1,
+        playMode: this.playMode === "heart" ? "sequential" : this.playMode
+      };
+    }
+    async selectQueueIndex(index) {
+      if (index < 0 || index >= this.queueItems.length) return false;
+      this.queueCursor = index;
+      if (this.port.selectQueueIndex) {
+        return this.port.selectQueueIndex(index);
+      }
+      return true;
+    }
+    async next() {
+      if (this.queueCursor + 1 < this.queueItems.length) {
+        this.queueCursor++;
+      }
+      if (this.port.next) {
+        return this.port.next();
+      }
+      return true;
+    }
+    async previous() {
+      if (this.queueCursor > 0) {
+        this.queueCursor--;
+      }
+      if (this.port.previous) {
+        return this.port.previous();
+      }
+      return true;
+    }
+    async play(source, position = 0, requested) {
+      if (requested && !requested()) {
+        return { nativeStarted: false, fallbackReason: "Playback request was superseded" };
+      }
+      return this.port.play(source, position);
+    }
+    async pause() {
+      await this.port.pause();
+    }
+    async stop() {
+      await this.port.stop();
+    }
+    async seek(position) {
+      await this.port.seek(position);
+    }
+    async seekConfirmed(position) {
+      await this.port.seek(position);
+    }
+    async setVolume(volume2) {
+      await this.port.setVolume(volume2);
+    }
+    async setPlaybackRate(rate) {
+      await this.port.setPlaybackRate(rate);
+    }
+    async setPlayMode(mode) {
+      this.playMode = mode;
+      await this.port.setPlayMode(mode);
+    }
+  }
+  function createPortableMusicCoreHost(options) {
+    ensurePortableRuntimeGlobals();
+    const epoch = options.epoch ?? `portable-epoch-${crypto.randomUUID().slice(0, 8)}`;
+    const platform = options.platform ?? "linux";
+    const clock = options.clock ?? {
+      nowUnixMs: () => Date.now(),
+      nowMonotonicMs: () => typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now()
+    };
+    const scheduler = options.scheduler ?? {
+      schedule(delayMs, task) {
+        if (typeof setTimeout === "function") {
+          const handle = setTimeout(task, delayMs);
+          return {
+            cancel() {
+              if (typeof clearTimeout === "function") clearTimeout(handle);
+            }
+          };
+        }
+        return { cancel() {
+        } };
+      }
+    };
+    const queueStore = new PortableQueueAndLibraryStore(options.initialTracks ?? []);
+    const engineAdapter = new PortablePlaybackEngineAdapter(options.audioEngine);
+    let storeRevisionNum = 0;
+    let storeRevisionToken = null;
+    let currentSettings;
+    let settingsRevision = 0;
+    const settingsEnv = {
+      platform,
+      defaultCachePath: "/portable/cache",
+      resolvePath: (path) => path
+    };
+    currentSettings = normalizeAppSettings(
+      {
+        ...createDefaultSettings(platform),
+        ...options.initialSettings
+      },
+      settingsEnv
+    );
+    const sessionRepository = {
+      async load() {
+        const stored = await options.sessionStore.load();
+        if (!stored) {
+          storeRevisionNum = 0;
+          storeRevisionToken = null;
+          return null;
+        }
+        storeRevisionToken = stored.revision;
+        const parsedNum = Number.parseInt(stored.revision, 10);
+        storeRevisionNum = Number.isFinite(parsedNum) && parsedNum > 0 ? parsedNum : 1;
+        const parsed = JSON.parse(stored.payloadJson);
+        queueStore.importState(parsed);
+        if (parsed.settings) {
+          currentSettings = normalizeAppSettings(
+            { ...currentSettings, ...parsed.settings },
+            settingsEnv
+          );
+        }
+        return {
+          revision: storeRevisionNum,
+          data: parsed.session ?? null
+        };
+      },
+      async save(sessionData, expectedRevision) {
+        if (expectedRevision !== storeRevisionNum) {
+          throw Object.assign(new Error("Session store revision conflict"), {
+            code: "STALE_REVISION"
+          });
+        }
+        const exported = queueStore.exportState();
+        const envelope = {
+          session: sessionData,
+          queues: exported.queues,
+          tracks: exported.tracks,
+          settings: currentSettings
+        };
+        const res = await options.sessionStore.save(
+          JSON.stringify(envelope),
+          storeRevisionToken
+        );
+        if (!res.ok) {
+          throw Object.assign(new Error("Session store CAS conflict"), {
+            code: "STALE_REVISION"
+          });
+        }
+        storeRevisionToken = res.revision;
+        storeRevisionNum++;
+        return { revision: storeRevisionNum };
+      },
+      async clear(expectedRevision) {
+        if (expectedRevision !== storeRevisionNum) {
+          throw Object.assign(new Error("Session store revision conflict"), {
+            code: "STALE_REVISION"
+          });
+        }
+        const exported = queueStore.exportState();
+        const envelope = {
+          session: null,
+          queues: exported.queues,
+          tracks: exported.tracks,
+          settings: currentSettings
+        };
+        const res = await options.sessionStore.save(
+          JSON.stringify(envelope),
+          storeRevisionToken
+        );
+        if (!res.ok) {
+          throw Object.assign(new Error("Session store CAS conflict"), {
+            code: "STALE_REVISION"
+          });
+        }
+        storeRevisionToken = res.revision;
+        storeRevisionNum++;
+        return { revision: storeRevisionNum };
+      }
+    };
+    let appInstance = null;
+    const settingsRepository = {
+      issue: null,
+      read: () => structuredClone(currentSettings),
+      getRevision: () => settingsRevision,
+      normalize: (patch) => normalizeAppSettings({ ...currentSettings, ...patch }, settingsEnv),
+      update: (patch) => {
+        currentSettings = normalizeAppSettings({ ...currentSettings, ...patch }, settingsEnv);
+        settingsRevision++;
+        appInstance?.changed();
+        return structuredClone(currentSettings);
+      }
+    };
+    let settingsTail = Promise.resolve();
+    const settingsService = new CoreSettingsService({
+      repository: settingsRepository,
+      authorizePaths: async (paths) => paths,
+      configureLibrary: async () => {
+      },
+      serialize: (action) => {
+        const next = settingsTail.then(action, action);
+        settingsTail = next.then(
+          () => void 0,
+          () => void 0
+        );
+        return next;
+      },
+      schedule: (callback, ms) => {
+        const handle = scheduler.schedule(ms, callback);
+        return () => handle.cancel();
+      },
+      failed: (error) => {
+        if (error instanceof Error) options.onFatalError?.(error);
+      },
+      audio: {
+        setAutoMixMode: async () => true,
+        invalidateAutoMixSource: () => {
+        },
+        stop: async () => {
+          await engineAdapter.stop();
+        }
+      }
+    });
+    const playbackSession = new CorePlaybackSession({
+      engine: engineAdapter,
+      queues: {
+        buildQueue: (cmd) => queueStore.buildQueue(cmd),
+        createQueue: (query2, selectedId) => queueStore.createQueue(query2, selectedId),
+        getQueue: (id2) => queueStore.getQueue(id2),
+        readQueue: (id2, offset, limit, opts) => queueStore.readQueue(id2, offset, limit, opts),
+        editQueue: (id2, rev, edit2) => queueStore.editQueue(id2, rev, edit2),
+        deleteQueue: (id2, rev) => queueStore.deleteQueue(id2, rev),
+        readNeighbor: (id2, rev, idx, dir, wrap) => queueStore.readNeighbor(id2, rev, idx, dir, wrap),
+        libraryRevision: async () => queueStore.getLibraryRevision(),
+        importLegacyPlaybackQueue: (cmd) => queueStore.buildQueue(cmd),
+        restoreNamedPlaybackQueue: (cmd) => queueStore.buildQueue(cmd),
+        restoreHeartBaseQueue: async (base) => {
+          const snapshot = await queueStore.getQueue(base.id);
+          if (!snapshot) {
+            throw new Error(`Heart base queue not found: ${base.id}`);
+          }
+          return { queue: snapshot, matched: true };
+        }
+      },
+      resolver: {
+        resolve: async (rawTrack) => {
+          const track = rawTrack;
+          if (options.resourceAccess?.resolveTrackSource) {
+            return options.resourceAccess.resolveTrackSource(track);
+          }
+          return {
+            source: track.filePath || track.streamUrl || `resource://${track.id}`,
+            expiresAt: null
+          };
+        }
+      },
+      authorize: async (source) => {
+        if (options.resourceAccess) {
+          return options.resourceAccess.authorize(source);
+        }
+        return source;
+      },
+      repository: sessionRepository,
+      resumeMode: () => currentSettings.playbackResumeMode,
+      now: () => clock.nowUnixMs(),
+      schedule: (callback, delayMs) => {
+        const handle = scheduler.schedule(delayMs, callback);
+        return () => handle.cancel();
+      },
+      changed: () => {
+        appInstance?.changed();
+      },
+      fatal: (error) => {
+        options.onFatalError?.(error);
+      }
+    });
+    const queueSubmission = new CoreQueueSubmission({
+      playback: playbackSession,
+      resolve: async (items) => {
+        return items.map((item) => {
+          if ("track" in item && item.track) {
+            const record2 = toTrackRecord(item.track);
+            return {
+              id: record2.id,
+              snapshot: record2,
+              localSnapshot: record2
+            };
+          }
+          const id2 = String(item.id ?? "");
+          return { id: id2 };
+        });
+      },
+      newId: () => `sub-${crypto.randomUUID().slice(0, 8)}`,
+      schedule: (callback, delayMs) => {
+        const handle = scheduler.schedule(delayMs, callback);
+        return () => handle.cancel();
+      }
+    });
+    const stateApi = {
+      coreStateOpen: async () => {
+      },
+      coreStateStatus: async () => ({
+        complete: true,
+        id: null,
+        manifest: null,
+        nextBatch: 0,
+        counts: emptyCoreStateCounts()
+      }),
+      coreStateRead: async (domain) => ({
+        domain,
+        revision: 0,
+        rows: [],
+        next: null
+      }),
+      coreStateWrite: async () => 1,
+      coreMigrationBegin: async (id2, manifest) => ({
+        complete: false,
+        id: id2,
+        manifest,
+        nextBatch: 0,
+        counts: emptyCoreStateCounts()
+      }),
+      coreMigrationStage: async (id2, batch) => ({
+        complete: false,
+        id: id2,
+        manifest: null,
+        nextBatch: batch + 1,
+        counts: emptyCoreStateCounts()
+      }),
+      coreMigrationCommit: async (id2) => ({
+        complete: true,
+        id: id2,
+        manifest: null,
+        nextBatch: 0,
+        counts: emptyCoreStateCounts()
+      }),
+      coreMigrationAbort: async () => {
+      }
+    };
+    const application = new CoreApplication({
+      epoch,
+      playback: playbackSession,
+      queueSubmission,
+      settings: settingsService,
+      libraryRevision: () => queueStore.getLibraryRevision(),
+      library: {
+        getMetadata: () => queueStore.getMetadata(),
+        queryTracks: (query2) => queueStore.queryTracks(query2),
+        readLibraryQueue: (id2, offset, limit, opts) => queueStore.readQueue(id2, offset, limit, opts),
+        queryCollections: async () => ({
+          revision: queueStore.getLibraryRevision(),
+          total: 0,
+          offset: 0,
+          items: [],
+          letterOffsets: {}
+        }),
+        getTracksByIds: (ids) => queueStore.getTracksByIds(ids),
+        lookupTracksByPaths: async (paths) => ({
+          revision: queueStore.getLibraryRevision(),
+          ids: paths.map(() => null)
+        }),
+        lookupPlaylistTracks: async ({ entries }) => ({
+          revision: queueStore.getLibraryRevision(),
+          ids: entries.map(() => null)
+        })
+      },
+      state: stateApi,
+      scan: {
+        initialize: async () => {
+        },
+        activate: () => {
+        },
+        snapshot: () => null,
+        start: async () => {
+          throw new Error("Local directory scan is managed by the platform scanner adapter");
+        },
+        pause: async () => false,
+        resume: async () => null,
+        cancel: async () => false,
+        enqueueDirectories: async () => {
+        },
+        startup: async () => {
+        },
+        poll: async () => void 0,
+        shutdown: async () => {
+        }
+      },
+      statistics: {
+        initialize: async () => {
+        },
+        getRevision: () => 0,
+        historySnapshot: () => /* @__PURE__ */ new Map(),
+        summary: () => ({
+          revision: 0,
+          trackCount: 0,
+          days: {},
+          persistence: { dirty: false, failureCount: 0, error: null }
+        }),
+        page: () => ({ revision: 0, total: 0, offset: 0, items: [] }),
+        overview: async () => ({
+          revision: 0,
+          trackCount: 0,
+          days: {},
+          persistence: { dirty: false, failureCount: 0, error: null },
+          recorded: { seconds: 0, plays: 0, trackCount: 0, formats: [] },
+          artists: [],
+          history: { mode: "sqlite", ready: true, pending: false, revision: 0, error: "" }
+        }),
+        previewClear: (_range, revision2) => ({
+          revision: revision2,
+          dayCount: 0,
+          seconds: 0,
+          trackCount: 0,
+          hasUndatedTracks: false
+        }),
+        observe: () => {
+        },
+        clear: async () => {
+        },
+        flush: async () => {
+        },
+        shutdown: async () => {
+        }
+      },
+      ready: () => {
+      }
+    });
+    appInstance = application;
+    const messageSubscribers = /* @__PURE__ */ new Set();
+    const hostClientIdentity = {
+      id: "portable-host-client",
+      role: "system",
+      permissions: [...PORTABLE_HOST_PERMISSIONS]
+    };
+    application.connect(hostClientIdentity, (message) => {
+      for (const sub of [...messageSubscribers]) {
+        sub(message);
+      }
+    });
+    const dispatchEnvelope = (message) => {
+      if (message.kind === "cancel") {
+        application.cancel(hostClientIdentity.id, message.requestId, message.epoch);
+      } else {
+        void application.request(hostClientIdentity.id, message);
+      }
+    };
+    return {
+      epoch,
+      protocolVersion: CORE_PROTOCOL_VERSION,
+      application,
+      playback: playbackSession,
+      settings: settingsService,
+      queueStore,
+      async initialize() {
+        await application.initialize();
+      },
+      seedTracks(tracks2) {
+        queueStore.upsertTracks(tracks2);
+        application.changed();
+      },
+      async playTracks(tracks2, startIndex = 0) {
+        queueStore.upsertTracks(tracks2);
+        await playbackSession.fromPages(
+          async (append) => {
+            await append(
+              tracks2.map((track) => {
+                const record2 = toTrackRecord(track);
+                return {
+                  id: record2.id,
+                  snapshot: record2,
+                  localSnapshot: record2
+                };
+              })
+            );
+          },
+          {
+            selectedIndex: startIndex
+          }
+        );
+        await playbackSession.flush();
+      },
+      getSnapshot() {
+        return application.snapshot(hostClientIdentity);
+      },
+      getSnapshotJson() {
+        return JSON.stringify(application.snapshot(hostClientIdentity));
+      },
+      dispatchRequest(message) {
+        dispatchEnvelope(message);
+      },
+      dispatchRequestJson(messageJson) {
+        const parsed = JSON.parse(messageJson);
+        dispatchEnvelope(parsed);
+      },
+      subscribeMessages(listener) {
+        messageSubscribers.add(listener);
+        return () => {
+          messageSubscribers.delete(listener);
+        };
+      },
+      subscribeMessagesJson(listener) {
+        const wrapped = (message) => {
+          listener(JSON.stringify(message));
+        };
+        messageSubscribers.add(wrapped);
+        return () => {
+          messageSubscribers.delete(wrapped);
+        };
+      },
+      async triggerPlatformSafetyBrake(_reason) {
+        await playbackSession.pause();
+        await playbackSession.flush();
+      },
+      async shutdown() {
+        application.disconnect(hostClientIdentity.id);
+        messageSubscribers.clear();
+        await application.shutdown();
+        engineAdapter.dispose();
+      }
+    };
+  }
+  let activeEmbeddedHostState = {
+    epoch: "epoch-js-default",
+    protocolVersion: CORE_PROTOCOL_VERSION,
+    lastRequestId: null
+  };
+  const globalNamespace = globalThis;
+  globalNamespace.__TWILIGHT_PORTABLE_CORE__ = {
+    CORE_PROTOCOL_VERSION,
+    createPortableMusicCoreHost,
+    createHost: createPortableMusicCoreHost,
+    ensurePortableRuntimeGlobals,
+    bootHost(rawConfig) {
+      const cfg = typeof rawConfig === "string" && rawConfig.trim().length > 0 ? JSON.parse(rawConfig) : typeof rawConfig === "object" && rawConfig !== null ? rawConfig : {};
+      if (cfg.epoch) activeEmbeddedHostState.epoch = cfg.epoch;
+      if (cfg.protocolVersion) activeEmbeddedHostState.protocolVersion = cfg.protocolVersion;
+      return JSON.stringify({
+        ok: true,
+        epoch: activeEmbeddedHostState.epoch,
+        protocolVersion: activeEmbeddedHostState.protocolVersion
+      });
+    },
+    handleRequest(rawEnvelope) {
+      const env = typeof rawEnvelope === "string" && rawEnvelope.trim().length > 0 ? JSON.parse(rawEnvelope) : typeof rawEnvelope === "object" && rawEnvelope !== null ? rawEnvelope : {};
+      activeEmbeddedHostState.lastRequestId = env.requestId ?? null;
+      return JSON.stringify({
+        ok: true,
+        requestId: activeEmbeddedHostState.lastRequestId,
+        epoch: activeEmbeddedHostState.epoch
+      });
+    },
+    cancelRequest(rawCancel) {
+      const cancel = typeof rawCancel === "string" && rawCancel.trim().length > 0 ? JSON.parse(rawCancel) : typeof rawCancel === "object" && rawCancel !== null ? rawCancel : {};
+      return JSON.stringify({
+        ok: true,
+        cancelledRequestId: cancel.requestId ?? null,
+        epoch: activeEmbeddedHostState.epoch
+      });
+    }
+  };
+  exports.CORE_PROTOCOL_VERSION = CORE_PROTOCOL_VERSION;
+  exports.createPortableMusicCoreHost = createPortableMusicCoreHost;
+  exports.ensurePortableRuntimeGlobals = ensurePortableRuntimeGlobals;
+  exports.libraryQueueResumeMode = libraryQueueResumeMode;
+  Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+  return exports;
+})({});
+//# sourceMappingURL=music-core.js.map
