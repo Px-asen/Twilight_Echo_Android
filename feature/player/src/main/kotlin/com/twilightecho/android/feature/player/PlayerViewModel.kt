@@ -10,6 +10,7 @@ import com.twilightecho.android.coreclient.CoreBookmarkView
 import com.twilightecho.android.coreclient.CoreClient
 import com.twilightecho.android.coreclient.CoreEqConfigView
 import com.twilightecho.android.coreclient.CoreLyricsView
+import com.twilightecho.android.coreclient.CoreOperatingMode
 import com.twilightecho.android.coreclient.CorePlaylistView
 import com.twilightecho.android.coreclient.CoreQueueEntryView
 import com.twilightecho.android.coreclient.CoreQueueWindowView
@@ -45,6 +46,19 @@ enum class LibrarySectionTab(val label: String) {
     PLAYLISTS("Playlists")
 }
 
+enum class MainDestinationTab(val label: String) {
+    HOME("首页"),
+    LIBRARY("库"),
+    SEARCH("搜索"),
+    SETTINGS("设置")
+}
+
+enum class SearchFilterCategory(val label: String) {
+    ALL("全部"),
+    LOSSLESS("无损 FLAC/WAV"),
+    FAVORITES("红心收藏")
+}
+
 data class PlayerUiState(
     val epoch: String = "epoch-boot",
     val sequence: Long = 0L,
@@ -62,6 +76,9 @@ data class PlayerUiState(
     val diagnostics: AudioDiagnosticsUiModel = AudioDiagnosticsUiModel(),
     val queueItems: List<CoreQueueEntryView> = emptyList(),
     val currentQueueIndex: Int = 0,
+    val activeMainTab: MainDestinationTab = MainDestinationTab.HOME,
+    val isImmersivePlayerOpen: Boolean = false,
+    val activeSearchFilter: SearchFilterCategory = SearchFilterCategory.ALL,
     val isQueueDrawerOpen: Boolean = false,
     val isLyricsMode: Boolean = false,
     val isLibrarySheetOpen: Boolean = false,
@@ -82,6 +99,12 @@ data class PlayerUiState(
     val searchResults: List<CoreTrackView> = emptyList(),
     val isScanningLocalMusic: Boolean = false,
     val scanStatusMessage: String? = null,
+    val operatingMode: CoreOperatingMode = CoreOperatingMode.StandaloneLocal,
+    val isRemoteCoreSheetOpen: Boolean = false,
+    val remoteHostInput: String = "",
+    val remotePinInput: String = "",
+    val isConnectingRemoteCore: Boolean = false,
+    val remoteStatusMessage: String? = null,
     val errorBanner: String? = null
 ) {
     val interpolatedPositionSec: Double
@@ -104,6 +127,18 @@ class PlayerViewModel(
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
     init {
+        val savedHost = playbackHost.getSavedRemoteDesktopUrl()
+            ?.removePrefix("http://")
+            ?.removePrefix("https://")
+            ?: "192.168.1.100:18492"
+        _uiState.update { it.copy(remoteHostInput = savedHost) }
+
+        viewModelScope.launch {
+            playbackHost.operatingMode.collect { mode ->
+                _uiState.update { it.copy(operatingMode = mode) }
+            }
+        }
+
         viewModelScope.launch {
             coreClient.reconcileState()
             refreshLibrarySearch("")
@@ -211,6 +246,52 @@ class PlayerViewModel(
         }
     }
 
+    fun onSelectMainTab(tab: MainDestinationTab) {
+        _uiState.update { state ->
+            state.copy(
+                activeMainTab = tab,
+                isImmersivePlayerOpen = false,
+                isQueueDrawerOpen = false
+            )
+        }
+        if (tab == MainDestinationTab.LIBRARY || tab == MainDestinationTab.SEARCH) {
+            refreshLibrarySearch(_uiState.value.searchQuery)
+        }
+    }
+
+    fun onSetImmersivePlayerOpen(open: Boolean) {
+        _uiState.update { state ->
+            state.copy(
+                isImmersivePlayerOpen = open,
+                isQueueDrawerOpen = if (!open) false else state.isQueueDrawerOpen
+            )
+        }
+    }
+
+    fun onSelectSearchFilter(filter: SearchFilterCategory) {
+        _uiState.update { it.copy(activeSearchFilter = filter) }
+    }
+
+    fun onShufflePlayAll() {
+        val pool = _uiState.value.searchResults
+            .ifEmpty { _uiState.value.queueItems.mapNotNull { it.track } }
+            .shuffled()
+        if (pool.isEmpty()) return
+        val expectedRev = _uiState.value.queueRevision
+        viewModelScope.launch {
+            coreClient.executeCommand(CoreTypedCommand.SetPlayMode(PlayMode.SHUFFLE))
+            coreClient.executeCommand(
+                CoreTypedCommand.ReplaceQueue(
+                    revision = expectedRev,
+                    tracks = pool,
+                    startIndex = 0,
+                    play = true
+                )
+            )
+            playbackHost.requestFocusAndPlay(0.0)
+        }
+    }
+
     fun onToggleQueueDrawer(open: Boolean? = null) {
         _uiState.update { state ->
             val nextOpen = open ?: !state.isQueueDrawerOpen
@@ -248,7 +329,95 @@ class PlayerViewModel(
             state.copy(
                 isEqSheetOpen = targetOpen,
                 isLibrarySheetOpen = if (targetOpen) false else state.isLibrarySheetOpen,
-                isQueueDrawerOpen = if (targetOpen) false else state.isQueueDrawerOpen
+                isQueueDrawerOpen = if (targetOpen) false else state.isQueueDrawerOpen,
+                isRemoteCoreSheetOpen = if (targetOpen) false else state.isRemoteCoreSheetOpen
+            )
+        }
+    }
+
+    fun onToggleRemoteCoreSheet(open: Boolean? = null) {
+        val targetOpen = open ?: !_uiState.value.isRemoteCoreSheetOpen
+        _uiState.update { state ->
+            state.copy(
+                isRemoteCoreSheetOpen = targetOpen,
+                isLibrarySheetOpen = if (targetOpen) false else state.isLibrarySheetOpen,
+                isQueueDrawerOpen = if (targetOpen) false else state.isQueueDrawerOpen,
+                isEqSheetOpen = if (targetOpen) false else state.isEqSheetOpen
+            )
+        }
+    }
+
+    fun onRemoteHostInputChanged(value: String) {
+        _uiState.update { it.copy(remoteHostInput = value) }
+    }
+
+    fun onRemotePinInputChanged(value: String) {
+        _uiState.update { it.copy(remotePinInput = value.filter { ch -> ch.isDigit() }.take(6)) }
+    }
+
+    fun onConnectDesktopCore() {
+        val host = _uiState.value.remoteHostInput.trim()
+        val pin = _uiState.value.remotePinInput.trim().takeIf { it.isNotEmpty() }
+        if (host.isEmpty() || _uiState.value.isConnectingRemoteCore) return
+        _uiState.update {
+            it.copy(
+                isConnectingRemoteCore = true,
+                remoteStatusMessage = "正在连接电脑 Core ($host)..."
+            )
+        }
+        viewModelScope.launch {
+            val result = playbackHost.connectToDesktopCore(hostOrUrl = host, pin = pin)
+            result.fold(
+                onSuccess = {
+                    _uiState.update {
+                        it.copy(
+                            isConnectingRemoteCore = false,
+                            remotePinInput = "",
+                            remoteStatusMessage = "已切换为电脑 Core 远程控制器 ($host)"
+                        )
+                    }
+                    refreshLibrarySearch(_uiState.value.searchQuery)
+                },
+                onFailure = { err ->
+                    _uiState.update {
+                        it.copy(
+                            isConnectingRemoteCore = false,
+                            remoteStatusMessage = "连接失败: ${err.message}"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun onSwitchToStandaloneLocalCore() {
+        if (_uiState.value.isConnectingRemoteCore) return
+        _uiState.update {
+            it.copy(
+                isConnectingRemoteCore = true,
+                remoteStatusMessage = "正在切回本机独立 Core..."
+            )
+        }
+        viewModelScope.launch {
+            val result = playbackHost.switchToStandaloneLocalCore()
+            result.fold(
+                onSuccess = {
+                    _uiState.update {
+                        it.copy(
+                            isConnectingRemoteCore = false,
+                            remoteStatusMessage = "已切回手机本机独立听歌模式 (Standalone Local Core)"
+                        )
+                    }
+                    refreshLibrarySearch(_uiState.value.searchQuery)
+                },
+                onFailure = { err ->
+                    _uiState.update {
+                        it.copy(
+                            isConnectingRemoteCore = false,
+                            remoteStatusMessage = "切换失败: ${err.message}"
+                        )
+                    }
+                }
             )
         }
     }
@@ -473,8 +642,14 @@ class PlayerViewModel(
         val monoNow = nowMonotonicMs()
         val currentTrackId = snapshot.track?.id
 
+        val rawCodec = playback?.codec?.takeUnless {
+            it.isBlank() || it == "未知" || it.equals("unknown", ignoreCase = true)
+        } ?: snapshot.track?.format?.takeUnless {
+            it.isBlank() || it == "未知"
+        } ?: "FLAC"
+
         val diagnostics = AudioDiagnosticsUiModel(
-            codec = playback?.codec ?: snapshot.track?.format ?: "FLAC",
+            codec = rawCodec,
             sourceSampleRateHz = playback?.sourceSampleRate ?: snapshot.track?.sampleRate ?: 96000,
             sourceBitDepth = playback?.sourceBitDepth ?: snapshot.track?.bitDepth ?: 24,
             outputBackend = playback?.outputBackend ?: "oboe",
