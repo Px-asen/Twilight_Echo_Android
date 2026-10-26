@@ -57,7 +57,7 @@ class AndroidPlaybackHost private constructor(
     val resourceAccessAdapter = AndroidResourceAccessAdapter(appContext)
     val mediaStoreScanner = AndroidMediaStoreScannerAdapter(appContext)
     val networkAdapter = AndroidNetworkAdapter()
-    val nativeAudioEngine = NativeAudioEngineAdapter()
+    val nativeAudioEngine = NativeAudioEngineAdapter(resourceAccess = resourceAccessAdapter)
 
     private val hostPorts = CoreHostPorts(
         clock = clockAdapter,
@@ -177,6 +177,7 @@ class AndroidPlaybackHost private constructor(
             audioFocusCoordinator.close()
             runtimeHost.close()
             nativeAudioEngine.close()
+            resourceAccessAdapter.close()
             hostScope.cancel()
         }
     }

@@ -39,9 +39,10 @@ data class NetworkResponsePayload(
  * Supports coroutine cancellation, bounded timeouts, and structured error mapping.
  * Large audio streams are handled natively by Audio Core rather than buffered across the JS bridge.
  */
-class AndroidNetworkAdapter(
-    private val httpClient: OkHttpClient = defaultOkHttpClient()
+class AndroidNetworkAdapter internal constructor(
+    private val httpClient: OkHttpClient
 ) {
+    constructor() : this(defaultOkHttpClient())
 
     suspend fun execute(spec: NetworkRequestSpec): ResourceAccessResult<NetworkResponsePayload> =
         withContext(Dispatchers.IO) {
@@ -66,7 +67,7 @@ class AndroidNetworkAdapter(
             }
 
             val call = httpClient.newCall(requestBuilder.build())
-            suspendCancellableCoroutine { cont ->
+            suspendCancellableCoroutine<ResourceAccessResult<NetworkResponsePayload>> { cont ->
                 cont.invokeOnCancellation {
                     call.cancel()
                 }

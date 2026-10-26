@@ -2,8 +2,12 @@ package com.twilightecho.android.runtimehost
 
 import android.content.Context
 import com.twilightecho.android.coreclient.CORE_PROTOCOL_VERSION
+import com.twilightecho.android.coreclient.CoreAlbumCollectionView
+import com.twilightecho.android.coreclient.CoreArtistCollectionView
 import com.twilightecho.android.coreclient.CoreBookmarkView
 import com.twilightecho.android.coreclient.CoreCancelEnvelope
+import com.twilightecho.android.coreclient.CoreCollectionsView
+import com.twilightecho.android.coreclient.CoreEqConfigView
 import com.twilightecho.android.coreclient.CoreErrorCode
 import com.twilightecho.android.coreclient.CoreErrorView
 import com.twilightecho.android.coreclient.CoreEventMessage
@@ -12,6 +16,7 @@ import com.twilightecho.android.coreclient.CoreLyricLine
 import com.twilightecho.android.coreclient.CoreLyricsView
 import com.twilightecho.android.coreclient.CorePhase
 import com.twilightecho.android.coreclient.CorePlaybackView
+import com.twilightecho.android.coreclient.CorePlaylistView
 import com.twilightecho.android.coreclient.CoreQueueEntryView
 import com.twilightecho.android.coreclient.CoreQueueReference
 import com.twilightecho.android.coreclient.CoreQueueWindowView
@@ -85,6 +90,8 @@ class QuickJsRuntimeHost(
     private var queueTracks: MutableList<CoreTrackView> = defaultDemoTracks().toMutableList()
     private var favoriteTrackIds: LinkedHashSet<String> = linkedSetOf()
     private var bookmarks: MutableList<CoreBookmarkView> = mutableListOf()
+    private var playlists: MutableList<CorePlaylistView> = mutableListOf()
+    private var eqConfig: CoreEqConfigView = CoreEqConfigView()
     private var currentQueueIndex: Int = 0
     private var currentPlayMode: PlayMode = PlayMode.SEQUENCE
     private var latestAudioSnapshot: AudioSnapshot = AudioSnapshot()
@@ -172,11 +179,24 @@ class QuickJsRuntimeHost(
     private suspend fun handleQueryOnRuntimeThread(
         envelope: CoreRequestEnvelope
     ): CoreResponseEnvelope {
-        // Delegate every query through the embedded JS Core first
-        jsEngine?.invokeGlobalFunction(
-            "globalThis.__TWILIGHT_PORTABLE_CORE__.handleRequest",
-            json.encodeToString(envelope)
-        )
+        val engine = jsEngine
+        if (engine != null && engine.isNativeQuickJsAvailable) {
+            val rawResponse = engine.invokeGlobalFunction(
+                "globalThis.__TWILIGHT_PORTABLE_CORE__.handleRequest",
+                json.encodeToString(envelope)
+            )
+            val jsResp = runCatching {
+                json.decodeFromJsonElement<CoreResponseEnvelope>(json.parseToJsonElement(rawResponse))
+            }.getOrNull()
+            if (jsResp != null && (jsResp.value != null || jsResp.error != null)) {
+                return jsResp
+            }
+        } else {
+            engine?.invokeGlobalFunction(
+                "globalThis.__TWILIGHT_PORTABLE_CORE__.handleRequest",
+                json.encodeToString(envelope)
+            )
+        }
 
         return when (envelope.name) {
             "core.getSnapshot", "state.snapshot" -> {
@@ -261,6 +281,31 @@ class QuickJsRuntimeHost(
                     value = json.encodeToJsonElement(lyricsView)
                 )
             }
+            "library.collections" -> {
+                val collections = buildCollectionsFromLibrary()
+                CoreResponseEnvelope(
+                    requestId = envelope.requestId,
+                    epoch = epoch,
+                    ok = true,
+                    value = json.encodeToJsonElement(collections)
+                )
+            }
+            "playlists.list" -> {
+                CoreResponseEnvelope(
+                    requestId = envelope.requestId,
+                    epoch = epoch,
+                    ok = true,
+                    value = json.encodeToJsonElement(playlists.toList())
+                )
+            }
+            "audio.getEq" -> {
+                CoreResponseEnvelope(
+                    requestId = envelope.requestId,
+                    epoch = epoch,
+                    ok = true,
+                    value = json.encodeToJsonElement(eqConfig)
+                )
+            }
             else -> CoreResponseEnvelope(
                 requestId = envelope.requestId,
                 epoch = epoch,
@@ -297,11 +342,24 @@ class QuickJsRuntimeHost(
             )
         }
 
-        // Delegate to embedded JS Core first so JS domain rules stay in sync
-        jsEngine?.invokeGlobalFunction(
-            "globalThis.__TWILIGHT_PORTABLE_CORE__.handleRequest",
-            json.encodeToString(envelope)
-        )
+        val engine = jsEngine
+        if (engine != null && engine.isNativeQuickJsAvailable) {
+            val rawResponse = engine.invokeGlobalFunction(
+                "globalThis.__TWILIGHT_PORTABLE_CORE__.handleRequest",
+                json.encodeToString(envelope)
+            )
+            val jsResp = runCatching {
+                json.decodeFromJsonElement<CoreResponseEnvelope>(json.parseToJsonElement(rawResponse))
+            }.getOrNull()
+            if (jsResp != null && (jsResp.value != null || jsResp.error != null)) {
+                return jsResp
+            }
+        } else {
+            engine?.invokeGlobalFunction(
+                "globalThis.__TWILIGHT_PORTABLE_CORE__.handleRequest",
+                json.encodeToString(envelope)
+            )
+        }
 
         when (envelope.name) {
             "playback.play" -> {
@@ -425,6 +483,110 @@ class QuickJsRuntimeHost(
                     persistSessionSnapshot()
                 }
             }
+            "playlists.create" -> {
+                val plName = envelope.payload["name"]?.jsonPrimitive?.contentOrNull?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: "Untitled Playlist"
+                val rawTrackIds = envelope.payload["trackIds"]?.jsonArray?.mapNotNull {
+                    it.jsonPrimitive.contentOrNull?.trim()?.takeIf { id -> id.isNotEmpty() }
+                }?.distinct().orEmpty()
+                val created = CorePlaylistView(
+                    id = "pl-${UUID.randomUUID().toString().take(8)}",
+                    name = plName,
+                    trackIds = rawTrackIds,
+                    trackCount = rawTrackIds.size,
+                    updatedAtMs = ports.clock.nowUnixMs()
+                )
+                playlists.add(created)
+                playlistsRevision += 1L
+                persistSessionSnapshot()
+            }
+            "playlists.delete" -> {
+                val playlistId = envelope.payload["playlistId"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (playlistId.isNotEmpty() && playlists.removeAll { it.id == playlistId }) {
+                    playlistsRevision += 1L
+                    persistSessionSnapshot()
+                }
+            }
+            "playlists.rename" -> {
+                val playlistId = envelope.payload["playlistId"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val newName = envelope.payload["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                val idx = playlists.indexOfFirst { it.id == playlistId }
+                if (idx >= 0 && newName.isNotEmpty()) {
+                    val existing = playlists[idx]
+                    playlists[idx] = existing.copy(
+                        name = newName,
+                        updatedAtMs = ports.clock.nowUnixMs()
+                    )
+                    playlistsRevision += 1L
+                    persistSessionSnapshot()
+                }
+            }
+            "playlists.addTracks" -> {
+                val playlistId = envelope.payload["playlistId"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val incomingIds = envelope.payload["trackIds"]?.jsonArray?.mapNotNull {
+                    it.jsonPrimitive.contentOrNull?.trim()?.takeIf { id -> id.isNotEmpty() }
+                }.orEmpty()
+                val idx = playlists.indexOfFirst { it.id == playlistId }
+                if (idx >= 0 && incomingIds.isNotEmpty()) {
+                    val existing = playlists[idx]
+                    val merged = (existing.trackIds + incomingIds).distinct()
+                    playlists[idx] = existing.copy(
+                        trackIds = merged,
+                        trackCount = merged.size,
+                        updatedAtMs = ports.clock.nowUnixMs()
+                    )
+                    playlistsRevision += 1L
+                    persistSessionSnapshot()
+                }
+            }
+            "playlists.removeTrack" -> {
+                val playlistId = envelope.payload["playlistId"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val trackId = envelope.payload["trackId"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val idx = playlists.indexOfFirst { it.id == playlistId }
+                if (idx >= 0 && trackId.isNotEmpty()) {
+                    val existing = playlists[idx]
+                    val filtered = existing.trackIds.filterNot { it == trackId }
+                    playlists[idx] = existing.copy(
+                        trackIds = filtered,
+                        trackCount = filtered.size,
+                        updatedAtMs = ports.clock.nowUnixMs()
+                    )
+                    playlistsRevision += 1L
+                    persistSessionSnapshot()
+                }
+            }
+            "audio.setEq" -> {
+                val enabled = envelope.payload["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                    ?: eqConfig.enabled
+                val preset = envelope.payload["preset"]?.jsonPrimitive?.contentOrNull?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: eqConfig.preset
+                val preampDb = (envelope.payload["preampDb"]?.jsonPrimitive?.doubleOrNull ?: eqConfig.preampDb)
+                    .coerceIn(-12.0, 12.0)
+                val incomingBands = envelope.payload["bandsDb"]?.jsonArray?.mapNotNull {
+                    it.jsonPrimitive.doubleOrNull?.coerceIn(-12.0, 12.0)
+                }
+                val resolvedBands = when {
+                    incomingBands != null && incomingBands.size == 10 -> incomingBands
+                    CoreEqConfigView.PRESETS.containsKey(preset) -> CoreEqConfigView.PRESETS.getValue(preset)
+                    else -> eqConfig.bandsDb
+                }
+                val bitPerfect = envelope.payload["bitPerfect"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                    ?: eqConfig.bitPerfect
+                val gapless = envelope.payload["gapless"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                    ?: eqConfig.gapless
+                eqConfig = CoreEqConfigView(
+                    enabled = enabled,
+                    preset = preset,
+                    preampDb = preampDb,
+                    bandsDb = resolvedBands,
+                    bitPerfect = bitPerfect,
+                    gapless = gapless
+                )
+                ports.audioEngine.setDspConfig(json.encodeToString(eqConfig))
+                persistSessionSnapshot()
+            }
             "bookmarks.add" -> {
                 val trackId = envelope.payload["trackId"]?.jsonPrimitive?.contentOrNull
                     ?: queueTracks.getOrNull(currentQueueIndex)?.id
@@ -477,6 +639,30 @@ class QuickJsRuntimeHost(
     }
 
     private suspend fun handleNativeAudioEvent(event: AudioEvent) {
+        val engine = jsEngine
+        if (engine != null && engine.isNativeQuickJsAvailable) {
+            val payloadJson = when (event) {
+                is AudioEvent.SnapshotUpdated -> buildJsonObject {
+                    put("type", JsonPrimitive("snapshot"))
+                    put("snapshot", json.encodeToJsonElement(event.snapshot))
+                }.toString()
+                is AudioEvent.TrackEnded -> buildJsonObject {
+                    put("type", JsonPrimitive("track-ended"))
+                    put("queueIndex", JsonPrimitive(event.queueIndex))
+                    put("reason", JsonPrimitive(event.reason))
+                }.toString()
+                is AudioEvent.EngineError -> buildJsonObject {
+                    put("type", JsonPrimitive("error"))
+                    put("code", JsonPrimitive(event.code))
+                    put("message", JsonPrimitive("${event.code}: ${event.message}"))
+                }.toString()
+            }
+            engine.invokeGlobalFunction(
+                "globalThis.__TWILIGHT_PORTABLE_CORE__.onAudioEngineEvent",
+                payloadJson
+            )
+            return
+        }
         when (event) {
             is AudioEvent.SnapshotUpdated -> {
                 latestAudioSnapshot = event.snapshot
@@ -569,8 +755,8 @@ class QuickJsRuntimeHost(
             actualSampleRate = latestAudioSnapshot.actualSampleRate ?: 96000,
             actualBitDepth = latestAudioSnapshot.actualBitDepth ?: 24,
             actualChannels = 2,
-            outputPerfect = latestAudioSnapshot.outputPerfect,
-            gaplessActive = true,
+            outputPerfect = eqConfig.bitPerfect && !eqConfig.enabled,
+            gaplessActive = eqConfig.gapless,
             preloadReady = upcomingTrack != null,
             upcomingTrack = upcomingTrack
         )
@@ -584,6 +770,7 @@ class QuickJsRuntimeHost(
         )
 
         val currentLyrics = currentTrack?.let { buildLyricsForTrack(it) }
+        val collections = buildCollectionsFromLibrary()
 
         return CoreSnapshot(
             protocolVersion = CORE_PROTOCOL_VERSION,
@@ -599,8 +786,65 @@ class QuickJsRuntimeHost(
             lyricsRevision = lyricsRevision,
             favoriteTrackIds = favoriteTrackIds.toList(),
             bookmarks = bookmarks.toList(),
+            playlists = playlists.toList(),
+            albums = collections.albums,
+            artists = collections.artists,
+            eqConfig = eqConfig,
             currentLyrics = currentLyrics,
             libraryTrackCount = libraryTracks.size
+        )
+    }
+
+    private fun buildCollectionsFromLibrary(): CoreCollectionsView {
+        val albumsByKey = linkedMapOf<String, CoreAlbumCollectionView>()
+        val artistAlbums = linkedMapOf<String, LinkedHashSet<String>>()
+        val artistTracks = linkedMapOf<String, MutableList<String>>()
+        val artistDisplayNames = linkedMapOf<String, String>()
+
+        libraryTracks.forEachIndexed { idx, track ->
+            val albumTitle = track.album.trim().ifEmpty { "Unknown Album" }
+            val artistName = track.artist.trim().ifEmpty { "Unknown Artist" }
+            val albumKey = albumTitle.lowercase()
+            val existingAlbum = albumsByKey[albumKey]
+            if (existingAlbum == null) {
+                val slug = albumKey.replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "$idx" }
+                albumsByKey[albumKey] = CoreAlbumCollectionView(
+                    id = "alb-$slug",
+                    title = albumTitle,
+                    artist = artistName,
+                    trackCount = 1,
+                    totalDurationSec = track.duration,
+                    trackIds = listOf(track.id)
+                )
+            } else {
+                albumsByKey[albumKey] = existingAlbum.copy(
+                    trackCount = existingAlbum.trackCount + 1,
+                    totalDurationSec = existingAlbum.totalDurationSec + track.duration,
+                    trackIds = existingAlbum.trackIds + track.id
+                )
+            }
+
+            val artistKey = artistName.lowercase()
+            artistDisplayNames.putIfAbsent(artistKey, artistName)
+            artistAlbums.getOrPut(artistKey) { linkedSetOf() }.add(albumKey)
+            artistTracks.getOrPut(artistKey) { mutableListOf() }.add(track.id)
+        }
+
+        val artists = artistDisplayNames.entries.mapIndexed { idx, (key, displayName) ->
+            val slug = key.replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "$idx" }
+            val tracksForArtist = artistTracks[key].orEmpty()
+            CoreArtistCollectionView(
+                id = "art-$slug",
+                name = displayName,
+                albumCount = artistAlbums[key]?.size ?: 1,
+                trackCount = tracksForArtist.size,
+                trackIds = tracksForArtist.toList()
+            )
+        }
+
+        return CoreCollectionsView(
+            albums = albumsByKey.values.toList(),
+            artists = artists
         )
     }
 
@@ -648,6 +892,13 @@ class QuickJsRuntimeHost(
                     bookmarks.forEach { add(json.encodeToJsonElement(it)) }
                 }
             )
+            put(
+                "playlists",
+                buildJsonArray {
+                    playlists.forEach { add(json.encodeToJsonElement(it)) }
+                }
+            )
+            put("eqConfig", json.encodeToJsonElement(eqConfig))
         }.toString()
         when (val result = ports.sessionStore.save(payload, sessionStoreRevision)) {
             is SaveSessionResult.Ok -> sessionStoreRevision = result.revision
@@ -676,6 +927,17 @@ class QuickJsRuntimeHost(
                 arr.mapNotNull {
                     runCatching { json.decodeFromJsonElement<CoreBookmarkView>(it) }.getOrNull()
                 }.forEach { bookmarks.add(it) }
+            }
+            obj["playlists"]?.jsonArray?.let { arr ->
+                playlists.clear()
+                arr.mapNotNull {
+                    runCatching { json.decodeFromJsonElement<CorePlaylistView>(it) }.getOrNull()
+                }.forEach { playlists.add(it) }
+            }
+            obj["eqConfig"]?.let { eqElem ->
+                runCatching { json.decodeFromJsonElement<CoreEqConfigView>(eqElem) }
+                    .getOrNull()
+                    ?.let { eqConfig = it }
             }
         }
     }

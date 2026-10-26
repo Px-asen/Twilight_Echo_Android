@@ -39,8 +39,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.twilightecho.android.coreclient.CoreAlbumCollectionView
+import com.twilightecho.android.coreclient.CoreArtistCollectionView
 import com.twilightecho.android.coreclient.CoreBookmarkView
+import com.twilightecho.android.coreclient.CoreEqConfigView
 import com.twilightecho.android.coreclient.CoreLyricLine
+import com.twilightecho.android.coreclient.CorePlaylistView
 import com.twilightecho.android.coreclient.CoreQueueEntryView
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.ui.components.ArtworkDiscPlaceholder
@@ -86,7 +90,7 @@ fun NowPlayingScreen(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedButton(
                         onClick = { viewModel.onToggleLyricsMode() }
                     ) {
@@ -104,6 +108,16 @@ fun NowPlayingScreen(
                             text = "Library (${state.libraryTrackCount})",
                             style = MaterialTheme.typography.labelSmall,
                             color = if (state.isLibrarySheetOpen) TwilightTokens.AccentAmber else TwilightTokens.TextPrimary
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { viewModel.onToggleEqSheet() }
+                    ) {
+                        Text(
+                            text = if (state.eqConfig.enabled) "EQ: ${state.eqConfig.preset}" else "EQ / DSP",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (state.isEqSheetOpen || state.eqConfig.enabled) TwilightTokens.HiResEmerald else TwilightTokens.TextPrimary
                         )
                     }
 
@@ -293,14 +307,20 @@ fun NowPlayingScreen(
                 }
             }
 
-            // Expandable Local Library & Search Sheet
+            // Expandable Local Library, Collections & Playlists Sheet
             AnimatedVisibility(visible = state.isLibrarySheetOpen) {
                 LocalLibrarySearchSheet(
+                    activeTab = state.activeLibraryTab,
                     searchQuery = state.searchQuery,
                     tracks = state.searchResults,
+                    albums = state.albums,
+                    artists = state.artists,
+                    playlists = state.playlists,
+                    newPlaylistNameDraft = state.newPlaylistNameDraft,
                     favoriteIds = state.favoriteTrackIds,
                     isScanning = state.isScanningLocalMusic,
                     scanStatusMessage = state.scanStatusMessage,
+                    onSelectTab = { viewModel.onSelectLibraryTab(it) },
                     onQueryChange = { viewModel.onSearchQueryChanged(it) },
                     onScanDeviceMusicClick = {
                         if (onRequestScanMusicPermission != null) {
@@ -309,7 +329,24 @@ fun NowPlayingScreen(
                             viewModel.onScanDeviceMusic()
                         }
                     },
-                    onSelectTrack = { track -> viewModel.onPlayTrackFromLibrary(track) }
+                    onSelectTrack = { track -> viewModel.onPlayTrackFromLibrary(track) },
+                    onPlayCollectionTrackIds = { ids -> viewModel.onPlayTrackIdsCollection(ids) },
+                    onNewPlaylistNameChange = { viewModel.onNewPlaylistNameDraftChanged(it) },
+                    onCreatePlaylist = { viewModel.onCreatePlaylist(seedWithCurrentTrack = true) },
+                    onAddCurrentTrackToPlaylist = { plId -> viewModel.onAddCurrentTrackToPlaylist(plId) },
+                    onDeletePlaylist = { plId -> viewModel.onDeletePlaylist(plId) }
+                )
+            }
+
+            // Expandable Equalizer / DSP & Output Configuration Sheet
+            AnimatedVisibility(visible = state.isEqSheetOpen) {
+                EqualizerDspSheet(
+                    eqConfig = state.eqConfig,
+                    onToggleEqEnabled = { viewModel.onToggleEqEnabled() },
+                    onSelectPreset = { viewModel.onSelectEqPreset(it) },
+                    onSetBandGain = { idx, db -> viewModel.onSetEqBandGain(idx, db) },
+                    onToggleBitPerfect = { viewModel.onToggleBitPerfect() },
+                    onToggleGapless = { viewModel.onToggleGapless() }
                 )
             }
 
@@ -434,19 +471,30 @@ private fun BookmarkChipsRow(
 
 @Composable
 private fun LocalLibrarySearchSheet(
+    activeTab: LibrarySectionTab,
     searchQuery: String,
     tracks: List<CoreTrackView>,
+    albums: List<CoreAlbumCollectionView>,
+    artists: List<CoreArtistCollectionView>,
+    playlists: List<CorePlaylistView>,
+    newPlaylistNameDraft: String,
     favoriteIds: List<String>,
     isScanning: Boolean,
     scanStatusMessage: String?,
+    onSelectTab: (LibrarySectionTab) -> Unit,
     onQueryChange: (String) -> Unit,
     onScanDeviceMusicClick: () -> Unit,
-    onSelectTrack: (CoreTrackView) -> Unit
+    onSelectTrack: (CoreTrackView) -> Unit,
+    onPlayCollectionTrackIds: (List<String>) -> Unit,
+    onNewPlaylistNameChange: (String) -> Unit,
+    onCreatePlaylist: () -> Unit,
+    onAddCurrentTrackToPlaylist: (String) -> Unit,
+    onDeletePlaylist: (String) -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(230.dp)
+            .height(265.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(TwilightTokens.valElevatedSurface)
             .padding(12.dp),
@@ -458,7 +506,7 @@ private fun LocalLibrarySearchSheet(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "LOCAL LIBRARY & MEDIASTORE",
+                text = "LOCAL LIBRARY & COLLECTIONS",
                 style = MaterialTheme.typography.labelSmall,
                 color = TwilightTokens.AccentAmber
             )
@@ -471,9 +519,36 @@ private fun LocalLibrarySearchSheet(
                 )
             ) {
                 Text(
-                    text = if (isScanning) "扫描中..." else "扫描手机本地音乐 (Scan Device Music)",
+                    text = if (isScanning) "扫描中..." else "扫描本地音乐 (Scan)",
                     style = MaterialTheme.typography.labelSmall
                 )
+            }
+        }
+
+        // Sub-tabs: Songs | Albums | Artists | Playlists
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            LibrarySectionTab.entries.forEach { tab ->
+                val selected = tab == activeTab
+                val countBadge = when (tab) {
+                    LibrarySectionTab.SONGS -> tracks.size
+                    LibrarySectionTab.ALBUMS -> albums.size
+                    LibrarySectionTab.ARTISTS -> artists.size
+                    LibrarySectionTab.PLAYLISTS -> playlists.size
+                }
+                OutlinedButton(
+                    onClick = { onSelectTab(tab) }
+                ) {
+                    Text(
+                        text = "${tab.label} ($countBadge)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (selected) TwilightTokens.AccentAmber else TwilightTokens.TextSecondary
+                    )
+                }
             }
         }
 
@@ -485,56 +560,332 @@ private fun LocalLibrarySearchSheet(
             )
         }
 
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = onQueryChange,
-            placeholder = {
-                Text(
-                    text = "Search songs, artists, albums...",
-                    style = MaterialTheme.typography.labelSmall
+        when (activeTab) {
+            LibrarySectionTab.SONGS -> {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = onQueryChange,
+                    placeholder = {
+                        Text(
+                            text = "Search songs, artists, albums...",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
-            },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
 
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            items(tracks, key = { it.id }) { track ->
-                val isFav = track.id in favoriteIds
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(tracks, key = { it.id }) { track ->
+                        val isFav = track.id in favoriteIds
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(TwilightTokens.GlassSurface)
+                                .clickable { onSelectTrack(track) }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = (if (isFav) "♥ " else "") + track.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TwilightTokens.TextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${track.artist} • ${track.album} (${track.format ?: "AUDIO"})",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TwilightTokens.TextSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = formatDurationSeconds(track.duration),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TwilightTokens.AccentAmber
+                            )
+                        }
+                    }
+                }
+            }
+
+            LibrarySectionTab.ALBUMS -> {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(albums, key = { it.id }) { album ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(TwilightTokens.GlassSurface)
+                                .clickable { onPlayCollectionTrackIds(album.trackIds) }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "💿 ${album.title}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TwilightTokens.TextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${album.artist} • ${album.trackCount} tracks",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TwilightTokens.TextSecondary
+                                )
+                            }
+                            Text(
+                                text = formatDurationSeconds(album.totalDurationSec),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TwilightTokens.AccentAmber
+                            )
+                        }
+                    }
+                }
+            }
+
+            LibrarySectionTab.ARTISTS -> {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(artists, key = { it.id }) { artist ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(TwilightTokens.GlassSurface)
+                                .clickable { onPlayCollectionTrackIds(artist.trackIds) }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "🎙 ${artist.name}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TwilightTokens.TextPrimary
+                                )
+                                Text(
+                                    text = "${artist.albumCount} albums • ${artist.trackCount} tracks",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TwilightTokens.TextSecondary
+                                )
+                            }
+                            Text(
+                                text = "Play All",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TwilightTokens.AccentAmber
+                            )
+                        }
+                    }
+                }
+            }
+
+            LibrarySectionTab.PLAYLISTS -> {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(TwilightTokens.GlassSurface)
-                        .clickable { onSelectTrack(track) }
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = (if (isFav) "♥ " else "") + track.title,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TwilightTokens.TextPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                    OutlinedTextField(
+                        value = newPlaylistNameDraft,
+                        onValueChange = onNewPlaylistNameChange,
+                        placeholder = {
+                            Text(
+                                text = "New playlist name...",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(
+                        onClick = onCreatePlaylist,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = TwilightTokens.AccentAmber,
+                            contentColor = TwilightTokens.DeepNightBackground
                         )
+                    ) {
                         Text(
-                            text = "${track.artist} • ${track.album} (${track.format ?: "AUDIO"})",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TwilightTokens.TextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            text = "+Create",
+                            style = MaterialTheme.typography.labelSmall
                         )
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
+                }
+
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(playlists, key = { it.id }) { pl ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(TwilightTokens.GlassSurface)
+                                .clickable { onPlayCollectionTrackIds(pl.trackIds) }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "🎶 ${pl.name}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TwilightTokens.TextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${pl.trackCount} tracks",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TwilightTokens.TextSecondary
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "+Add Current",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TwilightTokens.HiResEmerald,
+                                    modifier = Modifier.clickable { onAddCurrentTrackToPlaylist(pl.id) }
+                                )
+                                Text(
+                                    text = "Delete",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TwilightTokens.ErrorRose,
+                                    modifier = Modifier.clickable { onDeletePlaylist(pl.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EqualizerDspSheet(
+    eqConfig: CoreEqConfigView,
+    onToggleEqEnabled: () -> Unit,
+    onSelectPreset: (String) -> Unit,
+    onSetBandGain: (Int, Double) -> Unit,
+    onToggleBitPerfect: () -> Unit,
+    onToggleGapless: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(235.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(TwilightTokens.valElevatedSurface)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "10-BAND PARAMETRIC EQ & NATIVE DSP",
+                style = MaterialTheme.typography.labelSmall,
+                color = TwilightTokens.AccentAmber
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(onClick = onToggleEqEnabled) {
                     Text(
-                        text = formatDurationSeconds(track.duration),
+                        text = if (eqConfig.enabled) "EQ: ON" else "EQ: OFF",
                         style = MaterialTheme.typography.labelSmall,
-                        color = TwilightTokens.AccentAmber
+                        color = if (eqConfig.enabled) TwilightTokens.HiResEmerald else TwilightTokens.TextSecondary
+                    )
+                }
+                OutlinedButton(onClick = onToggleBitPerfect) {
+                    Text(
+                        text = if (eqConfig.bitPerfect) "Bit-Perfect: ON" else "Bit-Perfect: OFF",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (eqConfig.bitPerfect) TwilightTokens.AccentAmber else TwilightTokens.TextSecondary
+                    )
+                }
+                OutlinedButton(onClick = onToggleGapless) {
+                    Text(
+                        text = if (eqConfig.gapless) "Gapless: ON" else "Gapless: OFF",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (eqConfig.gapless) TwilightTokens.AccentAmber else TwilightTokens.TextSecondary
+                    )
+                }
+            }
+        }
+
+        // Presets Row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            CoreEqConfigView.PRESETS.keys.forEach { presetName ->
+                val isSelected = eqConfig.preset.equals(presetName, ignoreCase = true)
+                OutlinedButton(onClick = { onSelectPreset(presetName) }) {
+                    Text(
+                        text = presetName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isSelected) TwilightTokens.AccentAmber else TwilightTokens.TextPrimary
+                    )
+                }
+            }
+        }
+
+        // 10-band quick adjustment list
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            itemsIndexed(CoreEqConfigView.BAND_FREQUENCIES_HZ) { idx, freqLabel ->
+                val bandGain = eqConfig.bandsDb.getOrElse(idx) { 0.0 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = freqLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TwilightTokens.TextSecondary,
+                        modifier = Modifier.width(48.dp)
+                    )
+                    Slider(
+                        value = bandGain.toFloat(),
+                        onValueChange = { onSetBandGain(idx, it.toDouble()) },
+                        valueRange = -12f..12f,
+                        modifier = Modifier.weight(1f),
+                        colors = SliderDefaults.colors(
+                            thumbColor = TwilightTokens.HiResEmerald,
+                            activeTrackColor = TwilightTokens.HiResEmerald,
+                            inactiveTrackColor = TwilightTokens.GlassSurface
+                        )
+                    )
+                    Text(
+                        text = "%+.1fdB".format(bandGain),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TwilightTokens.AccentAmber,
+                        modifier = Modifier.width(56.dp),
+                        textAlign = TextAlign.End
                     )
                 }
             }

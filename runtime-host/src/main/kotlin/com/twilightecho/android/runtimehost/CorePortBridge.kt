@@ -121,6 +121,18 @@ class CorePortBridge(
                     is ResourceAccessResult.Error -> encodeError(res.code, res.message, res.retryable)
                 }
             }
+            "acquirePlayableResource" -> {
+                when (val res = ports.resourceAccess.acquirePlayableResource(resourceId)) {
+                    is ResourceAccessResult.Ok -> encodeOk(
+                        json.parseToJsonElement(json.encodeToString(res.value))
+                    )
+                    is ResourceAccessResult.Error -> encodeError(res.code, res.message, res.retryable)
+                }
+            }
+            "releasePlayableResource" -> {
+                ports.resourceAccess.releasePlayableResource(resourceId)
+                encodeOk(JsonPrimitive(true))
+            }
             else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown resourceAccess method: $methodName")
         }
     }
@@ -190,6 +202,11 @@ class CorePortBridge(
             }
             "previous" -> {
                 ports.audioEngine.previous()
+                encodeOk(JsonPrimitive(true))
+            }
+            "setDspConfig" -> {
+                val configJson = args["configJson"]?.jsonPrimitive?.contentOrNull ?: args.toString()
+                ports.audioEngine.setDspConfig(configJson)
                 encodeOk(JsonPrimitive(true))
             }
             "getSnapshot" -> {

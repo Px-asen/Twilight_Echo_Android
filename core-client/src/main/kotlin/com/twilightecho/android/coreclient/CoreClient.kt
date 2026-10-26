@@ -50,6 +50,17 @@ interface CoreClient {
     suspend fun toggleFavorite(trackId: String): Result<CoreResponseEnvelope>
     suspend fun addBookmark(trackId: String, positionSec: Double, label: String): Result<CoreResponseEnvelope>
     suspend fun removeBookmark(bookmarkId: String): Result<CoreResponseEnvelope>
+
+    // Phase 3: Custom Playlists, Album/Artist Collections, and EQ/DSP Configuration
+    suspend fun queryCollections(): Result<CoreCollectionsView>
+    suspend fun listPlaylists(): Result<List<CorePlaylistView>>
+    suspend fun createPlaylist(name: String, trackIds: List<String> = emptyList()): Result<CoreResponseEnvelope>
+    suspend fun deletePlaylist(playlistId: String): Result<CoreResponseEnvelope>
+    suspend fun renamePlaylist(playlistId: String, name: String): Result<CoreResponseEnvelope>
+    suspend fun addTracksToPlaylist(playlistId: String, trackIds: List<String>): Result<CoreResponseEnvelope>
+    suspend fun removeTrackFromPlaylist(playlistId: String, trackId: String): Result<CoreResponseEnvelope>
+    suspend fun setEqConfig(config: CoreEqConfigView): Result<CoreResponseEnvelope>
+    suspend fun getEqConfig(): Result<CoreEqConfigView>
 }
 
 class DefaultCoreClient(
@@ -295,6 +306,195 @@ class DefaultCoreClient(
         return sendEnvelopeAndExtractResponse(envelope)
     }
 
+    override suspend fun queryCollections(): Result<CoreCollectionsView> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            epoch = currentEpoch,
+            kind = "query",
+            name = "library.collections",
+            payload = JsonObject(emptyMap())
+        )
+        val response = transport.sendRequest(envelope)
+        if (!response.ok || response.value == null) {
+            val msg = response.error?.message ?: "Failed to execute library.collections"
+            return Result.failure(IllegalStateException(msg))
+        }
+        return runCatching {
+            json.decodeFromJsonElement<CoreCollectionsView>(response.value)
+        }
+    }
+
+    override suspend fun listPlaylists(): Result<List<CorePlaylistView>> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            epoch = currentEpoch,
+            kind = "query",
+            name = "playlists.list",
+            payload = JsonObject(emptyMap())
+        )
+        val response = transport.sendRequest(envelope)
+        if (!response.ok || response.value == null) {
+            val msg = response.error?.message ?: "Failed to execute playlists.list"
+            return Result.failure(IllegalStateException(msg))
+        }
+        return runCatching {
+            json.decodeFromJsonElement<List<CorePlaylistView>>(response.value)
+        }
+    }
+
+    override suspend fun createPlaylist(
+        name: String,
+        trackIds: List<String>
+    ): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("name", JsonPrimitive(name))
+            put(
+                "trackIds",
+                buildJsonArray {
+                    trackIds.forEach { add(JsonPrimitive(it)) }
+                }
+            )
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "playlists.create",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    override suspend fun deletePlaylist(playlistId: String): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("playlistId", JsonPrimitive(playlistId))
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "playlists.delete",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    override suspend fun renamePlaylist(
+        playlistId: String,
+        name: String
+    ): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("playlistId", JsonPrimitive(playlistId))
+            put("name", JsonPrimitive(name))
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "playlists.rename",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    override suspend fun addTracksToPlaylist(
+        playlistId: String,
+        trackIds: List<String>
+    ): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("playlistId", JsonPrimitive(playlistId))
+            put(
+                "trackIds",
+                buildJsonArray {
+                    trackIds.forEach { add(JsonPrimitive(it)) }
+                }
+            )
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "playlists.addTracks",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    override suspend fun removeTrackFromPlaylist(
+        playlistId: String,
+        trackId: String
+    ): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("playlistId", JsonPrimitive(playlistId))
+            put("trackId", JsonPrimitive(trackId))
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "playlists.removeTrack",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    override suspend fun setEqConfig(config: CoreEqConfigView): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("enabled", JsonPrimitive(config.enabled))
+            put("preset", JsonPrimitive(config.preset))
+            put("preampDb", JsonPrimitive(config.preampDb))
+            put(
+                "bandsDb",
+                buildJsonArray {
+                    config.bandsDb.forEach { add(JsonPrimitive(it)) }
+                }
+            )
+            put("bitPerfect", JsonPrimitive(config.bitPerfect))
+            put("gapless", JsonPrimitive(config.gapless))
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "audio.setEq",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    override suspend fun getEqConfig(): Result<CoreEqConfigView> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            epoch = currentEpoch,
+            kind = "query",
+            name = "audio.getEq",
+            payload = JsonObject(emptyMap())
+        )
+        val response = transport.sendRequest(envelope)
+        if (!response.ok || response.value == null) {
+            val msg = response.error?.message ?: "Failed to execute audio.getEq"
+            return Result.failure(IllegalStateException(msg))
+        }
+        return runCatching {
+            json.decodeFromJsonElement<CoreEqConfigView>(response.value)
+        }
+    }
+
     private suspend fun sendEnvelopeAndExtractResponse(
         envelope: CoreRequestEnvelope
     ): Result<CoreResponseEnvelope> {
@@ -412,6 +612,48 @@ class DefaultCoreClient(
         }
         is CoreTypedCommand.RemoveBookmark -> buildJsonObject {
             put("bookmarkId", JsonPrimitive(command.bookmarkId))
+        }
+        is CoreTypedCommand.CreatePlaylist -> buildJsonObject {
+            put("name", JsonPrimitive(command.playlistName))
+            put(
+                "trackIds",
+                buildJsonArray {
+                    command.trackIds.forEach { add(JsonPrimitive(it)) }
+                }
+            )
+        }
+        is CoreTypedCommand.DeletePlaylist -> buildJsonObject {
+            put("playlistId", JsonPrimitive(command.playlistId))
+        }
+        is CoreTypedCommand.RenamePlaylist -> buildJsonObject {
+            put("playlistId", JsonPrimitive(command.playlistId))
+            put("name", JsonPrimitive(command.newName))
+        }
+        is CoreTypedCommand.AddTracksToPlaylist -> buildJsonObject {
+            put("playlistId", JsonPrimitive(command.playlistId))
+            put(
+                "trackIds",
+                buildJsonArray {
+                    command.trackIds.forEach { add(JsonPrimitive(it)) }
+                }
+            )
+        }
+        is CoreTypedCommand.RemoveTrackFromPlaylist -> buildJsonObject {
+            put("playlistId", JsonPrimitive(command.playlistId))
+            put("trackId", JsonPrimitive(command.trackId))
+        }
+        is CoreTypedCommand.SetEqConfig -> buildJsonObject {
+            put("enabled", JsonPrimitive(command.config.enabled))
+            put("preset", JsonPrimitive(command.config.preset))
+            put("preampDb", JsonPrimitive(command.config.preampDb))
+            put(
+                "bandsDb",
+                buildJsonArray {
+                    command.config.bandsDb.forEach { add(JsonPrimitive(it)) }
+                }
+            )
+            put("bitPerfect", JsonPrimitive(command.config.bitPerfect))
+            put("gapless", JsonPrimitive(command.config.gapless))
         }
     }
 

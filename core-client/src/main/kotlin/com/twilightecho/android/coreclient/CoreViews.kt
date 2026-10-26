@@ -177,3 +177,65 @@ data class CoreLibrarySearchPage(
     val total: Int,
     val items: List<CoreTrackView>
 )
+
+/**
+ * Phase 3 DTOs: Custom Playlists, Album/Artist Collections, and Equalizer / DSP Configuration.
+ */
+@Serializable
+data class CorePlaylistView(
+    val id: String,
+    val name: String,
+    val trackIds: List<String> = emptyList(),
+    val trackCount: Int = trackIds.size,
+    val updatedAtMs: Long = 0L
+)
+
+@Serializable
+data class CoreAlbumCollectionView(
+    val id: String,
+    val title: String,
+    val artist: String = "",
+    val trackCount: Int = 0,
+    val totalDurationSec: Double = 0.0,
+    val trackIds: List<String> = emptyList()
+)
+
+@Serializable
+data class CoreArtistCollectionView(
+    val id: String,
+    val name: String,
+    val albumCount: Int = 0,
+    val trackCount: Int = 0,
+    val trackIds: List<String> = emptyList()
+)
+
+@Serializable
+data class CoreCollectionsView(
+    val albums: List<CoreAlbumCollectionView> = emptyList(),
+    val artists: List<CoreArtistCollectionView> = emptyList()
+)
+
+@Serializable
+data class CoreEqConfigView(
+    val enabled: Boolean = false,
+    val preset: String = "Flat",
+    val preampDb: Double = 0.0,
+    val bandsDb: List<Double> = listOf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    val bitPerfect: Boolean = true,
+    val gapless: Boolean = true
+) {
+    companion object {
+        val PRESETS: Map<String, List<Double>> = linkedMapOf(
+            "Flat" to listOf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            "Bass Boost" to listOf(5.5, 4.5, 3.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            "Vocal" to listOf(-1.5, -1.0, 0.0, 2.0, 4.0, 4.0, 2.5, 1.0, 0.0, -0.5),
+            "Rock" to listOf(4.0, 3.0, 1.5, -1.0, -1.5, 0.0, 2.0, 3.5, 4.0, 4.0),
+            "Electronic" to listOf(4.5, 4.0, 1.5, 0.0, -1.5, 1.0, 0.5, 2.0, 4.0, 4.5),
+            "Classical" to listOf(3.5, 2.5, 1.5, 1.0, -0.5, -0.5, 0.0, 1.5, 2.5, 3.0)
+        )
+
+        val BAND_FREQUENCIES_HZ: List<String> = listOf(
+            "31Hz", "62Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz"
+        )
+    }
+}

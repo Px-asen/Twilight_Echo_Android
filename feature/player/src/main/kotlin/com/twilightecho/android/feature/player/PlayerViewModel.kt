@@ -4,9 +4,13 @@ import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.twilightecho.android.coreclient.CoreAlbumCollectionView
+import com.twilightecho.android.coreclient.CoreArtistCollectionView
 import com.twilightecho.android.coreclient.CoreBookmarkView
 import com.twilightecho.android.coreclient.CoreClient
+import com.twilightecho.android.coreclient.CoreEqConfigView
 import com.twilightecho.android.coreclient.CoreLyricsView
+import com.twilightecho.android.coreclient.CorePlaylistView
 import com.twilightecho.android.coreclient.CoreQueueEntryView
 import com.twilightecho.android.coreclient.CoreQueueWindowView
 import com.twilightecho.android.coreclient.CoreSnapshot
@@ -34,6 +38,13 @@ data class AudioDiagnosticsUiModel(
     val outputPerfect: Boolean = true
 )
 
+enum class LibrarySectionTab(val label: String) {
+    SONGS("Songs"),
+    ALBUMS("Albums"),
+    ARTISTS("Artists"),
+    PLAYLISTS("Playlists")
+}
+
 data class PlayerUiState(
     val epoch: String = "epoch-boot",
     val sequence: Long = 0L,
@@ -54,9 +65,16 @@ data class PlayerUiState(
     val isQueueDrawerOpen: Boolean = false,
     val isLyricsMode: Boolean = false,
     val isLibrarySheetOpen: Boolean = false,
+    val isEqSheetOpen: Boolean = false,
+    val activeLibraryTab: LibrarySectionTab = LibrarySectionTab.SONGS,
     val favoriteTrackIds: List<String> = emptyList(),
     val isCurrentTrackFavorite: Boolean = false,
     val currentTrackBookmarks: List<CoreBookmarkView> = emptyList(),
+    val playlists: List<CorePlaylistView> = emptyList(),
+    val albums: List<CoreAlbumCollectionView> = emptyList(),
+    val artists: List<CoreArtistCollectionView> = emptyList(),
+    val eqConfig: CoreEqConfigView = CoreEqConfigView(),
+    val newPlaylistNameDraft: String = "",
     val currentLyrics: CoreLyricsView? = null,
     val activeLyricIndex: Int = -1,
     val libraryTrackCount: Int = 0,
@@ -198,7 +216,8 @@ class PlayerViewModel(
             val nextOpen = open ?: !state.isQueueDrawerOpen
             state.copy(
                 isQueueDrawerOpen = nextOpen,
-                isLibrarySheetOpen = if (nextOpen) false else state.isLibrarySheetOpen
+                isLibrarySheetOpen = if (nextOpen) false else state.isLibrarySheetOpen,
+                isEqSheetOpen = if (nextOpen) false else state.isEqSheetOpen
             )
         }
     }
@@ -214,11 +233,138 @@ class PlayerViewModel(
         _uiState.update { state ->
             state.copy(
                 isLibrarySheetOpen = targetOpen,
-                isQueueDrawerOpen = if (targetOpen) false else state.isQueueDrawerOpen
+                isQueueDrawerOpen = if (targetOpen) false else state.isQueueDrawerOpen,
+                isEqSheetOpen = if (targetOpen) false else state.isEqSheetOpen
             )
         }
         if (targetOpen) {
             refreshLibrarySearch(_uiState.value.searchQuery)
+        }
+    }
+
+    fun onToggleEqSheet(open: Boolean? = null) {
+        val targetOpen = open ?: !_uiState.value.isEqSheetOpen
+        _uiState.update { state ->
+            state.copy(
+                isEqSheetOpen = targetOpen,
+                isLibrarySheetOpen = if (targetOpen) false else state.isLibrarySheetOpen,
+                isQueueDrawerOpen = if (targetOpen) false else state.isQueueDrawerOpen
+            )
+        }
+    }
+
+    fun onSelectLibraryTab(tab: LibrarySectionTab) {
+        _uiState.update { it.copy(activeLibraryTab = tab) }
+    }
+
+    fun onNewPlaylistNameDraftChanged(draft: String) {
+        _uiState.update { it.copy(newPlaylistNameDraft = draft) }
+    }
+
+    fun onCreatePlaylist(seedWithCurrentTrack: Boolean = true) {
+        val name = _uiState.value.newPlaylistNameDraft.trim().ifEmpty { "My Playlist #${_uiState.value.playlists.size + 1}" }
+        val seedIds = if (seedWithCurrentTrack) {
+            listOfNotNull(_uiState.value.currentTrack?.id)
+        } else {
+            emptyList()
+        }
+        _uiState.update { it.copy(newPlaylistNameDraft = "") }
+        viewModelScope.launch {
+            coreClient.createPlaylist(name = name, trackIds = seedIds)
+        }
+    }
+
+    fun onDeletePlaylist(playlistId: String) {
+        viewModelScope.launch {
+            coreClient.deletePlaylist(playlistId)
+        }
+    }
+
+    fun onAddCurrentTrackToPlaylist(playlistId: String) {
+        val currentId = _uiState.value.currentTrack?.id ?: return
+        viewModelScope.launch {
+            coreClient.addTracksToPlaylist(playlistId, listOf(currentId))
+        }
+    }
+
+    fun onPlayTrackIdsCollection(trackIds: List<String>) {
+        if (trackIds.isEmpty()) return
+        val knownById = (_uiState.value.searchResults + _uiState.value.queueItems.mapNotNull { it.track })
+            .associateBy { it.id }
+        val tracks = trackIds.mapNotNull { knownById[it] }
+        if (tracks.isEmpty()) return
+        val expectedRev = _uiState.value.queueRevision
+        viewModelScope.launch {
+            coreClient.executeCommand(
+                CoreTypedCommand.ReplaceQueue(
+                    revision = expectedRev,
+                    tracks = tracks,
+                    startIndex = 0,
+                    play = true
+                )
+            )
+            playbackHost.requestFocusAndPlay(0.0)
+            _uiState.update { it.copy(isLibrarySheetOpen = false) }
+        }
+    }
+
+    fun onToggleEqEnabled(enabled: Boolean? = null) {
+        val cur = _uiState.value.eqConfig
+        val updated = cur.copy(enabled = enabled ?: !cur.enabled)
+        viewModelScope.launch {
+            coreClient.setEqConfig(updated)
+        }
+    }
+
+    fun onSelectEqPreset(presetName: String) {
+        val cur = _uiState.value.eqConfig
+        val presetBands = CoreEqConfigView.PRESETS[presetName] ?: cur.bandsDb
+        val updated = cur.copy(
+            enabled = true,
+            preset = presetName,
+            bandsDb = presetBands
+        )
+        viewModelScope.launch {
+            coreClient.setEqConfig(updated)
+        }
+    }
+
+    fun onSetEqPreamp(preampDb: Double) {
+        val cur = _uiState.value.eqConfig
+        val updated = cur.copy(preampDb = preampDb.coerceIn(-12.0, 12.0))
+        viewModelScope.launch {
+            coreClient.setEqConfig(updated)
+        }
+    }
+
+    fun onSetEqBandGain(bandIndex: Int, gainDb: Double) {
+        val cur = _uiState.value.eqConfig
+        if (bandIndex !in cur.bandsDb.indices) return
+        val nextBands = cur.bandsDb.toMutableList()
+        nextBands[bandIndex] = gainDb.coerceIn(-12.0, 12.0)
+        val updated = cur.copy(
+            enabled = true,
+            preset = "Custom",
+            bandsDb = nextBands
+        )
+        viewModelScope.launch {
+            coreClient.setEqConfig(updated)
+        }
+    }
+
+    fun onToggleBitPerfect() {
+        val cur = _uiState.value.eqConfig
+        val updated = cur.copy(bitPerfect = !cur.bitPerfect)
+        viewModelScope.launch {
+            coreClient.setEqConfig(updated)
+        }
+    }
+
+    fun onToggleGapless() {
+        val cur = _uiState.value.eqConfig
+        val updated = cur.copy(gapless = !cur.gapless)
+        viewModelScope.launch {
+            coreClient.setEqConfig(updated)
         }
     }
 
@@ -366,6 +512,10 @@ class PlayerViewModel(
                 favoriteTrackIds = snapshot.favoriteTrackIds,
                 isCurrentTrackFavorite = currentTrackId != null && currentTrackId in snapshot.favoriteTrackIds,
                 currentTrackBookmarks = trackBookmarks,
+                playlists = snapshot.playlists,
+                albums = snapshot.albums,
+                artists = snapshot.artists,
+                eqConfig = snapshot.eqConfig,
                 currentLyrics = snapshot.currentLyrics,
                 activeLyricIndex = activeLyricIdx,
                 libraryTrackCount = snapshot.libraryTrackCount,

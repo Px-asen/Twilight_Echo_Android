@@ -24001,6 +24001,102 @@ var TwilightPortableCore = (function(exports) {
     }
   }
   ensurePortableRuntimeGlobals();
+  const PORTABLE_EQ_PRESETS = {
+    Flat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "Bass Boost": [5.5, 4.5, 3, 1, 0, 0, 0, 0, 0, 0],
+    Rock: [4, 3, 1.5, -1, -1.5, 0, 2, 3.5, 4, 4],
+    Vocal: [-1.5, -1, 0, 2, 4, 4, 2.5, 1, 0, -0.5],
+    Electronic: [4.5, 4, 1.5, 0, -1.5, 1, 0.5, 2, 4, 4.5],
+    Classical: [3.5, 2.5, 1.5, 1, -0.5, -0.5, 0, 1.5, 2.5, 3]
+  };
+  function createDefaultEqConfig() {
+    return {
+      enabled: false,
+      preset: "Flat",
+      preampDb: 0,
+      bandsDb: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      bitPerfect: false,
+      gapless: true
+    };
+  }
+  function applyEqConfigPatch(current, patch) {
+    if (!patch || typeof patch !== "object") {
+      return structuredClone(current);
+    }
+    const clampDb = (val) => Math.max(-12, Math.min(12, Number(val) || 0));
+    const nextPreset = typeof patch.preset === "string" && patch.preset.trim().length > 0 ? patch.preset.trim() : current.preset;
+    let nextBands = [...current.bandsDb];
+    if (Array.isArray(patch.bandsDb) && patch.bandsDb.length > 0) {
+      nextBands = Array.from({ length: 10 }, (_, idx) => clampDb(Number(patch.bandsDb[idx] ?? 0)));
+    } else if (typeof patch.preset === "string" && PORTABLE_EQ_PRESETS[nextPreset]) {
+      nextBands = [...PORTABLE_EQ_PRESETS[nextPreset]];
+    }
+    return {
+      enabled: typeof patch.enabled === "boolean" ? patch.enabled : current.enabled,
+      preset: nextPreset,
+      preampDb: typeof patch.preampDb === "number" ? clampDb(patch.preampDb) : current.preampDb,
+      bandsDb: nextBands,
+      bitPerfect: typeof patch.bitPerfect === "boolean" ? patch.bitPerfect : current.bitPerfect,
+      gapless: typeof patch.gapless === "boolean" ? patch.gapless : current.gapless
+    };
+  }
+  function aggregateLibraryCollections(tracks2) {
+    const albumMap = /* @__PURE__ */ new Map();
+    const artistMap = /* @__PURE__ */ new Map();
+    const slugify = (text2, fallbackPrefix, index) => {
+      const slug = text2.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      return slug ? `${fallbackPrefix}-${slug}` : `${fallbackPrefix}-${index}`;
+    };
+    let idx = 0;
+    for (const track of tracks2) {
+      idx += 1;
+      const albumTitle = String(track.album || "Unknown Album").trim() || "Unknown Album";
+      const artistName = String(track.artist || "Unknown Artist").trim() || "Unknown Artist";
+      const durationSec = typeof track.durationSec === "number" ? Math.round(track.durationSec) : Math.round(Number(track.duration) || 0);
+      const albumKey = albumTitle.toLowerCase();
+      const existingAlbum = albumMap.get(albumKey);
+      if (existingAlbum) {
+        existingAlbum.trackCount += 1;
+        existingAlbum.totalDurationSec += durationSec;
+        existingAlbum.trackIds.push(String(track.id));
+      } else {
+        albumMap.set(albumKey, {
+          id: slugify(albumTitle, "alb", idx),
+          title: albumTitle,
+          name: albumTitle,
+          artist: artistName,
+          trackCount: 1,
+          totalDurationSec: durationSec,
+          trackIds: [String(track.id)]
+        });
+      }
+      const artistKey = artistName.toLowerCase();
+      const existingArtist = artistMap.get(artistKey);
+      if (existingArtist) {
+        existingArtist.albums.add(albumKey);
+        existingArtist.trackCount += 1;
+        existingArtist.trackIds.push(String(track.id));
+      } else {
+        artistMap.set(artistKey, {
+          id: slugify(artistName, "art", idx),
+          name: artistName,
+          albums: /* @__PURE__ */ new Set([albumKey]),
+          trackCount: 1,
+          trackIds: [String(track.id)]
+        });
+      }
+    }
+    return {
+      albums: [...albumMap.values()],
+      artists: [...artistMap.values()].map((a) => ({
+        id: a.id,
+        name: a.name,
+        albumCount: a.albums.size,
+        trackCount: a.trackCount,
+        trackIds: a.trackIds
+      }))
+    };
+  }
   function toTrackRecord(track) {
     return {
       ...track,
@@ -24025,6 +24121,9 @@ var TwilightPortableCore = (function(exports) {
         this.tracks.set(item.id, toTrackRecord(item));
       }
       this.libraryRevisionCounter++;
+    }
+    getAllTracks() {
+      return [...this.tracks.values()].map((t) => structuredClone(t));
     }
     getLibraryRevision() {
       return this.libraryRevisionCounter;
@@ -24855,6 +24954,9 @@ var TwilightPortableCore = (function(exports) {
     let lyricsRevision = 0;
     let playlistsState = [];
     let playlistsRevision = 0;
+    let customPlaylists = [];
+    let customPlaylistIdCounter = 0;
+    let eqConfig = createDefaultEqConfig();
     let envelopeLoaded = false;
     let envelopeLoadPromise = null;
     const settingsEnv = {
@@ -24905,6 +25007,12 @@ var TwilightPortableCore = (function(exports) {
           playlistsState = structuredClone(parsed.playlists);
           playlistsRevision = initialRev;
         }
+        if (Array.isArray(parsed.customPlaylists)) {
+          customPlaylists = structuredClone(parsed.customPlaylists);
+        }
+        if (parsed.eqConfig) {
+          eqConfig = applyEqConfigPatch(createDefaultEqConfig(), parsed.eqConfig);
+        }
         envelopeLoaded = true;
       })().finally(() => {
         envelopeLoadPromise = null;
@@ -24922,7 +25030,9 @@ var TwilightPortableCore = (function(exports) {
           settings: currentSettings,
           bookmarks: bookmarksDoc,
           lyricsManagement: lyricsDoc,
-          playlists: playlistsState
+          playlists: playlistsState,
+          customPlaylists,
+          eqConfig
         };
         const res = await options.sessionStore.save(
           JSON.stringify(envelope),
@@ -25466,6 +25576,71 @@ var TwilightPortableCore = (function(exports) {
         void application.request(hostClientIdentity.id, message);
       }
     };
+    const createCustomPlaylist = (name, trackIds = []) => {
+      customPlaylistIdCounter += 1;
+      const cleanName = String(name || "Untitled Playlist").trim() || "Untitled Playlist";
+      const uniqueTracks = [...new Set(trackIds.map((id2) => String(id2)).filter((id2) => id2.length > 0))];
+      const created = {
+        id: `pl-${clock.nowUnixMs()}-${customPlaylistIdCounter}`,
+        name: cleanName,
+        trackIds: uniqueTracks,
+        trackCount: uniqueTracks.length,
+        updatedAtMs: clock.nowUnixMs()
+      };
+      customPlaylists.push(created);
+      playlistsRevision++;
+      void persistEnvelope();
+      application.changed();
+      return structuredClone(created);
+    };
+    const deleteCustomPlaylist = (playlistId) => {
+      const idx = customPlaylists.findIndex((p) => p.id === playlistId);
+      if (idx < 0) return false;
+      customPlaylists.splice(idx, 1);
+      playlistsRevision++;
+      void persistEnvelope();
+      application.changed();
+      return true;
+    };
+    const renameCustomPlaylist = (playlistId, name) => {
+      const target = customPlaylists.find((p) => p.id === playlistId);
+      if (!target) return null;
+      const cleanName = String(name || "").trim();
+      if (!cleanName) return structuredClone(target);
+      target.name = cleanName;
+      target.updatedAtMs = clock.nowUnixMs();
+      playlistsRevision++;
+      void persistEnvelope();
+      application.changed();
+      return structuredClone(target);
+    };
+    const addTracksToCustomPlaylist = (playlistId, trackIds) => {
+      const target = customPlaylists.find((p) => p.id === playlistId);
+      if (!target) return null;
+      const merged = new Set(target.trackIds);
+      for (const rawId of trackIds) {
+        const id2 = String(rawId || "").trim();
+        if (id2.length > 0) merged.add(id2);
+      }
+      target.trackIds = [...merged];
+      target.trackCount = target.trackIds.length;
+      target.updatedAtMs = clock.nowUnixMs();
+      playlistsRevision++;
+      void persistEnvelope();
+      application.changed();
+      return structuredClone(target);
+    };
+    const removeTrackFromCustomPlaylist = (playlistId, trackId) => {
+      const target = customPlaylists.find((p) => p.id === playlistId);
+      if (!target) return null;
+      target.trackIds = target.trackIds.filter((id2) => id2 !== trackId);
+      target.trackCount = target.trackIds.length;
+      target.updatedAtMs = clock.nowUnixMs();
+      playlistsRevision++;
+      void persistEnvelope();
+      application.changed();
+      return structuredClone(target);
+    };
     return {
       epoch,
       protocolVersion: CORE_PROTOCOL_VERSION,
@@ -25474,6 +25649,7 @@ var TwilightPortableCore = (function(exports) {
       settings: settingsService,
       queueStore,
       async initialize() {
+        await ensureEnvelopeLoaded();
         await application.initialize();
       },
       seedTracks(tracks2) {
@@ -25529,6 +25705,27 @@ var TwilightPortableCore = (function(exports) {
           messageSubscribers.delete(wrapped);
         };
       },
+      createCustomPlaylist,
+      deleteCustomPlaylist,
+      renameCustomPlaylist,
+      addTracksToCustomPlaylist,
+      removeTrackFromCustomPlaylist,
+      listCustomPlaylists() {
+        return structuredClone(customPlaylists);
+      },
+      getLibraryCollections() {
+        return aggregateLibraryCollections(queueStore.getAllTracks());
+      },
+      getEqConfig() {
+        return structuredClone(eqConfig);
+      },
+      setEqConfig(patch) {
+        eqConfig = applyEqConfigPatch(eqConfig, patch);
+        void options.audioEngine.setDspConfig?.(structuredClone(eqConfig));
+        void persistEnvelope();
+        application.changed();
+        return structuredClone(eqConfig);
+      },
       async triggerPlatformSafetyBrake(_reason) {
         await playbackSession.pause();
         await playbackSession.flush();
@@ -25541,21 +25738,297 @@ var TwilightPortableCore = (function(exports) {
       }
     };
   }
-  let activeEmbeddedHostState = {
-    epoch: "epoch-js-default",
-    protocolVersion: CORE_PROTOCOL_VERSION,
-    lastRequestId: null
+  const EMBEDDED_DEMO_TRACKS = [
+    {
+      id: "track-twilight-overture",
+      queueEntryId: "occ-0-track-twilight-overture",
+      title: "Twilight Overture (Hi-Res Master)",
+      artist: "Aether Ensemble",
+      artists: ["Aether Ensemble"],
+      album: "Echoes of Dusk",
+      source: "content://media/external/audio/media/1001",
+      duration: 248,
+      format: "FLAC",
+      sampleRate: 96e3,
+      bitDepth: 24,
+      bitrate: 2822
+    },
+    {
+      id: "track-nocturne-in-cobalt",
+      queueEntryId: "occ-1-track-nocturne-in-cobalt",
+      title: "Nocturne in Cobalt",
+      artist: "Lumina Quartet",
+      artists: ["Lumina Quartet"],
+      album: "Midnight Resonance",
+      source: "content://media/external/audio/media/1002",
+      duration: 312,
+      format: "FLAC",
+      sampleRate: 192e3,
+      bitDepth: 24,
+      bitrate: 4608
+    },
+    {
+      id: "track-solstice-drift",
+      queueEntryId: "occ-2-track-solstice-drift",
+      title: "Solstice Drift",
+      artist: "Kairo & Sorel",
+      artists: ["Kairo", "Sorel"],
+      album: "Horizon Line",
+      source: "content://media/external/audio/media/1003",
+      duration: 196,
+      format: "WAV",
+      sampleRate: 48e3,
+      bitDepth: 24,
+      bitrate: 2304
+    }
+  ];
+  const EMBEDDED_DEMO_LYRICS = {
+    "track-twilight-overture": [
+      { timeMs: 0, text: "Twilight Overture — Aether Ensemble", translation: "暮光序曲 — 以太合奏团" },
+      { timeMs: 6500, text: "When the amber sun sinks beneath the glass horizon", translation: "当琥珀色的夕阳沉入琉璃地平线" },
+      { timeMs: 14e3, text: "Strings awaken in the hush of the concert hall", translation: "弦音在音乐厅的静谧中苏醒" },
+      { timeMs: 22400, text: "A distant echo answers from the northern ridge", translation: "远方的回声自北岭应和" }
+    ],
+    "track-nocturne-in-cobalt": [
+      { timeMs: 0, text: "Nocturne in Cobalt — Lumina Quartet", translation: "钴蓝夜曲 — 流光四重奏" },
+      { timeMs: 8e3, text: "Cobalt rain traces silver lines on the windowpane", translation: "钴蓝色的雨在窗棂勾勒银线" }
+    ],
+    "track-solstice-drift": [
+      { timeMs: 0, text: "Solstice Drift — Kairo & Sorel", translation: "至日漂流 — Kairo & Sorel" },
+      { timeMs: 5800, text: "Warm analog waves meet the winter solstice wind", translation: "温暖的模拟声浪邂逅冬至的微风" }
+    ]
   };
+  function createInitialEmbeddedBridgeState() {
+    return {
+      epoch: "epoch-js-default",
+      protocolVersion: CORE_PROTOCOL_VERSION,
+      sequence: 1,
+      queueRevision: 1,
+      libraryRevision: 1,
+      playlistsRevision: 1,
+      lyricsRevision: 1,
+      sessionStoreRevision: null,
+      lastRequestId: null,
+      libraryTracks: structuredClone(EMBEDDED_DEMO_TRACKS),
+      queueTracks: structuredClone(EMBEDDED_DEMO_TRACKS),
+      currentQueueIndex: 0,
+      currentPlayMode: "sequence",
+      favoriteTrackIds: [],
+      bookmarks: [],
+      playlists: [],
+      eqConfig: createDefaultEqConfig(),
+      latestAudioSnapshot: {
+        engineSessionId: "tae-embedded-session",
+        state: "paused",
+        positionMs: 0,
+        durationMs: 248e3,
+        volume: 1,
+        playbackRate: 1,
+        playMode: "sequence",
+        queueIndex: 0,
+        codec: "FLAC",
+        sampleRate: 96e3,
+        bitDepth: 24,
+        channels: 2,
+        outputBackend: "oboe",
+        actualSampleRate: 96e3,
+        actualBitDepth: 24,
+        outputPerfect: true
+      },
+      idCounter: 0
+    };
+  }
+  let activeEmbeddedHostState = createInitialEmbeddedBridgeState();
+  function getHostBridge() {
+    const g = globalThis;
+    if (g.__TWILIGHT_HOST_BRIDGE__ && typeof g.__TWILIGHT_HOST_BRIDGE__ === "object") {
+      return g.__TWILIGHT_HOST_BRIDGE__;
+    }
+    return null;
+  }
+  function invokeHostBridgePort(portName, methodName, args = {}) {
+    const bridge = getHostBridge();
+    if (!bridge || typeof bridge.invokePort !== "function") return null;
+    try {
+      const raw = bridge.invokePort(portName, methodName, JSON.stringify(args));
+      if (typeof raw === "string" && raw.length > 0) {
+        return JSON.parse(raw);
+      }
+    } catch {
+    }
+    return null;
+  }
+  function nowEmbeddedUnixMs() {
+    const res = invokeHostBridgePort("clock", "nowUnixMs", {});
+    if (res && res.ok && typeof res.value === "number") {
+      return res.value;
+    }
+    return Date.now();
+  }
+  function buildEmbeddedLyricsForTrack(track) {
+    const demoLines = EMBEDDED_DEMO_LYRICS[track.id];
+    if (demoLines) {
+      return {
+        trackId: track.id,
+        source: "embedded",
+        synced: true,
+        lines: [...demoLines]
+      };
+    }
+    const durationSec = Math.max(30, Number(track.duration) || 30);
+    const stepMs = Math.round(Math.max(4, durationSec / 7) * 1e3);
+    return {
+      trackId: track.id,
+      source: "generated",
+      synced: true,
+      lines: [
+        { timeMs: 0, text: `♪ ${track.title} — ${track.artist}`, translation: `专辑：${track.album}` },
+        { timeMs: stepMs, text: "Streaming through Twilight Echo Audio Core", translation: "通过 Twilight Echo 原生音频核心播放" },
+        { timeMs: stepMs * 2, text: "Every detail rendered in pure resolution", translation: "每一处细节皆以纯净解析呈现" }
+      ]
+    };
+  }
+  function buildEmbeddedSnapshot(errorMessage = null) {
+    const st = activeEmbeddedHostState;
+    const currentTrack = st.queueTracks[st.currentQueueIndex] ?? null;
+    const nextIndex = st.queueTracks.length > 0 ? (st.currentQueueIndex + 1) % st.queueTracks.length : -1;
+    const nextTrack = nextIndex >= 0 ? st.queueTracks[nextIndex] : null;
+    const upcomingTrack = nextTrack ? {
+      id: nextTrack.id,
+      queueEntryId: nextTrack.queueEntryId || `occ-${nextIndex}-${nextTrack.id}`,
+      title: nextTrack.title,
+      artist: nextTrack.artist,
+      album: nextTrack.album,
+      duration: nextTrack.duration
+    } : null;
+    const audio = st.latestAudioSnapshot;
+    const mappedState = audio.state === "playing" || audio.state === "paused" || audio.state === "loading" || audio.state === "error" ? audio.state : "stopped";
+    const collections = aggregateLibraryCollections(st.libraryTracks);
+    return {
+      protocolVersion: st.protocolVersion,
+      epoch: st.epoch,
+      sequence: st.sequence,
+      phase: "ready",
+      playback: {
+        state: mappedState,
+        position: (audio.positionMs || 0) / 1e3,
+        duration: audio.durationMs && audio.durationMs > 0 ? audio.durationMs / 1e3 : currentTrack?.duration ?? 0,
+        volume: audio.volume ?? 1,
+        playbackRate: audio.playbackRate ?? 1,
+        playMode: st.currentPlayMode,
+        queueIndex: st.currentQueueIndex,
+        queueRevision: st.queueRevision,
+        upcomingQueueIndex: nextIndex >= 0 ? nextIndex : null,
+        nativePlaybackActive: mappedState === "playing",
+        codec: audio.codec || currentTrack?.format || "FLAC",
+        bitrate: currentTrack?.bitrate || 1411,
+        sourceSampleRate: audio.sampleRate || currentTrack?.sampleRate || 96e3,
+        sourceBitDepth: audio.bitDepth || currentTrack?.bitDepth || 24,
+        sourceChannels: audio.channels || 2,
+        outputBackend: audio.outputBackend || "oboe",
+        actualSampleRate: audio.actualSampleRate || 96e3,
+        actualBitDepth: audio.actualBitDepth || 24,
+        actualChannels: 2,
+        outputPerfect: st.eqConfig.bitPerfect && !st.eqConfig.enabled,
+        gaplessActive: st.eqConfig.gapless,
+        preloadReady: upcomingTrack !== null,
+        upcomingTrack
+      },
+      track: currentTrack,
+      queue: {
+        id: "default",
+        revision: st.queueRevision,
+        total: st.queueTracks.length,
+        index: st.currentQueueIndex,
+        occurrenceId: currentTrack ? currentTrack.queueEntryId || `occ-${st.currentQueueIndex}-${currentTrack.id}` : null
+      },
+      error: errorMessage,
+      libraryRevision: st.libraryRevision,
+      playlistsRevision: st.playlistsRevision,
+      lyricsRevision: st.lyricsRevision,
+      favoriteTrackIds: [...st.favoriteTrackIds],
+      bookmarks: [...st.bookmarks],
+      playlists: structuredClone(st.playlists),
+      albums: collections.albums,
+      artists: collections.artists,
+      eqConfig: structuredClone(st.eqConfig),
+      currentLyrics: currentTrack ? buildEmbeddedLyricsForTrack(currentTrack) : null,
+      libraryTrackCount: st.libraryTracks.length
+    };
+  }
+  function persistEmbeddedSession() {
+    const st = activeEmbeddedHostState;
+    const payload = JSON.stringify({
+      queueRevision: st.queueRevision,
+      currentQueueIndex: st.currentQueueIndex,
+      playMode: st.currentPlayMode,
+      favoriteTrackIds: st.favoriteTrackIds,
+      bookmarks: st.bookmarks,
+      playlists: st.playlists,
+      eqConfig: st.eqConfig
+    });
+    const res = invokeHostBridgePort("sessionStore", "save", {
+      payloadJson: payload,
+      expectedRevision: st.sessionStoreRevision
+    });
+    if (res && res.ok && res.value) {
+      if (res.value.ok && typeof res.value.revision === "string") {
+        st.sessionStoreRevision = res.value.revision;
+      } else if (typeof res.value.actualRevision === "string") {
+        st.sessionStoreRevision = res.value.actualRevision;
+      }
+    }
+  }
+  function publishEmbeddedEvent(errorMessage = null) {
+    const st = activeEmbeddedHostState;
+    st.sequence += 1;
+    const snapshot = buildEmbeddedSnapshot(errorMessage);
+    const bridge = getHostBridge();
+    if (bridge && typeof bridge.emitCoreEvent === "function") {
+      try {
+        bridge.emitCoreEvent(
+          JSON.stringify({
+            epoch: st.epoch,
+            sequence: st.sequence,
+            snapshot
+          })
+        );
+      } catch {
+      }
+    }
+    return snapshot;
+  }
   const globalNamespace = globalThis;
   globalNamespace.__TWILIGHT_PORTABLE_CORE__ = {
     CORE_PROTOCOL_VERSION,
+    PORTABLE_EQ_PRESETS,
     createPortableMusicCoreHost,
     createHost: createPortableMusicCoreHost,
     ensurePortableRuntimeGlobals,
+    aggregateLibraryCollections,
+    applyEqConfigPatch,
     bootHost(rawConfig) {
       const cfg = typeof rawConfig === "string" && rawConfig.trim().length > 0 ? JSON.parse(rawConfig) : typeof rawConfig === "object" && rawConfig !== null ? rawConfig : {};
+      activeEmbeddedHostState = createInitialEmbeddedBridgeState();
       if (cfg.epoch) activeEmbeddedHostState.epoch = cfg.epoch;
       if (cfg.protocolVersion) activeEmbeddedHostState.protocolVersion = cfg.protocolVersion;
+      const loaded = invokeHostBridgePort("sessionStore", "load", {});
+      if (loaded && loaded.ok && loaded.value && typeof loaded.value.payloadJson === "string") {
+        activeEmbeddedHostState.sessionStoreRevision = loaded.value.revision ?? null;
+        try {
+          const parsed = JSON.parse(loaded.value.payloadJson);
+          if (typeof parsed.queueRevision === "number") activeEmbeddedHostState.queueRevision = parsed.queueRevision;
+          if (typeof parsed.currentQueueIndex === "number") activeEmbeddedHostState.currentQueueIndex = parsed.currentQueueIndex;
+          if (typeof parsed.playMode === "string") activeEmbeddedHostState.currentPlayMode = parsed.playMode;
+          if (Array.isArray(parsed.favoriteTrackIds)) activeEmbeddedHostState.favoriteTrackIds = parsed.favoriteTrackIds;
+          if (Array.isArray(parsed.bookmarks)) activeEmbeddedHostState.bookmarks = parsed.bookmarks;
+          if (Array.isArray(parsed.playlists)) activeEmbeddedHostState.playlists = parsed.playlists;
+          if (parsed.eqConfig) {
+            activeEmbeddedHostState.eqConfig = applyEqConfigPatch(createDefaultEqConfig(), parsed.eqConfig);
+          }
+        } catch {
+        }
+      }
       return JSON.stringify({
         ok: true,
         epoch: activeEmbeddedHostState.epoch,
@@ -25564,11 +26037,440 @@ var TwilightPortableCore = (function(exports) {
     },
     handleRequest(rawEnvelope) {
       const env = typeof rawEnvelope === "string" && rawEnvelope.trim().length > 0 ? JSON.parse(rawEnvelope) : typeof rawEnvelope === "object" && rawEnvelope !== null ? rawEnvelope : {};
-      activeEmbeddedHostState.lastRequestId = env.requestId ?? null;
+      const st = activeEmbeddedHostState;
+      const requestId = env.requestId ?? "req-unknown";
+      st.lastRequestId = requestId;
+      const name = env.name ?? "";
+      const payload = env.payload ?? {};
+      if (env.kind === "query") {
+        if (name === "core.getSnapshot" || name === "state.snapshot") {
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: buildEmbeddedSnapshot()
+          });
+        }
+        if (name === "playback.getQueueWindow" || name === "queue.page") {
+          const offset = Number(payload.offset ?? 0);
+          const limit = Number(payload.limit ?? 50);
+          const items = st.queueTracks.slice(offset, offset + limit).map((track, idx) => {
+            const absIndex = offset + idx;
+            return {
+              occurrenceId: track.queueEntryId || `occ-${absIndex}-${track.id}`,
+              index: absIndex,
+              track
+            };
+          });
+          const currentTrack = st.queueTracks[st.currentQueueIndex];
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: {
+              queueId: "default",
+              revision: st.queueRevision,
+              total: st.queueTracks.length,
+              offset,
+              limit,
+              currentIndex: st.currentQueueIndex,
+              currentOccurrenceId: currentTrack ? currentTrack.queueEntryId || `occ-${st.currentQueueIndex}-${currentTrack.id}` : null,
+              items
+            }
+          });
+        }
+        if (name === "search.songs") {
+          const q = String(payload.query ?? "").trim().toLowerCase();
+          const matched = q ? st.libraryTracks.filter(
+            (t) => t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q) || t.album.toLowerCase().includes(q)
+          ) : [...st.libraryTracks];
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: {
+              query: String(payload.query ?? "").trim(),
+              total: matched.length,
+              items: matched
+            }
+          });
+        }
+        if (name === "lyrics.current") {
+          const targetId = payload.trackId ? String(payload.trackId) : null;
+          const targetTrack = targetId ? st.libraryTracks.find((t) => t.id === targetId) || st.queueTracks.find((t) => t.id === targetId) : st.queueTracks[st.currentQueueIndex];
+          const lyricsView = targetTrack ? buildEmbeddedLyricsForTrack(targetTrack) : { trackId: targetId || "none", source: "none", synced: false, lines: [] };
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: lyricsView
+          });
+        }
+        if (name === "library.collections") {
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: aggregateLibraryCollections(st.libraryTracks)
+          });
+        }
+        if (name === "playlists.list") {
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: structuredClone(st.playlists)
+          });
+        }
+        if (name === "audio.getEq") {
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: structuredClone(st.eqConfig)
+          });
+        }
+        return JSON.stringify({
+          requestId,
+          epoch: st.epoch,
+          ok: false,
+          error: {
+            code: "INVALID_REQUEST",
+            message: `Unsupported query: ${name}`,
+            retryable: false
+          }
+        });
+      }
+      const requiresRevCheck = name === "playback.selectQueueIndex" || name === "playback.replaceQueue" || name === "queue.select" || name === "queue.edit";
+      if (requiresRevCheck && env.expectedRevision !== void 0 && env.expectedRevision !== null && env.expectedRevision !== st.queueRevision) {
+        return JSON.stringify({
+          requestId,
+          epoch: st.epoch,
+          ok: false,
+          error: {
+            code: "STALE_REVISION",
+            message: `Expected queue revision ${env.expectedRevision}, but authoritative revision is ${st.queueRevision}`,
+            retryable: true
+          }
+        });
+      }
+      switch (name) {
+        case "playback.play": {
+          const positionSec = typeof payload.position === "number" ? payload.position : void 0;
+          const activeTrack = st.queueTracks[st.currentQueueIndex];
+          if (activeTrack) {
+            const uriRes = invokeHostBridgePort("resourceAccess", "resolveNativeUri", {
+              resourceId: activeTrack.source || activeTrack.id
+            });
+            if (uriRes && !uriRes.ok && uriRes.error?.code === "PERMISSION_EXPIRED") {
+              return JSON.stringify({
+                requestId,
+                epoch: st.epoch,
+                ok: false,
+                error: {
+                  code: "PERMISSION_EXPIRED",
+                  message: uriRes.error.message,
+                  retryable: false
+                }
+              });
+            }
+          }
+          invokeHostBridgePort("audioEngine", "play", positionSec !== void 0 ? { position: positionSec } : {});
+          st.latestAudioSnapshot.state = "playing";
+          if (positionSec !== void 0) {
+            st.latestAudioSnapshot.positionMs = Math.round(positionSec * 1e3);
+          }
+          break;
+        }
+        case "playback.pause": {
+          invokeHostBridgePort("audioEngine", "pause", {});
+          st.latestAudioSnapshot.state = "paused";
+          break;
+        }
+        case "playback.stop": {
+          invokeHostBridgePort("audioEngine", "stop", {});
+          st.latestAudioSnapshot.state = "idle";
+          st.latestAudioSnapshot.positionMs = 0;
+          break;
+        }
+        case "playback.seek": {
+          const posSec = Number(payload.position ?? 0);
+          const posMs = Math.max(0, Math.round(posSec * 1e3));
+          invokeHostBridgePort("audioEngine", "seek", { positionMs: posMs });
+          st.latestAudioSnapshot.positionMs = posMs;
+          break;
+        }
+        case "playback.next": {
+          if (st.queueTracks.length > 0) {
+            st.currentQueueIndex = (st.currentQueueIndex + 1) % st.queueTracks.length;
+            st.lyricsRevision += 1;
+            invokeHostBridgePort("audioEngine", "next", {});
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "playback.previous": {
+          if (st.queueTracks.length > 0) {
+            st.currentQueueIndex = st.currentQueueIndex - 1 < 0 ? st.queueTracks.length - 1 : st.currentQueueIndex - 1;
+            st.lyricsRevision += 1;
+            invokeHostBridgePort("audioEngine", "previous", {});
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "playback.setVolume":
+        case "playback.volume": {
+          const vol = Math.max(0, Math.min(1, Number(payload.volume ?? 1)));
+          invokeHostBridgePort("audioEngine", "setVolume", { volume: vol });
+          st.latestAudioSnapshot.volume = vol;
+          break;
+        }
+        case "playback.setPlayMode":
+        case "playback.mode": {
+          const mode = String(payload.mode || "sequence");
+          st.currentPlayMode = mode;
+          invokeHostBridgePort("audioEngine", "setPlayMode", { mode });
+          persistEmbeddedSession();
+          break;
+        }
+        case "playback.selectQueueIndex":
+        case "queue.select": {
+          const idx = Number(payload.index ?? 0);
+          if (idx >= 0 && idx < st.queueTracks.length) {
+            st.currentQueueIndex = idx;
+            st.queueRevision += 1;
+            st.lyricsRevision += 1;
+            invokeHostBridgePort("audioEngine", "selectQueueIndex", { index: idx });
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "playback.replaceQueue": {
+          const incoming = Array.isArray(payload.tracks) ? payload.tracks : [];
+          const startIndex = Number(payload.startIndex ?? 0);
+          const playImmediately = payload.play !== false && payload.play !== "false";
+          if (incoming.length > 0) {
+            st.queueTracks = structuredClone(incoming);
+            st.currentQueueIndex = Math.max(0, Math.min(st.queueTracks.length - 1, startIndex));
+            st.queueRevision += 1;
+            st.lyricsRevision += 1;
+            invokeHostBridgePort("audioEngine", "loadQueue", {
+              tracks: st.queueTracks,
+              startIndex: st.currentQueueIndex
+            });
+            if (playImmediately) {
+              invokeHostBridgePort("audioEngine", "play", { position: 0 });
+              st.latestAudioSnapshot.state = "playing";
+              st.latestAudioSnapshot.positionMs = 0;
+            }
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "library.syncTracks": {
+          const scanned = Array.isArray(payload.tracks) ? payload.tracks : [];
+          const merged = /* @__PURE__ */ new Map();
+          for (const t of EMBEDDED_DEMO_TRACKS) merged.set(t.id, structuredClone(t));
+          for (const t of scanned) {
+            if (t && typeof t.id === "string") merged.set(t.id, structuredClone(t));
+          }
+          st.libraryTracks = [...merged.values()];
+          st.libraryRevision += 1;
+          if (scanned.length > 0) {
+            st.queueTracks = structuredClone(st.libraryTracks);
+            st.currentQueueIndex = Math.max(0, Math.min(st.queueTracks.length - 1, st.currentQueueIndex));
+            st.queueRevision += 1;
+            st.lyricsRevision += 1;
+            invokeHostBridgePort("audioEngine", "loadQueue", {
+              tracks: st.queueTracks,
+              startIndex: st.currentQueueIndex
+            });
+          }
+          persistEmbeddedSession();
+          break;
+        }
+        case "playlists.toggleFavorite": {
+          const trackId = String(payload.trackId || "").trim();
+          if (trackId) {
+            const idx = st.favoriteTrackIds.indexOf(trackId);
+            if (idx >= 0) {
+              st.favoriteTrackIds.splice(idx, 1);
+            } else {
+              st.favoriteTrackIds.push(trackId);
+            }
+            st.playlistsRevision += 1;
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "playlists.create": {
+          st.idCounter += 1;
+          const plName = String(payload.name || "Untitled Playlist").trim() || "Untitled Playlist";
+          const rawIds = Array.isArray(payload.trackIds) ? payload.trackIds : [];
+          const trackIds = [...new Set(rawIds.map((id2) => String(id2 || "").trim()).filter(Boolean))];
+          const created = {
+            id: `pl-${nowEmbeddedUnixMs()}-${st.idCounter}`,
+            name: plName,
+            trackIds,
+            trackCount: trackIds.length,
+            updatedAtMs: nowEmbeddedUnixMs()
+          };
+          st.playlists.push(created);
+          st.playlistsRevision += 1;
+          persistEmbeddedSession();
+          break;
+        }
+        case "playlists.delete": {
+          const playlistId = String(payload.playlistId || "").trim();
+          const idx = st.playlists.findIndex((p) => p.id === playlistId);
+          if (idx >= 0) {
+            st.playlists.splice(idx, 1);
+            st.playlistsRevision += 1;
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "playlists.rename": {
+          const playlistId = String(payload.playlistId || "").trim();
+          const newName = String(payload.name || "").trim();
+          const target = st.playlists.find((p) => p.id === playlistId);
+          if (target && newName) {
+            target.name = newName;
+            target.updatedAtMs = nowEmbeddedUnixMs();
+            st.playlistsRevision += 1;
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "playlists.addTracks": {
+          const playlistId = String(payload.playlistId || "").trim();
+          const rawIds = Array.isArray(payload.trackIds) ? payload.trackIds : [];
+          const target = st.playlists.find((p) => p.id === playlistId);
+          if (target) {
+            const merged = new Set(target.trackIds);
+            for (const r of rawIds) {
+              const id2 = String(r || "").trim();
+              if (id2) merged.add(id2);
+            }
+            target.trackIds = [...merged];
+            target.trackCount = target.trackIds.length;
+            target.updatedAtMs = nowEmbeddedUnixMs();
+            st.playlistsRevision += 1;
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "playlists.removeTrack": {
+          const playlistId = String(payload.playlistId || "").trim();
+          const trackId = String(payload.trackId || "").trim();
+          const target = st.playlists.find((p) => p.id === playlistId);
+          if (target && trackId) {
+            target.trackIds = target.trackIds.filter((id2) => id2 !== trackId);
+            target.trackCount = target.trackIds.length;
+            target.updatedAtMs = nowEmbeddedUnixMs();
+            st.playlistsRevision += 1;
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "bookmarks.add": {
+          const activeTrack = st.queueTracks[st.currentQueueIndex];
+          const trackId = String(payload.trackId || activeTrack?.id || "").trim();
+          const positionSec = typeof payload.positionSec === "number" ? payload.positionSec : (st.latestAudioSnapshot.positionMs || 0) / 1e3;
+          const label = String(payload.label || `Bookmark @ ${Math.round(positionSec)}s`).trim();
+          if (trackId) {
+            st.idCounter += 1;
+            st.bookmarks.push({
+              id: `bm-${nowEmbeddedUnixMs()}-${st.idCounter}`,
+              trackId,
+              positionSec,
+              label,
+              createdAtMs: nowEmbeddedUnixMs()
+            });
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "bookmarks.remove": {
+          const bmId = String(payload.bookmarkId || "").trim();
+          if (bmId) {
+            st.bookmarks = st.bookmarks.filter((b) => b.id !== bmId);
+            persistEmbeddedSession();
+          }
+          break;
+        }
+        case "audio.setEq": {
+          st.eqConfig = applyEqConfigPatch(st.eqConfig, payload);
+          invokeHostBridgePort("audioEngine", "setDspConfig", {
+            configJson: JSON.stringify(st.eqConfig)
+          });
+          persistEmbeddedSession();
+          break;
+        }
+        case "playback.platformInterruption": {
+          const shouldPause = payload.shouldPause !== false && payload.shouldPause !== "false";
+          if (shouldPause) {
+            invokeHostBridgePort("audioEngine", "pause", {});
+            st.latestAudioSnapshot.state = "paused";
+          }
+          break;
+        }
+        case "settings.edit": {
+          persistEmbeddedSession();
+          break;
+        }
+      }
+      const snapRes = invokeHostBridgePort("audioEngine", "getSnapshot", {});
+      if (snapRes && snapRes.ok && snapRes.value && typeof snapRes.value === "object") {
+        st.latestAudioSnapshot = {
+          ...st.latestAudioSnapshot,
+          ...snapRes.value
+        };
+      }
+      const updatedSnapshot = publishEmbeddedEvent();
+      return JSON.stringify({
+        requestId,
+        epoch: st.epoch,
+        ok: true,
+        value: {
+          snapshot: updatedSnapshot
+        }
+      });
+    },
+    onAudioEngineEvent(rawEvent) {
+      const evt = typeof rawEvent === "string" && rawEvent.trim().length > 0 ? JSON.parse(rawEvent) : typeof rawEvent === "object" && rawEvent !== null ? rawEvent : {};
+      const st = activeEmbeddedHostState;
+      if (evt.type === "track-ended" && st.queueTracks.length > 0) {
+        if (st.currentPlayMode === "single") {
+          invokeHostBridgePort("audioEngine", "seek", { positionMs: 0 });
+          invokeHostBridgePort("audioEngine", "play", { position: 0 });
+        } else {
+          st.currentQueueIndex = (st.currentQueueIndex + 1) % st.queueTracks.length;
+          st.lyricsRevision += 1;
+          invokeHostBridgePort("audioEngine", "selectQueueIndex", { index: st.currentQueueIndex });
+        }
+        const snapRes = invokeHostBridgePort("audioEngine", "getSnapshot", {});
+        if (snapRes && snapRes.ok && snapRes.value && typeof snapRes.value === "object") {
+          st.latestAudioSnapshot = {
+            ...st.latestAudioSnapshot,
+            ...snapRes.value
+          };
+        }
+      } else if (evt.snapshot && typeof evt.snapshot === "object") {
+        st.latestAudioSnapshot = {
+          ...st.latestAudioSnapshot,
+          ...evt.snapshot
+        };
+        if (typeof evt.snapshot.queueIndex === "number" && evt.snapshot.queueIndex >= 0 && evt.snapshot.queueIndex < st.queueTracks.length) {
+          st.currentQueueIndex = evt.snapshot.queueIndex;
+        }
+      }
+      const updatedSnapshot = publishEmbeddedEvent(typeof evt.message === "string" ? evt.message : null);
       return JSON.stringify({
         ok: true,
-        requestId: activeEmbeddedHostState.lastRequestId,
-        epoch: activeEmbeddedHostState.epoch
+        epoch: st.epoch,
+        sequence: st.sequence,
+        snapshot: updatedSnapshot
       });
     },
     cancelRequest(rawCancel) {
@@ -25581,6 +26483,10 @@ var TwilightPortableCore = (function(exports) {
     }
   };
   exports.CORE_PROTOCOL_VERSION = CORE_PROTOCOL_VERSION;
+  exports.PORTABLE_EQ_PRESETS = PORTABLE_EQ_PRESETS;
+  exports.aggregateLibraryCollections = aggregateLibraryCollections;
+  exports.applyEqConfigPatch = applyEqConfigPatch;
+  exports.createDefaultEqConfig = createDefaultEqConfig;
   exports.createPortableMusicCoreHost = createPortableMusicCoreHost;
   exports.ensurePortableRuntimeGlobals = ensurePortableRuntimeGlobals;
   exports.libraryQueueResumeMode = libraryQueueResumeMode;

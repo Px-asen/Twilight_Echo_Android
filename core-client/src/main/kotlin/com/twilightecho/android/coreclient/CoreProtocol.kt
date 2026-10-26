@@ -119,6 +119,10 @@ data class CoreSnapshot(
     val lyricsRevision: Long? = null,
     val favoriteTrackIds: List<String> = emptyList(),
     val bookmarks: List<CoreBookmarkView> = emptyList(),
+    val playlists: List<CorePlaylistView> = emptyList(),
+    val albums: List<CoreAlbumCollectionView> = emptyList(),
+    val artists: List<CoreArtistCollectionView> = emptyList(),
+    val eqConfig: CoreEqConfigView = CoreEqConfigView(),
     val currentLyrics: CoreLyricsView? = null,
     val libraryTrackCount: Int = 0
 )
@@ -297,6 +301,52 @@ sealed interface CoreTypedCommand {
         val bookmarkId: String
     ) : CoreTypedCommand {
         override val name: String = "bookmarks.remove"
+    }
+
+    @Serializable
+    data class CreatePlaylist(
+        val playlistName: String,
+        val trackIds: List<String> = emptyList()
+    ) : CoreTypedCommand {
+        override val name: String = "playlists.create"
+    }
+
+    @Serializable
+    data class DeletePlaylist(
+        val playlistId: String
+    ) : CoreTypedCommand {
+        override val name: String = "playlists.delete"
+    }
+
+    @Serializable
+    data class RenamePlaylist(
+        val playlistId: String,
+        val newName: String
+    ) : CoreTypedCommand {
+        override val name: String = "playlists.rename"
+    }
+
+    @Serializable
+    data class AddTracksToPlaylist(
+        val playlistId: String,
+        val trackIds: List<String>
+    ) : CoreTypedCommand {
+        override val name: String = "playlists.addTracks"
+    }
+
+    @Serializable
+    data class RemoveTrackFromPlaylist(
+        val playlistId: String,
+        val trackId: String
+    ) : CoreTypedCommand {
+        override val name: String = "playlists.removeTrack"
+    }
+
+    @Serializable
+    data class SetEqConfig(
+        val config: CoreEqConfigView
+    ) : CoreTypedCommand {
+        override val name: String = "audio.setEq"
     }
 }
 

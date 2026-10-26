@@ -8,6 +8,8 @@ import com.twilightecho.android.runtimehost.AudioEvent
 import com.twilightecho.android.runtimehost.AudioSnapshot
 import com.twilightecho.android.runtimehost.AudioSourceDescriptor
 import com.twilightecho.android.runtimehost.CancelHandle
+import com.twilightecho.android.runtimehost.ResourceAccessPort
+import com.twilightecho.android.runtimehost.ResourceAccessResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -42,6 +44,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class NativeAudioEngineAdapter(
     private val jni: TwilightAudioEngineJni = TwilightAudioEngineJni(),
+    private val resourceAccess: ResourceAccessPort? = null,
     private val json: Json = DefaultCoreClient.DefaultJson
 ) : AudioEnginePort {
 
@@ -85,6 +88,42 @@ class NativeAudioEngineAdapter(
     )
 
     private var queuedTracks: List<CoreTrackView> = emptyList()
+    private var activeResourceId: String? = null
+    private var lastResolvedNativePath: String? = null
+    private var lastDspConfigJson: String = "{}"
+
+    val currentResolvedNativePath: String?
+        get() = lastResolvedNativePath
+
+    private suspend fun resolveAndLeasePlayablePath(rawSource: String): String {
+        val prevId = activeResourceId
+        if (prevId != null && prevId != rawSource) {
+            resourceAccess?.releasePlayableResource(prevId)
+        }
+        activeResourceId = rawSource
+        val access = resourceAccess ?: return rawSource.also { lastResolvedNativePath = it }
+        return when (val res = access.acquirePlayableResource(rawSource)) {
+            is ResourceAccessResult.Ok -> res.value.nativePath.also { lastResolvedNativePath = it }
+            is ResourceAccessResult.Error -> {
+                broadcastEvent(
+                    AudioEvent.EngineError(
+                        code = res.code.name,
+                        message = res.message,
+                        recoverable = res.retryable
+                    )
+                )
+                rawSource.also { lastResolvedNativePath = it }
+            }
+        }
+    }
+
+    private suspend fun releaseActivePlayableLease() {
+        val prevId = activeResourceId
+        activeResourceId = null
+        if (prevId != null) {
+            resourceAccess?.releasePlayableResource(prevId)
+        }
+    }
 
     private val jniEventListener = TwilightAudioEventListener { eventType, payloadJson ->
         // Non-blocking enqueue from native callback thread
@@ -126,9 +165,10 @@ class NativeAudioEngineAdapter(
     }
 
     override suspend fun load(source: AudioSourceDescriptor) = withContext(controlDispatcher) {
+        val playablePath = resolveAndLeasePlayablePath(source.resourceId.ifBlank { source.nativeUri })
         val handle = engineHandle
         if (jni.isNativeLibraryLoaded && handle != 0L) {
-            jni.nativePlay(handle, source.nativeUri, source.startTimeSeconds)
+            jni.nativePlay(handle, playablePath, source.startTimeSeconds)
             jni.nativePause(handle)
         }
         cachedSnapshot = cachedSnapshot.copy(
@@ -141,9 +181,10 @@ class NativeAudioEngineAdapter(
     override suspend fun play(startTimeSeconds: Double?) = withContext(controlDispatcher) {
         val handle = engineHandle
         val currentTrack = queuedTracks.getOrNull(cachedSnapshot.queueIndex.coerceAtLeast(0))
-        if (jni.isNativeLibraryLoaded && handle != 0L) {
-            val sourceUri = currentTrack?.source ?: currentTrack?.id ?: ""
-            jni.nativePlay(handle, sourceUri, startTimeSeconds ?: (cachedSnapshot.positionMs / 1000.0))
+        val rawUri = currentTrack?.source ?: currentTrack?.id ?: activeResourceId ?: ""
+        val playablePath = if (rawUri.isNotBlank()) resolveAndLeasePlayablePath(rawUri) else ""
+        if (jni.isNativeLibraryLoaded && handle != 0L && playablePath.isNotBlank()) {
+            jni.nativePlay(handle, playablePath, startTimeSeconds ?: (cachedSnapshot.positionMs / 1000.0))
         }
         cachedSnapshot = cachedSnapshot.copy(
             state = "playing",
@@ -167,6 +208,7 @@ class NativeAudioEngineAdapter(
         if (jni.isNativeLibraryLoaded && handle != 0L) {
             jni.nativeStop(handle)
         }
+        releaseActivePlayableLease()
         cachedSnapshot = cachedSnapshot.copy(state = "idle", positionMs = 0L)
         broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
     }
@@ -238,11 +280,13 @@ class NativeAudioEngineAdapter(
 
     override suspend fun selectQueueIndex(index: Int) = withContext(controlDispatcher) {
         if (index !in queuedTracks.indices) return@withContext
+        val selected = queuedTracks[index]
+        val rawUri = selected.source ?: selected.id
+        resolveAndLeasePlayablePath(rawUri)
         val handle = engineHandle
         if (jni.isNativeLibraryLoaded && handle != 0L) {
             jni.nativeSelectQueueIndex(handle, index)
         }
-        val selected = queuedTracks[index]
         cachedSnapshot = cachedSnapshot.copy(
             queueIndex = index,
             positionMs = 0L,
@@ -250,6 +294,21 @@ class NativeAudioEngineAdapter(
             codec = selected.format ?: "FLAC",
             sampleRate = selected.sampleRate ?: 96000,
             bitDepth = selected.bitDepth ?: 24
+        )
+        broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
+    }
+
+    override suspend fun setDspConfig(configJson: String) = withContext(controlDispatcher) {
+        lastDspConfigJson = configJson
+        val handle = engineHandle
+        if (jni.isNativeLibraryLoaded && handle != 0L) {
+            jni.nativeSetDspConfig(handle, configJson)
+        }
+        val obj = runCatching { json.parseToJsonElement(configJson) as? JsonObject }.getOrNull()
+        val eqEnabled = obj?.get("enabled")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+        val bitPerfect = obj?.get("bitPerfect")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
+        cachedSnapshot = cachedSnapshot.copy(
+            outputPerfect = bitPerfect && !eqEnabled
         )
         broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
     }

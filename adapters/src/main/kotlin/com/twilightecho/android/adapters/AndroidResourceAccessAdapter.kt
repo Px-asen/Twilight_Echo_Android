@@ -5,20 +5,24 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import com.twilightecho.android.coreclient.CoreErrorCode
+import com.twilightecho.android.runtimehost.NativeFdResource
 import com.twilightecho.android.runtimehost.ResourceAccessPort
 import com.twilightecho.android.runtimehost.ResourceAccessResult
 import com.twilightecho.android.runtimehost.ResourceId
 import com.twilightecho.android.runtimehost.ResourceStat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.Closeable
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.InputStream
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Android implementation of `ResourceAccessPort` (Sections 8.2, 8.3, 8.4, 14.3).
@@ -30,10 +34,12 @@ import java.io.InputStream
  */
 class AndroidResourceAccessAdapter(
     private val context: Context
-) : ResourceAccessPort {
+) : ResourceAccessPort, Closeable {
 
     private val contentResolver: ContentResolver
         get() = context.contentResolver
+
+    private val activeFdLeases = ConcurrentHashMap<ResourceId, ParcelFileDescriptor>()
 
     override suspend fun stat(resourceId: ResourceId): ResourceAccessResult<ResourceStat> =
         withContext(Dispatchers.IO) {
@@ -144,6 +150,98 @@ class AndroidResourceAccessAdapter(
             }
             ResourceAccessResult.Ok(resourceId)
         }
+
+    override suspend fun acquirePlayableResource(
+        resourceId: ResourceId
+    ): ResourceAccessResult<NativeFdResource> = withContext(Dispatchers.IO) {
+        if (resourceId.isBlank()) {
+            return@withContext ResourceAccessResult.Error(
+                code = CoreErrorCode.INVALID_REQUEST,
+                message = "Cannot acquire playable resource for blank resourceId"
+            )
+        }
+        val uri = parseResourceUri(resourceId)
+        if (!uri.scheme.equals("content", ignoreCase = true)) {
+            val filePath = uri.path ?: resourceId
+            val file = File(filePath)
+            if (file.exists() && !file.canRead()) {
+                return@withContext ResourceAccessResult.Error(
+                    code = CoreErrorCode.PERMISSION_EXPIRED,
+                    message = "Local file read permission denied: $filePath"
+                )
+            }
+            return@withContext ResourceAccessResult.Ok(
+                NativeFdResource(
+                    resourceId = resourceId,
+                    nativePath = filePath,
+                    detachedFd = null,
+                    mimeType = guessAudioMimeType(file.extension)
+                )
+            )
+        }
+
+        if (!hasReadUriPermission(uri)) {
+            return@withContext ResourceAccessResult.Error(
+                code = CoreErrorCode.PERMISSION_EXPIRED,
+                message = "URI read grant expired for $uri"
+            )
+        }
+
+        try {
+            val pfd = contentResolver.openFileDescriptor(uri, "r")
+                ?: return@withContext ResourceAccessResult.Error(
+                    code = CoreErrorCode.NOT_FOUND,
+                    message = "ContentResolver returned null ParcelFileDescriptor for $uri"
+                )
+            activeFdLeases.put(resourceId, pfd)?.let { old ->
+                runCatching { old.close() }
+            }
+            val fd = pfd.fd
+            ResourceAccessResult.Ok(
+                NativeFdResource(
+                    resourceId = resourceId,
+                    nativePath = "/proc/self/fd/$fd",
+                    detachedFd = fd,
+                    mimeType = contentResolver.getType(uri)
+                )
+            )
+        } catch (sec: SecurityException) {
+            ResourceAccessResult.Error(
+                code = CoreErrorCode.PERMISSION_EXPIRED,
+                message = "SecurityException opening descriptor for $uri: ${sec.message}",
+                retryable = false
+            )
+        } catch (fnf: FileNotFoundException) {
+            ResourceAccessResult.Error(
+                code = CoreErrorCode.NOT_FOUND,
+                message = "Content URI descriptor not found for $uri: ${fnf.message}",
+                retryable = false
+            )
+        } catch (t: Throwable) {
+            ResourceAccessResult.Error(
+                code = CoreErrorCode.FAILED,
+                message = "Failed to acquire playable descriptor for $uri: ${t.message}",
+                retryable = true
+            )
+        }
+    }
+
+    override suspend fun releasePlayableResource(resourceId: ResourceId) {
+        withContext(Dispatchers.IO) {
+            activeFdLeases.remove(resourceId)?.let { pfd ->
+                runCatching { pfd.close() }
+            }
+        }
+    }
+
+    override fun close() {
+        val keys = activeFdLeases.keys.toList()
+        for (key in keys) {
+            activeFdLeases.remove(key)?.let { pfd ->
+                runCatching { pfd.close() }
+            }
+        }
+    }
 
     private fun statContentUri(resourceId: ResourceId, uri: Uri): ResourceAccessResult<ResourceStat> {
         if (!hasReadUriPermission(uri)) {

@@ -12,7 +12,8 @@ import androidx.compose.ui.unit.sp
 
 object TwilightTokens {
     val DeepNightBackground = Color(0xFF0B0E17)
-    valElevatedSurface = Color(0xFF141929)
+    val ElevatedSurface = Color(0xFF141929)
+    val valElevatedSurface = ElevatedSurface
     val GlassSurface = Color(0xFF1D243B)
     val AccentAmber = Color(0xFFFFB74D)
     val AccentViolet = Color(0xFF9575CD)

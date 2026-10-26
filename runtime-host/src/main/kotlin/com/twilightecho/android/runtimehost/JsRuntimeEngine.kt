@@ -17,6 +17,8 @@ interface JsHostCallbackBridge {
  * or a deterministic fallback engine in unit tests where native `libquickjs.so` is absent).
  */
 interface JsRuntimeEngine : Closeable {
+    val isNativeQuickJsAvailable: Boolean
+        get() = false
     fun bindHostBridge(bridge: JsHostCallbackBridge)
     fun evaluateScript(script: String, fileName: String = "music-core.js"): Any?
     fun invokeGlobalFunction(functionExpr: String, argJson: String): String
@@ -39,7 +41,7 @@ class CashQuickJsRuntimeEngine(
         quickJs = runCatching { QuickJs.create() }.getOrNull()
     }
 
-    val isNativeQuickJsAvailable: Boolean
+    override val isNativeQuickJsAvailable: Boolean
         get() = quickJs != null
 
     override fun bindHostBridge(bridge: JsHostCallbackBridge) {

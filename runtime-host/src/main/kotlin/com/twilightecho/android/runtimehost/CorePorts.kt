@@ -86,10 +86,33 @@ sealed class ResourceAccessResult<out T> {
     ) : ResourceAccessResult<Nothing>()
 }
 
+@Serializable
+data class NativeFdResource(
+    val resourceId: ResourceId,
+    val nativePath: String,
+    val detachedFd: Int? = null,
+    val mimeType: String? = null
+)
+
 interface ResourceAccessPort {
     suspend fun stat(resourceId: ResourceId): ResourceAccessResult<ResourceStat>
     suspend fun openReadStream(resourceId: ResourceId, offsetBytes: Long = 0L): ResourceAccessResult<InputStream>
     suspend fun resolveNativeUri(resourceId: ResourceId): ResourceAccessResult<String>
+
+    /**
+     * Resolves a resource (such as an Android `content://` URI) into a playable native path
+     * (e.g. `/proc/self/fd/<fd>`) and retains the underlying descriptor lease until
+     * `releasePlayableResource` is called (Sections 8.2, 8.3, 14.3, 14.4).
+     */
+    suspend fun acquirePlayableResource(resourceId: ResourceId): ResourceAccessResult<NativeFdResource> =
+        when (val res = resolveNativeUri(resourceId)) {
+            is ResourceAccessResult.Ok -> ResourceAccessResult.Ok(
+                NativeFdResource(resourceId = resourceId, nativePath = res.value)
+            )
+            is ResourceAccessResult.Error -> res
+        }
+
+    suspend fun releasePlayableResource(resourceId: ResourceId) {}
 }
 
 /**
@@ -156,6 +179,7 @@ interface AudioEnginePort : Closeable {
     suspend fun selectQueueIndex(index: Int)
     suspend fun next()
     suspend fun previous()
+    suspend fun setDspConfig(configJson: String) {}
     suspend fun getSnapshot(): AudioSnapshot
     fun subscribe(listener: (AudioEvent) -> Unit): CancelHandle
 }
