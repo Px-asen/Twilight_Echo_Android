@@ -7,6 +7,6 @@
   "hostApiVersion": "1.0.0",
   "nativeAbiVersion": "0.1.0",
   "bundleFile": "music-core.js",
-  "bundleSha256": "bccc6d8cb78a49e052e7d4144e1afed04fa5c340711f7a4db66d5ba0e5582dad",
-  "bundleBytes": 756214
+  "bundleSha256": "7cceeaf5320a12c8d99292c25f471f9ee039e453811d9648245870ef535484ee",
+  "bundleBytes": 1082726
 }

@@ -2,10 +2,14 @@ package com.twilightecho.android.runtimehost
 
 import android.content.Context
 import com.twilightecho.android.coreclient.CORE_PROTOCOL_VERSION
+import com.twilightecho.android.coreclient.CoreBookmarkView
 import com.twilightecho.android.coreclient.CoreCancelEnvelope
 import com.twilightecho.android.coreclient.CoreErrorCode
 import com.twilightecho.android.coreclient.CoreErrorView
 import com.twilightecho.android.coreclient.CoreEventMessage
+import com.twilightecho.android.coreclient.CoreLibrarySearchPage
+import com.twilightecho.android.coreclient.CoreLyricLine
+import com.twilightecho.android.coreclient.CoreLyricsView
 import com.twilightecho.android.coreclient.CorePhase
 import com.twilightecho.android.coreclient.CorePlaybackView
 import com.twilightecho.android.coreclient.CoreQueueEntryView
@@ -30,6 +34,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -44,13 +49,13 @@ import java.util.UUID
 
 /**
  * Single-threaded embedded QuickJS host executing the shared Music Core bundle (`music-core.js`)
- * and exposing `CoreTransport` for `CoreClient` consumers (Sections 10.1, 10.4, 10.5).
+ * and exposing `CoreTransport` for `CoreClient` consumers (Sections 10.1, 10.4, 10.5 + Phase 2).
  *
  * Lifecycle:
  * 1. Initializes `CoreRuntimeThreadDispatcher` (dedicated single thread).
  * 2. Loads `assets/core/music-core.js` and invokes `globalThis.__TWILIGHT_PORTABLE_CORE__.createHost(...)`.
  * 3. Subscribes to `AudioEnginePort` events and routes them onto the serial runtime thread.
- * 4. Restores persisted session state via `SessionStorePort.load()`.
+ * 4. Restores persisted session state (including `favoriteTrackIds` and `bookmarks`) via `SessionStorePort.load()`.
  */
 class QuickJsRuntimeHost(
     private val appContext: Context?,
@@ -71,8 +76,15 @@ class QuickJsRuntimeHost(
     private val epoch: String = "epoch-android-${UUID.randomUUID().toString().take(8)}"
     private var sequence: Long = 1L
     private var queueRevision: Long = 1L
+    private var libraryRevision: Long = 1L
+    private var playlistsRevision: Long = 1L
+    private var lyricsRevision: Long = 1L
     private var sessionStoreRevision: String? = null
+
+    private var libraryTracks: MutableList<CoreTrackView> = defaultDemoTracks().toMutableList()
     private var queueTracks: MutableList<CoreTrackView> = defaultDemoTracks().toMutableList()
+    private var favoriteTrackIds: LinkedHashSet<String> = linkedSetOf()
+    private var bookmarks: MutableList<CoreBookmarkView> = mutableListOf()
     private var currentQueueIndex: Int = 0
     private var currentPlayMode: PlayMode = PlayMode.SEQUENCE
     private var latestAudioSnapshot: AudioSnapshot = AudioSnapshot()
@@ -108,7 +120,7 @@ class QuickJsRuntimeHost(
             )
             jsEngine = engine
 
-            // Restore persisted session if available
+            // Restore persisted session (including favoriteTrackIds & bookmarks) if available
             ports.sessionStore.load()?.let { stored ->
                 sessionStoreRevision = stored.revision
                 restoreSessionFromJson(stored.payloadJson)
@@ -160,6 +172,12 @@ class QuickJsRuntimeHost(
     private suspend fun handleQueryOnRuntimeThread(
         envelope: CoreRequestEnvelope
     ): CoreResponseEnvelope {
+        // Delegate every query through the embedded JS Core first
+        jsEngine?.invokeGlobalFunction(
+            "globalThis.__TWILIGHT_PORTABLE_CORE__.handleRequest",
+            json.encodeToString(envelope)
+        )
+
         return when (envelope.name) {
             "core.getSnapshot", "state.snapshot" -> {
                 val snap = buildCurrentSnapshot()
@@ -201,6 +219,46 @@ class QuickJsRuntimeHost(
                     epoch = epoch,
                     ok = true,
                     value = json.encodeToJsonElement(window)
+                )
+            }
+            "search.songs" -> {
+                val rawQuery = envelope.payload["query"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                val matched = if (rawQuery.isEmpty()) {
+                    libraryTracks.toList()
+                } else {
+                    libraryTracks.filter { track ->
+                        track.title.contains(rawQuery, ignoreCase = true) ||
+                            track.artist.contains(rawQuery, ignoreCase = true) ||
+                            track.album.contains(rawQuery, ignoreCase = true)
+                    }
+                }
+                val page = CoreLibrarySearchPage(
+                    query = rawQuery,
+                    total = matched.size,
+                    items = matched
+                )
+                CoreResponseEnvelope(
+                    requestId = envelope.requestId,
+                    epoch = epoch,
+                    ok = true,
+                    value = json.encodeToJsonElement(page)
+                )
+            }
+            "lyrics.current" -> {
+                val targetTrackId = envelope.payload["trackId"]?.jsonPrimitive?.contentOrNull
+                val targetTrack = if (targetTrackId != null) {
+                    libraryTracks.firstOrNull { it.id == targetTrackId }
+                        ?: queueTracks.firstOrNull { it.id == targetTrackId }
+                } else {
+                    queueTracks.getOrNull(currentQueueIndex)
+                }
+                val lyricsView = targetTrack?.let { buildLyricsForTrack(it) }
+                    ?: CoreLyricsView(trackId = targetTrackId ?: "none", lines = emptyList())
+                CoreResponseEnvelope(
+                    requestId = envelope.requestId,
+                    epoch = epoch,
+                    ok = true,
+                    value = json.encodeToJsonElement(lyricsView)
                 )
             }
             else -> CoreResponseEnvelope(
@@ -281,6 +339,7 @@ class QuickJsRuntimeHost(
             "playback.next" -> {
                 if (queueTracks.isNotEmpty()) {
                     currentQueueIndex = (currentQueueIndex + 1) % queueTracks.size
+                    lyricsRevision += 1L
                     ports.audioEngine.next()
                     persistSessionSnapshot()
                 }
@@ -292,6 +351,7 @@ class QuickJsRuntimeHost(
                     } else {
                         currentQueueIndex - 1
                     }
+                    lyricsRevision += 1L
                     ports.audioEngine.previous()
                     persistSessionSnapshot()
                 }
@@ -311,6 +371,7 @@ class QuickJsRuntimeHost(
                 if (targetIndex in queueTracks.indices) {
                     currentQueueIndex = targetIndex
                     queueRevision += 1L
+                    lyricsRevision += 1L
                     ports.audioEngine.selectQueueIndex(targetIndex)
                     persistSessionSnapshot()
                 }
@@ -325,10 +386,69 @@ class QuickJsRuntimeHost(
                     queueTracks = incomingTracks.toMutableList()
                     currentQueueIndex = startIndex.coerceIn(0, queueTracks.lastIndex)
                     queueRevision += 1L
+                    lyricsRevision += 1L
                     ports.audioEngine.loadQueue(queueTracks, currentQueueIndex)
                     if (playImmediately) {
                         ports.audioEngine.play(0.0)
                     }
+                    persistSessionSnapshot()
+                }
+            }
+            "library.syncTracks" -> {
+                val scannedTracks = envelope.payload["tracks"]?.jsonArray?.mapNotNull {
+                    runCatching { json.decodeFromJsonElement<CoreTrackView>(it) }.getOrNull()
+                }.orEmpty()
+
+                val mergedById = linkedMapOf<String, CoreTrackView>()
+                // Keep demo tracks available alongside scanned device tracks
+                defaultDemoTracks().forEach { mergedById[it.id] = it }
+                scannedTracks.forEach { mergedById[it.id] = it }
+                libraryTracks = mergedById.values.toMutableList()
+                libraryRevision += 1L
+
+                if (scannedTracks.isNotEmpty()) {
+                    queueTracks = libraryTracks.toMutableList()
+                    currentQueueIndex = currentQueueIndex.coerceIn(0, queueTracks.lastIndex)
+                    queueRevision += 1L
+                    lyricsRevision += 1L
+                    ports.audioEngine.loadQueue(queueTracks, currentQueueIndex)
+                }
+                persistSessionSnapshot()
+            }
+            "playlists.toggleFavorite" -> {
+                val trackId = envelope.payload["trackId"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (trackId.isNotEmpty()) {
+                    if (!favoriteTrackIds.add(trackId)) {
+                        favoriteTrackIds.remove(trackId)
+                    }
+                    playlistsRevision += 1L
+                    persistSessionSnapshot()
+                }
+            }
+            "bookmarks.add" -> {
+                val trackId = envelope.payload["trackId"]?.jsonPrimitive?.contentOrNull
+                    ?: queueTracks.getOrNull(currentQueueIndex)?.id
+                    ?: ""
+                val positionSec = envelope.payload["positionSec"]?.jsonPrimitive?.doubleOrNull
+                    ?: (latestAudioSnapshot.positionMs / 1000.0)
+                val label = envelope.payload["label"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?: "Bookmark @ ${formatSecondsLabel(positionSec)}"
+                if (trackId.isNotEmpty()) {
+                    val bookmark = CoreBookmarkView(
+                        id = "bm-${UUID.randomUUID().toString().take(8)}",
+                        trackId = trackId,
+                        positionSec = positionSec,
+                        label = label,
+                        createdAtMs = ports.clock.nowUnixMs()
+                    )
+                    bookmarks.add(bookmark)
+                    persistSessionSnapshot()
+                }
+            }
+            "bookmarks.remove" -> {
+                val bookmarkId = envelope.payload["bookmarkId"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (bookmarkId.isNotEmpty()) {
+                    bookmarks.removeAll { it.id == bookmarkId }
                     persistSessionSnapshot()
                 }
             }
@@ -374,6 +494,7 @@ class QuickJsRuntimeHost(
                         }
                         else -> {
                             currentQueueIndex = (currentQueueIndex + 1) % queueTracks.size
+                            lyricsRevision += 1L
                             ports.audioEngine.selectQueueIndex(currentQueueIndex)
                         }
                     }
@@ -462,6 +583,8 @@ class QuickJsRuntimeHost(
             occurrenceId = currentTrack?.let { it.queueEntryId ?: "occ-$currentQueueIndex-${it.id}" }
         )
 
+        val currentLyrics = currentTrack?.let { buildLyricsForTrack(it) }
+
         return CoreSnapshot(
             protocolVersion = CORE_PROTOCOL_VERSION,
             epoch = epoch,
@@ -470,7 +593,41 @@ class QuickJsRuntimeHost(
             playback = playbackView,
             track = currentTrack,
             queue = queueRef,
-            error = errorMessage
+            error = errorMessage,
+            libraryRevision = libraryRevision,
+            playlistsRevision = playlistsRevision,
+            lyricsRevision = lyricsRevision,
+            favoriteTrackIds = favoriteTrackIds.toList(),
+            bookmarks = bookmarks.toList(),
+            currentLyrics = currentLyrics,
+            libraryTrackCount = libraryTracks.size
+        )
+    }
+
+    private fun buildLyricsForTrack(track: CoreTrackView): CoreLyricsView {
+        val demoLines = DEMO_LYRICS[track.id]
+        if (demoLines != null) {
+            return CoreLyricsView(
+                trackId = track.id,
+                source = "embedded",
+                synced = true,
+                lines = demoLines
+            )
+        }
+        val durationSec = track.duration.coerceAtLeast(30.0)
+        val stepMs = ((durationSec / 7.0).coerceAtLeast(4.0) * 1000.0).toLong()
+        return CoreLyricsView(
+            trackId = track.id,
+            source = "generated",
+            synced = true,
+            lines = listOf(
+                CoreLyricLine(0L, "♪ ${track.title} — ${track.artist}", "专辑：${track.album}"),
+                CoreLyricLine(stepMs, "Streaming through Twilight Echo Audio Core", "通过 Twilight Echo 原生音频核心播放"),
+                CoreLyricLine(stepMs * 2, "Every detail rendered in pure resolution", "每一处细节皆以纯净解析呈现"),
+                CoreLyricLine(stepMs * 3, "Tap any lyric line to seek directly", "点击任意歌词行即可精准跳转进度"),
+                CoreLyricLine(stepMs * 4, "Harmonic waves across the night sky", "夜空下流淌的泛音涟漪"),
+                CoreLyricLine(stepMs * 5, "Resonance lingering in the twilight", "暮色中回响的余韵")
+            )
         )
     }
 
@@ -479,6 +636,18 @@ class QuickJsRuntimeHost(
             put("queueRevision", JsonPrimitive(queueRevision))
             put("currentQueueIndex", JsonPrimitive(currentQueueIndex))
             put("playMode", JsonPrimitive(currentPlayMode.toWireValue()))
+            put(
+                "favoriteTrackIds",
+                buildJsonArray {
+                    favoriteTrackIds.forEach { add(JsonPrimitive(it)) }
+                }
+            )
+            put(
+                "bookmarks",
+                buildJsonArray {
+                    bookmarks.forEach { add(json.encodeToJsonElement(it)) }
+                }
+            )
         }.toString()
         when (val result = ports.sessionStore.save(payload, sessionStoreRevision)) {
             is SaveSessionResult.Ok -> sessionStoreRevision = result.revision
@@ -498,7 +667,24 @@ class QuickJsRuntimeHost(
             obj["playMode"]?.jsonPrimitive?.contentOrNull?.let { mode ->
                 currentPlayMode = PlayMode.fromWireValue(mode)
             }
+            obj["favoriteTrackIds"]?.jsonArray?.let { arr ->
+                favoriteTrackIds.clear()
+                arr.mapNotNull { it.jsonPrimitive.contentOrNull }.forEach { favoriteTrackIds.add(it) }
+            }
+            obj["bookmarks"]?.jsonArray?.let { arr ->
+                bookmarks.clear()
+                arr.mapNotNull {
+                    runCatching { json.decodeFromJsonElement<CoreBookmarkView>(it) }.getOrNull()
+                }.forEach { bookmarks.add(it) }
+            }
         }
+    }
+
+    private fun formatSecondsLabel(seconds: Double): String {
+        val total = seconds.coerceAtLeast(0.0).toLong()
+        val m = total / 60
+        val s = total % 60
+        return "%02d:%02d".format(m, s)
     }
 
     private fun loadPortableCoreScript(): String {
@@ -522,6 +708,36 @@ class QuickJsRuntimeHost(
     }
 
     companion object {
+        private val DEMO_LYRICS: Map<String, List<CoreLyricLine>> = mapOf(
+            "track-twilight-overture" to listOf(
+                CoreLyricLine(0L, "Twilight Overture — Aether Ensemble", "暮光序曲 — 以太合奏团"),
+                CoreLyricLine(6500L, "When the amber sun sinks beneath the glass horizon", "当琥珀色的夕阳沉入琉璃地平线"),
+                CoreLyricLine(14000L, "Strings awaken in the hush of the concert hall", "弦音在音乐厅的静谧中苏醒"),
+                CoreLyricLine(22400L, "A distant echo answers from the northern ridge", "远方的回声自北岭应和"),
+                CoreLyricLine(31000L, "Twenty-four bits of dynamic breath and shadow", "二十四比特的动态呼吸与光影"),
+                CoreLyricLine(40200L, "Every bow stroke shimmers in the twilight air", "每一次运弓都在暮色中闪烁"),
+                CoreLyricLine(50000L, "Rising through the velvet nocturnal tide", "穿过天鹅绒般的夜潮缓缓升起"),
+                CoreLyricLine(62500L, "Until only starlight and resonance remain", "直至唯有星光与共鸣长存")
+            ),
+            "track-nocturne-in-cobalt" to listOf(
+                CoreLyricLine(0L, "Nocturne in Cobalt — Lumina Quartet", "钴蓝夜曲 — 流光四重奏"),
+                CoreLyricLine(8000L, "Cobalt rain traces silver lines on the windowpane", "钴蓝色的雨在窗棂勾勒银线"),
+                CoreLyricLine(17200L, "Piano notes fall like ripples across still water", "琴音如涟漪落入静水"),
+                CoreLyricLine(27500L, "In the stillness between two heartbeats", "在两次心跳之间的寂静里"),
+                CoreLyricLine(38000L, "Memory unfolds its quiet lantern", "记忆悄然点亮幽微的灯火"),
+                CoreLyricLine(49500L, "Cello whispers beneath the midnight arch", "大提琴在午夜拱廊下低语"),
+                CoreLyricLine(61000L, "Carrying our unspoken song into the dawn", "将未竟之歌带向黎明")
+            ),
+            "track-solstice-drift" to listOf(
+                CoreLyricLine(0L, "Solstice Drift — Kairo & Sorel", "至日漂流 — Kairo & Sorel"),
+                CoreLyricLine(5800L, "Warm analog waves meet the winter solstice wind", "温暖的模拟声浪邂逅冬至的微风"),
+                CoreLyricLine(13600L, "Drifting weightless above the sleeping city lights", "失重般漂浮于沉睡的城市灯火之上"),
+                CoreLyricLine(22000L, "Time slows down to forty-eight thousand pulses", "时间放缓为每秒四万八千次脉动"),
+                CoreLyricLine(31500L, "Hold this fleeting moment in a golden bookmark", "将这转瞬即逝的时刻珍藏进金色书签"),
+                CoreLyricLine(42000L, "Where the horizon line meets the endless sea", "在地平线与无垠大海交汇之处")
+            )
+        )
+
         private fun defaultDemoTracks(): List<CoreTrackView> = listOf(
             CoreTrackView(
                 id = "track-twilight-overture",

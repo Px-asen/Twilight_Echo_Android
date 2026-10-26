@@ -28,11 +28,12 @@ interface CoreTransport {
 }
 
 /**
- * Client interface for interacting with the shared Music Core (Section 9.4 & 11.8).
+ * Client interface for interacting with the shared Music Core (Section 9.4 & 11.8 + Phase 2).
  * Handles:
  * - Optimistic concurrency (`expectedRevision`)
  * - `epoch` and `sequence` monotonic tracking
  * - Reconnect snapshot + sequence reconciliation so out-of-order/stale events never regress state
+ * - Phase 2 local MediaStore sync, song search, favorites, and bookmarks
  */
 interface CoreClient {
     val identity: CoreClientIdentity
@@ -43,6 +44,12 @@ interface CoreClient {
     suspend fun executeCommand(command: CoreTypedCommand): CoreResult<JsonObject>
     suspend fun querySnapshot(): CoreResult<CoreSnapshot>
     suspend fun queryQueueWindow(offset: Int = 0, limit: Int = 50): CoreResult<CoreQueueWindowView>
+
+    suspend fun syncLocalTracks(tracks: List<CoreTrackView>): Result<CoreResponseEnvelope>
+    suspend fun searchTracks(query: String): Result<CoreLibrarySearchPage>
+    suspend fun toggleFavorite(trackId: String): Result<CoreResponseEnvelope>
+    suspend fun addBookmark(trackId: String, positionSec: Double, label: String): Result<CoreResponseEnvelope>
+    suspend fun removeBookmark(bookmarkId: String): Result<CoreResponseEnvelope>
 }
 
 class DefaultCoreClient(
@@ -191,6 +198,121 @@ class DefaultCoreClient(
         }
     }
 
+    override suspend fun syncLocalTracks(tracks: List<CoreTrackView>): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put(
+                "tracks",
+                buildJsonArray {
+                    tracks.forEach { add(json.encodeToJsonElement(it)) }
+                }
+            )
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "library.syncTracks",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    override suspend fun searchTracks(query: String): Result<CoreLibrarySearchPage> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("query", JsonPrimitive(query))
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            epoch = currentEpoch,
+            kind = "query",
+            name = "search.songs",
+            payload = payload
+        )
+        val response = transport.sendRequest(envelope)
+        if (!response.ok || response.value == null) {
+            val msg = response.error?.message ?: "Failed to execute search.songs"
+            return Result.failure(IllegalStateException(msg))
+        }
+        return runCatching {
+            json.decodeFromJsonElement<CoreLibrarySearchPage>(response.value)
+        }
+    }
+
+    override suspend fun toggleFavorite(trackId: String): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("trackId", JsonPrimitive(trackId))
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "playlists.toggleFavorite",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    override suspend fun addBookmark(
+        trackId: String,
+        positionSec: Double,
+        label: String
+    ): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("trackId", JsonPrimitive(trackId))
+            put("positionSec", JsonPrimitive(positionSec))
+            put("label", JsonPrimitive(label))
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "bookmarks.add",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    override suspend fun removeBookmark(bookmarkId: String): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("bookmarkId", JsonPrimitive(bookmarkId))
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "bookmarks.remove",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
+    }
+
+    private suspend fun sendEnvelopeAndExtractResponse(
+        envelope: CoreRequestEnvelope
+    ): Result<CoreResponseEnvelope> {
+        val response = transport.sendRequest(envelope)
+        if (!response.ok) {
+            val msg = response.error?.message ?: "Command ${envelope.name} failed"
+            return Result.failure(IllegalStateException(msg))
+        }
+        (response.value as? JsonObject)?.get("snapshot")?.let { snapshotElem ->
+            runCatching {
+                json.decodeFromJsonElement<CoreSnapshot>(snapshotElem)
+            }.getOrNull()?.let { inlineSnapshot ->
+                applySnapshotIfNewer(inlineSnapshot, forceEpochReset = false)
+            }
+        }
+        return Result.success(response)
+    }
+
     private suspend fun onStateEventReceived(event: CoreEventMessage) {
         val previousQueueRev = _snapshot.value?.queue?.revision
         val applied = applySnapshotIfNewer(event.snapshot, forceEpochReset = false)
@@ -271,6 +393,25 @@ class DefaultCoreClient(
             put("reason", JsonPrimitive(command.reason))
             put("shouldPause", JsonPrimitive(command.shouldPause))
             put("transientCanResume", JsonPrimitive(command.transientCanResume))
+        }
+        is CoreTypedCommand.SyncLocalTracks -> buildJsonObject {
+            put(
+                "tracks",
+                buildJsonArray {
+                    command.tracks.forEach { add(json.encodeToJsonElement(it)) }
+                }
+            )
+        }
+        is CoreTypedCommand.ToggleFavorite -> buildJsonObject {
+            put("trackId", JsonPrimitive(command.trackId))
+        }
+        is CoreTypedCommand.AddBookmark -> buildJsonObject {
+            put("trackId", JsonPrimitive(command.trackId))
+            put("positionSec", JsonPrimitive(command.positionSec))
+            put("label", JsonPrimitive(command.label))
+        }
+        is CoreTypedCommand.RemoveBookmark -> buildJsonObject {
+            put("bookmarkId", JsonPrimitive(command.bookmarkId))
         }
     }
 

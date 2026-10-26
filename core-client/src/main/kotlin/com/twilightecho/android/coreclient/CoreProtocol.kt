@@ -96,7 +96,7 @@ data class CoreMuteState(
 )
 
 /**
- * Bounded projection aligned with `CoreSnapshot` in `src/shared/coreProtocol.ts`.
+ * Bounded projection aligned with `CoreSnapshot` in `src/shared/coreProtocol.ts` + Phase 2 extensions.
  */
 @Serializable
 data class CoreSnapshot(
@@ -116,7 +116,11 @@ data class CoreSnapshot(
     val playlistsRevision: Long? = null,
     val audioRevision: Long? = null,
     val settingsRevision: Long? = null,
-    val lyricsRevision: Long? = null
+    val lyricsRevision: Long? = null,
+    val favoriteTrackIds: List<String> = emptyList(),
+    val bookmarks: List<CoreBookmarkView> = emptyList(),
+    val currentLyrics: CoreLyricsView? = null,
+    val libraryTrackCount: Int = 0
 )
 
 @Serializable
@@ -264,6 +268,36 @@ sealed interface CoreTypedCommand {
     ) : CoreTypedCommand {
         override val name: String = "playback.platformInterruption"
     }
+
+    @Serializable
+    data class SyncLocalTracks(
+        val tracks: List<CoreTrackView>
+    ) : CoreTypedCommand {
+        override val name: String = "library.syncTracks"
+    }
+
+    @Serializable
+    data class ToggleFavorite(
+        val trackId: String
+    ) : CoreTypedCommand {
+        override val name: String = "playlists.toggleFavorite"
+    }
+
+    @Serializable
+    data class AddBookmark(
+        val trackId: String,
+        val positionSec: Double,
+        val label: String
+    ) : CoreTypedCommand {
+        override val name: String = "bookmarks.add"
+    }
+
+    @Serializable
+    data class RemoveBookmark(
+        val bookmarkId: String
+    ) : CoreTypedCommand {
+        override val name: String = "bookmarks.remove"
+    }
 }
 
 /**
@@ -286,6 +320,22 @@ sealed interface CoreTypedQuery {
         val search: String? = null
     ) : CoreTypedQuery {
         override val name: String = "playback.getQueueWindow"
+    }
+
+    @Serializable
+    data class SearchSongs(
+        val query: String,
+        val offset: Int = 0,
+        val limit: Int = 100
+    ) : CoreTypedQuery {
+        override val name: String = "search.songs"
+    }
+
+    @Serializable
+    data class GetCurrentLyrics(
+        val trackId: String? = null
+    ) : CoreTypedQuery {
+        override val name: String = "lyrics.current"
     }
 }
 

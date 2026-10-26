@@ -2,6 +2,7 @@ package com.twilightecho.android.playbackhost
 
 import android.content.Context
 import com.twilightecho.android.adapters.AndroidClockAdapter
+import com.twilightecho.android.adapters.AndroidMediaStoreScannerAdapter
 import com.twilightecho.android.adapters.AndroidNetworkAdapter
 import com.twilightecho.android.adapters.AndroidResourceAccessAdapter
 import com.twilightecho.android.adapters.AndroidSessionStoreAdapter
@@ -23,13 +24,14 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Singleton Android Playback Host (Architecture Plan Sections 5.4, 11.4, 11.6).
+ * Singleton Android Playback Host (Architecture Plan Sections 5.4, 11.4, 11.6 + Phase 2).
  *
  * Owns the process-wide instances of:
  * - `CoreRuntimeThreadDispatcher` + `QuickJsRuntimeHost` (Music Core JS runtime)
  * - `NativeAudioEngineAdapter` (C++ Audio Core via JNI)
  * - `AndroidSessionStoreAdapter` (Atomic CAS session store)
  * - `AndroidResourceAccessAdapter` (MediaStore / SAF URI permission-aware resource access)
+ * - `AndroidMediaStoreScannerAdapter` (Phase 2 local MediaStore audio scanner)
  * - `AudioFocusCoordinator` (System AudioFocus & `ACTION_AUDIO_BECOMING_NOISY`)
  *
  * Implements Section 5.4 **Platform Safety Brake**:
@@ -53,6 +55,7 @@ class AndroidPlaybackHost private constructor(
         storageDirectory = File(appContext.filesDir, "twilight_core_state")
     )
     val resourceAccessAdapter = AndroidResourceAccessAdapter(appContext)
+    val mediaStoreScanner = AndroidMediaStoreScannerAdapter(appContext)
     val networkAdapter = AndroidNetworkAdapter()
     val nativeAudioEngine = NativeAudioEngineAdapter()
 
@@ -106,6 +109,19 @@ class AndroidPlaybackHost private constructor(
             transport = runtimeHost,
             scope = hostScope
         )
+    }
+
+    /**
+     * Scans device local audio via `AndroidMediaStoreScannerAdapter` and synchronizes the
+     * discovered tracks into Music Core via `primaryCoreClient.syncLocalTracks(scanned)`.
+     */
+    suspend fun scanAndSyncDeviceMusic(): Result<Int> {
+        ensureStarted()
+        return runCatching {
+            val scanned = mediaStoreScanner.scanDeviceMusic()
+            primaryCoreClient.syncLocalTracks(scanned).getOrThrow()
+            scanned.size
+        }
     }
 
     /**

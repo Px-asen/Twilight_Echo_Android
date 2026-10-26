@@ -4,7 +4,9 @@ import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.twilightecho.android.coreclient.CoreBookmarkView
 import com.twilightecho.android.coreclient.CoreClient
+import com.twilightecho.android.coreclient.CoreLyricsView
 import com.twilightecho.android.coreclient.CoreQueueEntryView
 import com.twilightecho.android.coreclient.CoreQueueWindowView
 import com.twilightecho.android.coreclient.CoreSnapshot
@@ -12,6 +14,7 @@ import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.CoreTypedCommand
 import com.twilightecho.android.coreclient.PlayMode
 import com.twilightecho.android.playbackhost.AndroidPlaybackHost
+import com.twilightecho.android.ui.components.formatDurationSeconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,15 +52,30 @@ data class PlayerUiState(
     val queueItems: List<CoreQueueEntryView> = emptyList(),
     val currentQueueIndex: Int = 0,
     val isQueueDrawerOpen: Boolean = false,
+    val isLyricsMode: Boolean = false,
+    val isLibrarySheetOpen: Boolean = false,
+    val favoriteTrackIds: List<String> = emptyList(),
+    val isCurrentTrackFavorite: Boolean = false,
+    val currentTrackBookmarks: List<CoreBookmarkView> = emptyList(),
+    val currentLyrics: CoreLyricsView? = null,
+    val activeLyricIndex: Int = -1,
+    val libraryTrackCount: Int = 0,
+    val searchQuery: String = "",
+    val searchResults: List<CoreTrackView> = emptyList(),
+    val isScanningLocalMusic: Boolean = false,
+    val scanStatusMessage: String? = null,
     val errorBanner: String? = null
-)
+) {
+    val interpolatedPositionSec: Double
+        get() = displayedPositionSeconds
+}
 
 /**
- * Unidirectional Data Flow (UDF) ViewModel for the Player screen (Section 11.1 & 13.5).
+ * Unidirectional Data Flow (UDF) ViewModel for the Player screen (Section 11.1, 13.5 + Phase 2).
  *
- * Projects `CoreSnapshot` + `CoreQueueWindowView` into `StateFlow<PlayerUiState>` and performs
- * monotonic display interpolation between low-frequency engine snapshots when `isPlaying == true`,
- * automatically resetting on pause, seek, or track transitions.
+ * Projects `CoreSnapshot` + `CoreQueueWindowView` into `StateFlow<PlayerUiState>`, performs
+ * monotonic display interpolation + real-time active lyric line tracking when `isPlaying == true`,
+ * and dispatches Phase 2 Local MediaStore scanning, song search, favorites, and bookmarks.
  */
 class PlayerViewModel(
     private val playbackHost: AndroidPlaybackHost,
@@ -70,6 +88,7 @@ class PlayerViewModel(
     init {
         viewModelScope.launch {
             coreClient.reconcileState()
+            refreshLibrarySearch("")
         }
 
         viewModelScope.launch {
@@ -82,7 +101,7 @@ class PlayerViewModel(
             }
         }
 
-        // Engine-clock display interpolation loop (Section 13.5: 10Hz UI tick only while playing)
+        // Engine-clock display interpolation & active lyric highlight loop (10Hz UI tick)
         viewModelScope.launch {
             while (isActive) {
                 delay(100L)
@@ -95,7 +114,14 @@ class PlayerViewModel(
                                 state.playbackRate
                         val interpolated = (state.anchorPositionSeconds + elapsedSeconds)
                             .coerceIn(0.0, state.durationSeconds)
-                        state.copy(displayedPositionSeconds = interpolated)
+                        val activeLyricIdx = computeActiveLyricIndex(
+                            lyrics = state.currentLyrics,
+                            positionSec = interpolated
+                        )
+                        state.copy(
+                            displayedPositionSeconds = interpolated,
+                            activeLyricIndex = activeLyricIdx
+                        )
                     }
                 }
             }
@@ -120,7 +146,8 @@ class PlayerViewModel(
             it.copy(
                 anchorPositionSeconds = clamped,
                 anchorMonotonicMs = monoNow,
-                displayedPositionSeconds = clamped
+                displayedPositionSeconds = clamped,
+                activeLyricIndex = computeActiveLyricIndex(it.currentLyrics, clamped)
             )
         }
         viewModelScope.launch {
@@ -168,7 +195,125 @@ class PlayerViewModel(
 
     fun onToggleQueueDrawer(open: Boolean? = null) {
         _uiState.update { state ->
-            state.copy(isQueueDrawerOpen = open ?: !state.isQueueDrawerOpen)
+            val nextOpen = open ?: !state.isQueueDrawerOpen
+            state.copy(
+                isQueueDrawerOpen = nextOpen,
+                isLibrarySheetOpen = if (nextOpen) false else state.isLibrarySheetOpen
+            )
+        }
+    }
+
+    fun onToggleLyricsMode(enabled: Boolean? = null) {
+        _uiState.update { state ->
+            state.copy(isLyricsMode = enabled ?: !state.isLyricsMode)
+        }
+    }
+
+    fun onToggleLibrarySheet(open: Boolean? = null) {
+        val targetOpen = open ?: !_uiState.value.isLibrarySheetOpen
+        _uiState.update { state ->
+            state.copy(
+                isLibrarySheetOpen = targetOpen,
+                isQueueDrawerOpen = if (targetOpen) false else state.isQueueDrawerOpen
+            )
+        }
+        if (targetOpen) {
+            refreshLibrarySearch(_uiState.value.searchQuery)
+        }
+    }
+
+    fun onToggleFavoriteCurrentTrack() {
+        val trackId = _uiState.value.currentTrack?.id ?: return
+        viewModelScope.launch {
+            coreClient.toggleFavorite(trackId)
+        }
+    }
+
+    fun onAddBookmarkAtCurrentPosition(customLabel: String? = null) {
+        val track = _uiState.value.currentTrack ?: return
+        val posSec = _uiState.value.displayedPositionSeconds
+        val label = customLabel?.takeIf { it.isNotBlank() }
+            ?: "🔖 ${formatDurationSeconds(posSec)}"
+        viewModelScope.launch {
+            coreClient.addBookmark(
+                trackId = track.id,
+                positionSec = posSec,
+                label = label
+            )
+        }
+    }
+
+    fun onRemoveBookmark(bookmarkId: String) {
+        viewModelScope.launch {
+            coreClient.removeBookmark(bookmarkId)
+        }
+    }
+
+    fun onSearchQueryChanged(query: String) {
+        _uiState.update { it.copy(searchQuery = query) }
+        refreshLibrarySearch(query)
+    }
+
+    fun onScanDeviceMusic() {
+        if (_uiState.value.isScanningLocalMusic) return
+        _uiState.update {
+            it.copy(
+                isScanningLocalMusic = true,
+                scanStatusMessage = "正在扫描手机本地音乐 (Scanning MediaStore)..."
+            )
+        }
+        viewModelScope.launch {
+            val result = playbackHost.scanAndSyncDeviceMusic()
+            result.fold(
+                onSuccess = { count ->
+                    _uiState.update {
+                        it.copy(
+                            isScanningLocalMusic = false,
+                            scanStatusMessage = "已同步 $count 首手机本地音乐 (Synced $count local tracks)"
+                        )
+                    }
+                    refreshLibrarySearch(_uiState.value.searchQuery)
+                },
+                onFailure = { err ->
+                    _uiState.update {
+                        it.copy(
+                            isScanningLocalMusic = false,
+                            scanStatusMessage = "扫描失败: ${err.message}"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun onPlayTrackFromLibrary(track: CoreTrackView) {
+        val currentList = _uiState.value.searchResults.ifEmpty { listOf(track) }
+        val startIndex = currentList.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        val expectedRev = _uiState.value.queueRevision
+        viewModelScope.launch {
+            coreClient.executeCommand(
+                CoreTypedCommand.ReplaceQueue(
+                    revision = expectedRev,
+                    tracks = currentList,
+                    startIndex = startIndex,
+                    play = true
+                )
+            )
+            playbackHost.requestFocusAndPlay(0.0)
+            _uiState.update { it.copy(isLibrarySheetOpen = false) }
+        }
+    }
+
+    private fun refreshLibrarySearch(query: String) {
+        viewModelScope.launch {
+            coreClient.searchTracks(query).onSuccess { page ->
+                _uiState.update {
+                    it.copy(
+                        searchResults = page.items,
+                        libraryTrackCount = maxOf(it.libraryTrackCount, page.total)
+                    )
+                }
+            }
         }
     }
 
@@ -180,6 +325,7 @@ class PlayerViewModel(
             ?: snapshot.track?.duration
             ?: 0.0
         val monoNow = nowMonotonicMs()
+        val currentTrackId = snapshot.track?.id
 
         val diagnostics = AudioDiagnosticsUiModel(
             codec = playback?.codec ?: snapshot.track?.format ?: "FLAC",
@@ -190,6 +336,14 @@ class PlayerViewModel(
             actualBitDepth = playback?.actualBitDepth ?: 24,
             outputPerfect = playback?.outputPerfect ?: true
         )
+
+        val trackBookmarks = if (currentTrackId != null) {
+            snapshot.bookmarks.filter { it.trackId == currentTrackId }.sortedBy { it.positionSec }
+        } else {
+            emptyList()
+        }
+
+        val activeLyricIdx = computeActiveLyricIndex(snapshot.currentLyrics, positionSeconds)
 
         _uiState.update { current ->
             current.copy(
@@ -209,9 +363,30 @@ class PlayerViewModel(
                 diagnostics = diagnostics,
                 queueItems = queueWindow.items,
                 currentQueueIndex = snapshot.queue?.index ?: playback?.queueIndex ?: 0,
+                favoriteTrackIds = snapshot.favoriteTrackIds,
+                isCurrentTrackFavorite = currentTrackId != null && currentTrackId in snapshot.favoriteTrackIds,
+                currentTrackBookmarks = trackBookmarks,
+                currentLyrics = snapshot.currentLyrics,
+                activeLyricIndex = activeLyricIdx,
+                libraryTrackCount = snapshot.libraryTrackCount,
                 errorBanner = snapshot.error
             )
         }
+    }
+
+    private fun computeActiveLyricIndex(lyrics: CoreLyricsView?, positionSec: Double): Int {
+        val lines = lyrics?.lines ?: return -1
+        if (lines.isEmpty()) return -1
+        val posMs = (positionSec * 1000.0).toLong()
+        var activeIdx = 0
+        for (i in lines.indices) {
+            if (lines[i].timeMs <= posMs) {
+                activeIdx = i
+            } else {
+                break
+            }
+        }
+        return activeIdx
     }
 
     private fun nowMonotonicMs(): Long = runCatching {

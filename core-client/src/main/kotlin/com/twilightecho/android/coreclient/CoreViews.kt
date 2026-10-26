@@ -143,3 +143,37 @@ data class CoreQueueWindowView(
     val currentOccurrenceId: String? = null,
     val items: List<CoreQueueEntryView> = emptyList()
 )
+
+/**
+ * Phase 2 DTOs: Synchronized Lyrics, Bookmarks, and Local Library Search Page.
+ */
+@Serializable
+data class CoreLyricLine(
+    val timeMs: Long,
+    val text: String,
+    val translation: String? = null
+)
+
+@Serializable
+data class CoreLyricsView(
+    val trackId: String,
+    val source: String = "embedded",
+    val synced: Boolean = true,
+    val lines: List<CoreLyricLine> = emptyList()
+)
+
+@Serializable
+data class CoreBookmarkView(
+    val id: String,
+    val trackId: String,
+    val positionSec: Double,
+    val label: String,
+    val createdAtMs: Long
+)
+
+@Serializable
+data class CoreLibrarySearchPage(
+    val query: String,
+    val total: Int,
+    val items: List<CoreTrackView>
+)

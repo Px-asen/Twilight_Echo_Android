@@ -6,6 +6,16 @@ var TwilightPortableCore = (function(exports) {
     const separator = track.id.indexOf(":");
     return separator > 0 ? track.id.slice(0, separator).trim().toLowerCase() : "local";
   }
+  function versionSourceKey(track) {
+    const source = getTrackSource(track);
+    if (source !== "local") {
+      const id2 = track.id.startsWith(source + ":") ? track.id.slice(source.length + 1) : track.id;
+      return JSON.stringify([source, String(source === "ncm" ? track.ncmSongId ?? id2 : id2)]);
+    }
+    let path = (track.filePath || track.id).replace(/\\/g, "/");
+    if (/^[a-zA-Z]:\//.test(path)) path = path.toLowerCase();
+    return JSON.stringify(["local", path, track.subTrack ?? null, track.cueRange ?? null]);
+  }
   const CORE_PLAYBACK_FIELDS = [
     "streamTitle",
     "dspActive",
@@ -64,6 +74,124 @@ var TwilightPortableCore = (function(exports) {
     "renderPerformance",
     "clipCount"
   ];
+  function getAlbumIdentity(track) {
+    const albumId = track.albumId?.trim();
+    if (albumId) return `id:${albumId}`;
+    const album = normalizeAlbumIdentityText(track.album || "未知专辑");
+    const albumArtist = track.albumArtist?.trim();
+    const artist = track.artist?.trim();
+    const hasDistinctAlbumArtist = !!albumArtist && (!artist || albumArtist.toLocaleLowerCase() !== artist.toLocaleLowerCase());
+    if (hasDistinctAlbumArtist) {
+      return `name:${albumArtist.toLocaleLowerCase()}${album}`;
+    }
+    const dir = track.dir?.trim() || parentDirectoryOf(track.filePath);
+    if (dir) {
+      return `dir:${normalizeLibraryPath(dir)}${album}`;
+    }
+    return `name:${(albumArtist || artist || "未知艺术家").trim().toLocaleLowerCase()}${album}`;
+  }
+  function normalizeAlbumIdentityText(value) {
+    return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  }
+  function getAlbumCoverIdentity(track) {
+    const cover = track.cover?.trim();
+    if (!cover) return "";
+    const durableSource = track.coverSource?.trim();
+    if (/^twilight-media:\/\/image\//i.test(cover) && durableSource) {
+      return durableSource.toLocaleLowerCase();
+    }
+    return cover.toLocaleLowerCase();
+  }
+  function albumOrderIndex(value) {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : Number.MAX_SAFE_INTEGER;
+  }
+  function parentDirectoryOf(filePath) {
+    const normalized = filePath.replace(/[\\/]+/g, "\\").replace(/\\+$/, "");
+    const separator = normalized.lastIndexOf("\\");
+    if (separator <= 0) return "";
+    return normalized.slice(0, separator);
+  }
+  function normalizeLibraryPath(path) {
+    return path.replace(/[\\/]+/g, "\\").replace(/\\+$/, "").toLocaleLowerCase();
+  }
+  const COLLATOR = new Intl.Collator("zh-Hans-CN-u-co-pinyin");
+  const BOUNDARIES = [
+    "阿",
+    "芭",
+    "擦",
+    "搭",
+    "蛾",
+    "发",
+    "噶",
+    "哈",
+    "机",
+    "喀",
+    "垃",
+    "妈",
+    "拿",
+    "哦",
+    "啪",
+    "七",
+    "然",
+    "撒",
+    "他",
+    "挖",
+    "吸",
+    "压",
+    "匝"
+  ];
+  const INITIALS = [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "g",
+    "h",
+    "j",
+    "k",
+    "l",
+    "m",
+    "n",
+    "o",
+    "p",
+    "q",
+    "r",
+    "s",
+    "t",
+    "w",
+    "x",
+    "y",
+    "z"
+  ];
+  const cjkCharPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+  function isCjkChar(char) {
+    return char.length === 1 && cjkCharPattern.test(char);
+  }
+  function getPinyinInitial(char) {
+    if (!isCjkChar(char)) return "";
+    let low = 0;
+    let high = BOUNDARIES.length - 1;
+    if (COLLATOR.compare(char, BOUNDARIES[0]) < 0) return INITIALS[0];
+    while (low < high) {
+      const mid = Math.floor((low + high + 1) / 2);
+      if (COLLATOR.compare(char, BOUNDARIES[mid]) >= 0) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return INITIALS[low];
+  }
+  function getPinyinInitials(text2) {
+    if (!cjkCharPattern.test(text2)) return "";
+    let result = "";
+    for (const char of text2) {
+      result += getPinyinInitial(char);
+    }
+    return result;
+  }
   const id$2 = (v) => typeof v === "string" && /^[1-9]\d{0,15}$/.test(v);
   const text$g = (v) => typeof v === "string" && !!v.trim() && v.length <= 2048 && !v.includes("\0");
   function normalizeNcmFileIdentity(raw) {
@@ -151,6 +279,56 @@ var TwilightPortableCore = (function(exports) {
   function libraryArtistCredits(track) {
     const artists = Array.isArray(track.artists) ? track.artists.filter((artist) => artist && typeof artist.name === "string" && artist.name.trim()) : void 0;
     return artists?.length ? [...artists] : fileArtistCredits(track.identityTags);
+  }
+  function libraryArtistNames(track) {
+    const credits = libraryArtistCredits(track).map((artist) => artist.name.trim()).filter(Boolean);
+    if (credits?.length) return [...new Set(credits)];
+    const names = track.artist.split(/\s+\/\s+/);
+    return names.length > 1 ? [...new Set(names.map((name) => name.trim()).filter(Boolean))] : [track.artist || "未知艺术家"];
+  }
+  function resolveAlbumArtist(tracks2) {
+    return resolveAlbumArtistNames(
+      tracks2.map((track) => track.albumArtist ?? ""),
+      tracks2.map((track) => track.artist ?? "")
+    );
+  }
+  function resolveAlbumArtistNames(owners, artists) {
+    const meaningful = (values) => new Set(
+      [...values].map((value) => value.trim()).filter((value) => value && !/^(?:unknown(?: artist)?|未知(?:艺术家|歌手))$/i.test(value))
+    );
+    const ownerNames = meaningful(owners), artistNames = meaningful(artists);
+    if (ownerNames.size === 1) return [...ownerNames][0];
+    if (artistNames.size === 1) return [...artistNames][0];
+    return artistNames.size > 1 ? "群星" : "未知歌手";
+  }
+  const underRoot = (filePath, root) => {
+    const path = normalizeLibraryPath(filePath), normalizedRoot = normalizeLibraryPath(root);
+    return path === normalizedRoot || path.startsWith(`${normalizedRoot}\\`);
+  };
+  function getCollectionDirectory(filePath, metadataDirectory, roots) {
+    const directory = metadataDirectory?.trim() || parentDirectoryOf(filePath);
+    if (!roots.length) return directory;
+    const matching = roots.filter((root) => underRoot(filePath, root));
+    if (!matching.length) return "";
+    return matching.every((root) => underRoot(directory, root)) ? directory : parentDirectoryOf(filePath);
+  }
+  function getCollectionAncestors(directory, roots) {
+    if (!roots.length) return directory ? [directory] : [];
+    const remaining = new Set(
+      roots.filter((root) => underRoot(directory, root)).map(normalizeLibraryPath)
+    );
+    if (!remaining.size) return [];
+    const result = [];
+    let current = directory;
+    while (current) {
+      result.push(current);
+      remaining.delete(normalizeLibraryPath(current));
+      if (!remaining.size) break;
+      const parent = parentDirectoryOf(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    return result;
   }
   function libraryTrack(record2) {
     const fileName = typeof record2.fileName === "string" ? record2.fileName : record2.filePath.split(/[\\/]/).pop() || record2.id;
@@ -300,7 +478,7 @@ var TwilightPortableCore = (function(exports) {
       } : null
     };
   }
-  const fields = [
+  const fields$1 = [
     "exclusive",
     "outputReleased",
     "supportsOutputPerfect",
@@ -414,7 +592,7 @@ var TwilightPortableCore = (function(exports) {
   ];
   const scalar = (value) => typeof value === "string" ? projectCoreError(value) : value;
   function projectCoreOutput(info) {
-    const result = Object.fromEntries(fields.map((key) => [key, Array.isArray(info[key]) ? info[key].slice(0, 256).map(scalar) : scalar(info[key])]));
+    const result = Object.fromEntries(fields$1.map((key) => [key, Array.isArray(info[key]) ? info[key].slice(0, 256).map(scalar) : scalar(info[key])]));
     return {
       ...result,
       conversionInfo: {
@@ -1425,8 +1603,40 @@ var TwilightPortableCore = (function(exports) {
     showRomanization: false,
     tracks: {}
   };
+  const MAX_LYRIC_OFFSET_MS = 12e4;
   const MAX_MANAGED_LYRIC_BYTES = 1024 * 1024;
   const MAX_MANAGED_LYRIC_TRACKS = 5e3;
+  function effectiveLyricOffsetSeconds(globalOffsetMs, trackOffsetMs = 0) {
+    return (clampLyricOffset(globalOffsetMs) + clampLyricOffset(trackOffsetMs)) / 1e3;
+  }
+  function projectManagedLyrics(automatic, override) {
+    if (!override) return automatic;
+    const originalSelection = layerSelection(override, "originalSelection");
+    const translationSelection = layerSelection(override, "translationSelection");
+    const romanizationSelection = layerSelection(override, "romanizationSelection");
+    if (originalSelection === "automatic" && translationSelection === "automatic" && romanizationSelection === "automatic") {
+      return automatic;
+    }
+    return {
+      original: originalSelection === "manual" ? override.original ?? "" : automatic.original,
+      translation: translationSelection === "manual" ? override.translation ?? null : automatic.translation,
+      romanization: romanizationSelection === "manual" ? override.romanization ?? null : automatic.romanization,
+      originalSource: originalSelection === "manual" ? "manual" : automatic.originalSource,
+      translationSource: translationSelection === "manual" ? override.translation ? "manual" : null : automatic.translationSource,
+      romanizationSource: romanizationSelection === "manual" ? override.romanization ? "manual" : null : automatic.romanizationSource
+    };
+  }
+  function layerSelection(override, key) {
+    const selection = override[key];
+    if (selection === "automatic" || selection === "local" || selection === "provider" || selection === "amll" || selection === "manual") {
+      return selection;
+    }
+    return override.source === "manual" ? "manual" : "automatic";
+  }
+  function clampLyricOffset(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return Math.round(Math.max(-MAX_LYRIC_OFFSET_MS, Math.min(MAX_LYRIC_OFFSET_MS, value)));
+  }
   function isLyricsManagementDocument(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const record2 = value;
@@ -1436,6 +1646,14 @@ var TwilightPortableCore = (function(exports) {
     const tracks2 = record2.tracks;
     if (Object.keys(tracks2).length > MAX_MANAGED_LYRIC_TRACKS) return false;
     return Object.entries(tracks2).every(([id2, entry]) => isLyricTrackOverride(id2, entry));
+  }
+  function cloneLyricsManagementDocument(value) {
+    return {
+      ...value,
+      tracks: Object.fromEntries(
+        Object.entries(value.tracks).map(([id2, override]) => [id2, { ...override }])
+      )
+    };
   }
   function isLyricTrackOverride(id2, value) {
     if (!id2 || id2.length > 1024 || !value || typeof value !== "object" || Array.isArray(value))
@@ -1451,6 +1669,29 @@ var TwilightPortableCore = (function(exports) {
   }
   function isLyricText(value) {
     return value === null || typeof value === "string" && new TextEncoder().encode(value).byteLength <= MAX_MANAGED_LYRIC_BYTES;
+  }
+  const PLAYBACK_BOOKMARKS_SCHEMA_VERSION = 1;
+  const MAX_BOOKMARKS = 5e3;
+  const MAX_BOOKMARKS_PER_TRACK = 64;
+  const MAX_BOOKMARK_LABEL_LENGTH = 120;
+  const DEFAULT_LONG_TRACK_RESUME_SECONDS = 20 * 60;
+  const DEFAULT_PLAYBACK_BOOKMARKS = {
+    longTrackResumeSeconds: DEFAULT_LONG_TRACK_RESUME_SECONDS,
+    bookmarks: []
+  };
+  function clampBookmarkPosition(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return 0;
+    return Math.round(value * 1e3) / 1e3;
+  }
+  function clonePlaybackBookmarksDocument(document) {
+    return {
+      schemaVersion: PLAYBACK_BOOKMARKS_SCHEMA_VERSION,
+      longTrackResumeSeconds: document.longTrackResumeSeconds,
+      bookmarks: document.bookmarks.map((bookmark) => ({ ...bookmark }))
+    };
+  }
+  function bookmarksForTrack(document, trackKey) {
+    return document.bookmarks.filter((bookmark) => bookmark.trackKey === trackKey).sort((a, b) => a.positionSeconds - b.positionSeconds || a.createdAt.localeCompare(b.createdAt));
   }
   function isHttpOrHttpsUrl(value, maxLength = 2048) {
     if (typeof value !== "string") return false;
@@ -2080,6 +2321,39 @@ var TwilightPortableCore = (function(exports) {
     "cancelDownload"
   ]);
   const EXTERNAL_PLAYLIST_MAX_ENTRIES = 2e4;
+  function externalRefreshGeneration(data) {
+    return data.refreshGeneration ?? data.generation;
+  }
+  function importSongKey(song) {
+    return song.platform && song.platformId ? `${song.platform}:${song.platformId}` : JSON.stringify([song.locations ?? [], song.title ?? "", song.artist ?? "", song.album ?? "", song.duration ?? null]);
+  }
+  function reconcileImportEntries(before, songs, identity) {
+    const buckets = /* @__PURE__ */ new Map();
+    for (const entry of before) {
+      const key = importSongKey(entry.original);
+      const bucket = buckets.get(key) ?? { entries: [], cursor: 0 };
+      bucket.entries.push(entry);
+      buckets.set(key, bucket);
+    }
+    return songs.map((original, position) => {
+      const bucket = buckets.get(importSongKey(original));
+      const previous = bucket?.entries[bucket.cursor++];
+      return previous ? { ...previous, original, position } : { entryId: identity(), original, position, revision: 0, resolution: { state: "pending" } };
+    });
+  }
+  function importEntryViewRecord(entry) {
+    return {
+      id: entry.entryId,
+      filePath: "",
+      title: entry.original.title || entry.original.locations?.[0]?.split(/[\\/]/).at(-1) || "信息缺失",
+      artist: entry.original.artist || "",
+      album: entry.original.album || "",
+      duration: entry.original.duration || 0,
+      source: "playlist-import",
+      externalEntry: { entryId: entry.entryId, state: entry.resolution.state },
+      cover: null
+    };
+  }
   const record$1 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
   const text = (v, max = 32768) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
   const uint = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
@@ -5544,6 +5818,1309 @@ var TwilightPortableCore = (function(exports) {
         return previews.save(request.payload, signal);
       case "imports.previewDiscard":
         return previews.discard(request.payload.id, request.payload.revision);
+    }
+  }
+  function isVersionedDataEnvelope(value, isData) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const record2 = value;
+    return record2.version === 2 && typeof record2.revision === "number" && Number.isSafeInteger(record2.revision) && record2.revision >= 0 && typeof record2.savedAt === "string" && isData(record2.data);
+  }
+  function isPersistentDataRevisionConflict(error) {
+    return !!error && typeof error === "object" && error.code === "ERR_PERSISTENCE_REVISION_CONFLICT";
+  }
+  function createPlaybackBookmarks(runtime) {
+    const { document } = runtime;
+    let revision2 = 0;
+    let loading = null;
+    function trackKeyFor(track) {
+      const source = track.source ?? "local";
+      if (source !== "local" || !track.filePath) return `${source}:${track.id}`;
+      const base = `local:${track.filePath}`;
+      if (track.subTrack) return `${base}#${track.subTrack}`;
+      if (track.cueRange) return `${base}#cue:${track.cueRange.startSeconds}`;
+      return base;
+    }
+    async function ensureLoaded() {
+      if (loading) return loading;
+      loading = (async () => {
+        const result = await runtime.repository.load();
+        if (result?.data) {
+          document.value = clonePlaybackBookmarksDocument(result.data);
+          revision2 = result.revision;
+        }
+      })().finally(() => {
+        loading = null;
+      });
+      return loading;
+    }
+    async function persist(next) {
+      try {
+        const saved = await runtime.repository.save(next, revision2);
+        document.value = clonePlaybackBookmarksDocument(saved.data);
+        revision2 = saved.revision;
+        runtime.changed();
+      } catch (error) {
+        if (!isPersistentDataRevisionConflict(error)) throw error;
+        const current = error.current;
+        if (!current) throw error;
+        document.value = clonePlaybackBookmarksDocument(current.data);
+        revision2 = current.revision;
+        runtime.changed();
+        throw error;
+      }
+    }
+    function nextDocument() {
+      return clonePlaybackBookmarksDocument(document.value);
+    }
+    function makeId() {
+      return runtime.newId();
+    }
+    async function addBookmark(track, positionSeconds, options = {}) {
+      if (!track?.id) return null;
+      await ensureLoaded();
+      const next = nextDocument();
+      const trackKey = trackKeyFor(track);
+      const now = new Date(runtime.now()).toISOString();
+      const kind = options.kind ?? "manual";
+      const label = (options.label ?? "").trim().slice(0, MAX_BOOKMARK_LABEL_LENGTH);
+      if (kind === "resume") {
+        next.bookmarks = next.bookmarks.filter(
+          (bookmark2) => !(bookmark2.trackKey === trackKey && bookmark2.kind === "resume")
+        );
+      }
+      const forTrack = next.bookmarks.filter((bookmark2) => bookmark2.trackKey === trackKey);
+      if (forTrack.length >= MAX_BOOKMARKS_PER_TRACK) {
+        const oldest = forTrack.filter((bookmark2) => bookmark2.kind !== "resume").sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+        if (oldest) {
+          next.bookmarks = next.bookmarks.filter((bookmark2) => bookmark2.id !== oldest.id);
+        }
+      }
+      const bookmark = {
+        id: makeId(),
+        trackKey,
+        trackId: track.id,
+        title: track.title,
+        artist: track.artist,
+        positionSeconds: clampBookmarkPosition(positionSeconds),
+        label: label || (kind === "resume" ? "Resume" : formatBookmarkLabel(positionSeconds)),
+        createdAt: now,
+        updatedAt: now,
+        kind
+      };
+      next.bookmarks = [bookmark, ...next.bookmarks].slice(0, MAX_BOOKMARKS);
+      await persist(next);
+      return bookmark;
+    }
+    function formatBookmarkLabel(positionSeconds) {
+      const total = Math.max(0, Math.floor(positionSeconds));
+      const mins = Math.floor(total / 60);
+      const secs = total % 60;
+      return `${mins}:${secs.toString().padStart(2, "0")}`;
+    }
+    async function removeBookmark(id2) {
+      if (!id2) return;
+      await ensureLoaded();
+      const next = nextDocument();
+      next.bookmarks = next.bookmarks.filter((bookmark) => bookmark.id !== id2);
+      await persist(next);
+    }
+    async function renameBookmark(id2, label) {
+      if (!id2) return;
+      await ensureLoaded();
+      const next = nextDocument();
+      const target = next.bookmarks.find((bookmark) => bookmark.id === id2);
+      if (!target) return;
+      const trimmed = label.trim().slice(0, MAX_BOOKMARK_LABEL_LENGTH);
+      if (!trimmed || trimmed === target.label) return;
+      target.label = trimmed;
+      target.updatedAt = new Date(runtime.now()).toISOString();
+      await persist(next);
+    }
+    async function setLongTrackResumeSeconds(seconds) {
+      await ensureLoaded();
+      const next = nextDocument();
+      next.longTrackResumeSeconds = Math.max(60, Math.min(24 * 60 * 60, Math.round(seconds)));
+      await persist(next);
+    }
+    function bookmarksFor(track) {
+      if (!track) return [];
+      return bookmarksForTrack(document.value, trackKeyFor(track));
+    }
+    function resumeBookmarkFor(track) {
+      if (!track) return null;
+      return bookmarksFor(track).find((bookmark) => bookmark.kind === "resume") ?? null;
+    }
+    function shouldOfferLongTrackResume(track) {
+      if (!track) return false;
+      const threshold = document.value.longTrackResumeSeconds;
+      return typeof track.duration === "number" && track.duration >= threshold;
+    }
+    return {
+      document,
+      getRevision: () => revision2,
+      ensureLoaded,
+      trackKeyFor,
+      bookmarksFor,
+      resumeBookmarkFor,
+      shouldOfferLongTrackResume,
+      addBookmark,
+      removeBookmark,
+      renameBookmark,
+      setLongTrackResumeSeconds
+    };
+  }
+  class CoreBookmarksService {
+    options;
+    controller;
+    document = { value: clonePlaybackBookmarksDocument(DEFAULT_PLAYBACK_BOOKMARKS) };
+    tail = Promise.resolve();
+    previous = null;
+    offer = null;
+    error = null;
+    lastResume = "";
+    stopped = false;
+    constructor(options) {
+      this.options = options;
+      this.controller = createPlaybackBookmarks({ ...options, document: this.document });
+    }
+    async initialize() {
+      try {
+        await this.controller.ensureLoaded();
+      } catch (error) {
+        this.error = projectCoreError(error);
+        this.options.failed(error);
+        this.options.changed();
+      }
+    }
+    getRevision() {
+      return this.controller.getRevision();
+    }
+    enqueue(action) {
+      if (this.stopped) return Promise.reject(new Error("Bookmarks are shutting down"));
+      const work = this.tail.catch(() => void 0).then(action);
+      this.tail = work;
+      return work;
+    }
+    fence(revision2) {
+      if (revision2 !== this.controller.getRevision())
+        throw stale$3("Bookmarks changed; read a fresh page");
+    }
+    current(expected) {
+      const track = this.previous?.track ?? null;
+      if (expected && (!track || track.id !== expected.trackId || (track.queueEntryId ?? null) !== expected.occurrenceId))
+        throw stale$3("Playback selection changed");
+      return track;
+    }
+    state() {
+      const track = this.current();
+      return {
+        revision: this.controller.getRevision(),
+        longTrackResumeSeconds: this.document.value.longTrackResumeSeconds,
+        current: track ? { trackId: track.id, occurrenceId: track.queueEntryId ?? null } : null,
+        resumeOffer: this.offer ? project(this.offer) : null,
+        error: this.error
+      };
+    }
+    page(query2) {
+      this.fence(query2.revision);
+      const entries = query2.scope === "current" ? this.controller.bookmarksFor(this.current()) : this.document.value.bookmarks;
+      const offset = query2.offset ?? 0, limit = query2.limit ?? 200;
+      return {
+        revision: query2.revision,
+        offset,
+        total: entries.length,
+        items: entries.slice(offset, offset + limit).map(project)
+      };
+    }
+    edit(command, signal) {
+      return this.enqueue(async () => {
+        signal?.throwIfAborted();
+        this.fence(command.revision);
+        const edit2 = command.edit, c = this.controller;
+        try {
+          switch (edit2.kind) {
+            case "addCurrent": {
+              const track = this.current(edit2.current);
+              await c.addBookmark(track, this.previous.info.position, {
+                label: edit2.label,
+                kind: "manual"
+              });
+              break;
+            }
+            case "remove":
+              await c.removeBookmark(edit2.id);
+              if (this.offer?.id === edit2.id) this.offer = null;
+              break;
+            case "rename":
+              await c.renameBookmark(edit2.id, edit2.label);
+              if (this.offer?.id === edit2.id)
+                this.offer = this.document.value.bookmarks.find((b) => b.id === edit2.id) ?? null;
+              break;
+            case "threshold":
+              await c.setLongTrackResumeSeconds(edit2.seconds);
+              if (!c.shouldOfferLongTrackResume(this.current())) this.offer = null;
+              break;
+            case "dismissOffer":
+              this.current(edit2.current);
+              this.offer = null;
+              break;
+          }
+        } catch (error) {
+          if (isPersistentDataRevisionConflict(error)) {
+            this.options.changed();
+            throw stale$3("Bookmarks changed; read a fresh page");
+          }
+          throw error;
+        }
+        this.error = null;
+        this.options.changed();
+        return this.state();
+      });
+    }
+    position(id2, revision2, current) {
+      this.fence(revision2);
+      const track = this.current(current);
+      const entry = this.controller.bookmarksFor(track).find((b) => b.id === id2);
+      if (!entry) throw new Error("Bookmark does not belong to the current track");
+      this.offer = null;
+      this.options.changed();
+      return entry.positionSeconds;
+    }
+    observe(track, info) {
+      if (this.stopped) return;
+      const previous = this.previous;
+      const changed = !previous || !track || previous.track.id !== track.id || previous.track.queueEntryId !== track.queueEntryId;
+      const naturalEnd = previous && info.naturalBoundaries != null && previous.info.naturalBoundaries != null && info.naturalBoundaries.trackSerial > previous.info.naturalBoundaries.trackSerial;
+      if (previous && !naturalEnd && (changed || previous.info.state === "playing" && info.state !== "playing")) {
+        const position = changed || info.state === "stopped" ? previous.info.position : info.position;
+        this.recordResume(previous.track, position);
+      }
+      this.previous = track ? {
+        track: {
+          id: track.id,
+          filePath: track.filePath,
+          source: track.source,
+          subTrack: track.subTrack,
+          cueRange: track.cueRange ? { ...track.cueRange } : void 0,
+          queueEntryId: track.queueEntryId,
+          duration: track.duration,
+          title: track.title,
+          artist: track.artist
+        },
+        info: {
+          state: info.state,
+          position: info.position,
+          naturalBoundaries: info.naturalBoundaries ? { ...info.naturalBoundaries } : void 0
+        }
+      } : null;
+      if (changed) {
+        this.offer = track && info.position <= 5 && this.controller.shouldOfferLongTrackResume(track) ? this.controller.resumeBookmarkFor(track) : null;
+        if (this.offer && this.offer.positionSeconds < 15) this.offer = null;
+        this.options.changed();
+      }
+    }
+    recordResume(track, position) {
+      if (!this.controller.shouldOfferLongTrackResume(track) || !Number.isFinite(position) || position < 15 || position > track.duration - 10)
+        return;
+      const key = `${this.controller.trackKeyFor(track)}\0${Math.round(position * 1e3)}`;
+      if (key === this.lastResume) return;
+      this.lastResume = key;
+      const work = this.enqueue(async () => {
+        await this.controller.addBookmark(track, position, { kind: "resume" });
+        this.error = null;
+        this.options.changed();
+      });
+      void work.catch((error) => {
+        this.error = projectCoreError(error);
+        this.options.failed(error);
+        this.options.changed();
+      });
+    }
+    async flush() {
+      await this.tail;
+    }
+    async shutdown() {
+      if (this.stopped) return;
+      if (this.previous) this.recordResume(this.previous.track, this.previous.info.position);
+      this.stopped = true;
+      await this.flush();
+    }
+  }
+  function project(bookmark) {
+    return {
+      id: bookmark.id,
+      trackId: bookmark.trackId,
+      title: bookmark.title,
+      artist: bookmark.artist,
+      positionSeconds: bookmark.positionSeconds,
+      label: bookmark.label,
+      createdAt: bookmark.createdAt,
+      updatedAt: bookmark.updatedAt,
+      kind: bookmark.kind
+    };
+  }
+  function stale$3(message) {
+    return Object.assign(new Error(message), { code: "STALE_REVISION" });
+  }
+  function getNcmSongId(track) {
+    if (track.ncmSongId != null) return track.ncmSongId;
+    if (!track.id.startsWith("ncm:")) return null;
+    const localId = track.id.slice("ncm:".length);
+    const songId = Number(localId);
+    return Number.isFinite(songId) && songId > 0 ? songId : null;
+  }
+  const AUTOMATIC_ORIGINAL_PRIORITY = {
+    manual: 5,
+    embedded: 4,
+    local: 4,
+    amll: 3,
+    provider: 2,
+    online: 1
+  };
+  function defaultExistingLyricSource(track) {
+    return track.source === "ncm" || track.id.startsWith("ncm:") ? "provider" : "embedded";
+  }
+  function automaticCandidateCanReplace(currentSource, candidate) {
+    return currentSource == null || AUTOMATIC_ORIGINAL_PRIORITY[candidate] > AUTOMATIC_ORIGINAL_PRIORITY[currentSource];
+  }
+  function shouldLoadAutomaticOriginal(track, candidate) {
+    const lyrics = normalizeLyricValue(track.lyrics);
+    const source = lyrics ? track.lyricsSource ?? defaultExistingLyricSource(track) : null;
+    return automaticCandidateCanReplace(source, candidate);
+  }
+  async function resolveLyricsWithSources(options) {
+    const track = options.track;
+    const originalSource = options.originalSource ?? "automatic";
+    const translationSource = options.translationSource ?? "automatic";
+    const romanizationSource = options.romanizationSource ?? "automatic";
+    let lyrics = normalizeLyricValue(track.lyrics);
+    let translatedLyrics = normalizeLyricValue(track.translatedLyrics);
+    let romanizedLyrics = normalizeLyricValue(track.romanizedLyrics);
+    let lyricsSource = lyrics ? track.lyricsSource ?? defaultExistingLyricSource(track) : null;
+    let translatedLyricsSource = translatedLyrics ? track.translatedLyricsSource ?? defaultExistingLyricSource(track) : null;
+    let romanizedLyricsSource = romanizedLyrics ? track.romanizedLyricsSource ?? defaultExistingLyricSource(track) : null;
+    const shouldLoadLocal = originalSource === "local" || originalSource === "automatic" && automaticCandidateCanReplace(lyricsSource, "local");
+    const localResult = shouldLoadLocal && options.loadLocalLyrics ? await loadOptionalLyrics(options.loadLocalLyrics) : { value: null, failed: false };
+    const localLyrics = normalizeLyricValue(localResult.value);
+    if (originalSource === "local") {
+      lyrics = localLyrics;
+      lyricsSource = localLyrics ? "local" : null;
+    } else if (originalSource === "automatic" && localLyrics && automaticCandidateCanReplace(lyricsSource, "local")) {
+      lyrics = localLyrics;
+      lyricsSource = "local";
+    }
+    const shouldLoadLocalTranslation = translationSource === "local" || translationSource === "automatic" && !translatedLyrics;
+    const localTranslationResult = shouldLoadLocalTranslation && options.loadLocalTranslatedLyrics ? await loadOptionalLyrics(options.loadLocalTranslatedLyrics) : { value: null, failed: false };
+    const localTranslation = normalizeLyricValue(localTranslationResult.value);
+    if (localTranslation && (!translatedLyrics || translationSource === "local")) {
+      translatedLyrics = localTranslation;
+      translatedLyricsSource = "local";
+    }
+    const shouldLoadLocalRomanization = romanizationSource === "local" || romanizationSource === "automatic" && !romanizedLyrics;
+    const localRomanizationResult = shouldLoadLocalRomanization && options.loadLocalRomanizedLyrics ? await loadOptionalLyrics(options.loadLocalRomanizedLyrics) : { value: null, failed: false };
+    const localRomanization = normalizeLyricValue(localRomanizationResult.value);
+    if (romanizationSource === "local") {
+      romanizedLyrics = localRomanization;
+      romanizedLyricsSource = localRomanization ? "local" : null;
+    } else if (localRomanization && !romanizedLyrics) {
+      romanizedLyrics = localRomanization;
+      romanizedLyricsSource = "local";
+    }
+    const shouldLoadAml = eligibleForAml(track) && options.loadAmlTtml && (originalSource === "amll" || translationSource === "amll" || originalSource === "automatic" && automaticCandidateCanReplace(lyricsSource, "amll"));
+    const amlResult = shouldLoadAml ? await loadOptionalLyrics(options.loadAmlTtml) : { value: null, failed: false };
+    const amlLyrics = normalizeLyricValue(amlResult.value);
+    const applyAmlLyrics = () => {
+      lyrics = amlLyrics;
+      lyricsSource = "amll";
+      if (translationSource === "amll" || translationSource === "automatic" && (translatedLyricsSource === "provider" || translatedLyricsSource === "online")) {
+        translatedLyrics = null;
+        translatedLyricsSource = null;
+      }
+    };
+    if ((originalSource === "amll" || translationSource === "amll") && amlLyrics) {
+      applyAmlLyrics();
+    } else if (originalSource === "amll") {
+      lyrics = null;
+      lyricsSource = null;
+    } else if (originalSource === "automatic" && amlLyrics && automaticCandidateCanReplace(lyricsSource, "amll")) {
+      applyAmlLyrics();
+    }
+    const shouldLoadProvider = originalSource === "provider" || translationSource === "provider" || originalSource === "automatic" && automaticCandidateCanReplace(lyricsSource, "provider") || translationSource === "automatic" && !translatedLyrics && lyricsSource !== "amll";
+    const providerResult = shouldLoadProvider && options.loadProviderLyrics ? await loadOptionalProviderLyrics(options.loadProviderLyrics) : { value: null, failed: false };
+    const providerLyrics = providerResult.value;
+    const providerOriginal = normalizeLyricValue(providerLyrics?.lyrics);
+    const providerWordLyrics = normalizeLyricValue(providerLyrics?.wordLyrics);
+    const providerTranslation = normalizeLyricValue(providerLyrics?.translatedLyrics);
+    if (originalSource === "provider") {
+      lyrics = providerWordLyrics ?? providerOriginal;
+      lyricsSource = lyrics ? "provider" : null;
+    }
+    if (originalSource === "automatic" && providerLyrics && automaticCandidateCanReplace(lyricsSource, "provider")) {
+      const providerBest = providerWordLyrics ?? providerOriginal;
+      if (providerBest) {
+        lyrics = providerBest;
+        lyricsSource = "provider";
+      }
+    }
+    if (translationSource === "provider") {
+      translatedLyrics = providerTranslation;
+      translatedLyricsSource = providerTranslation ? "provider" : null;
+    } else if (translationSource === "local") {
+      if (translatedLyricsSource !== "local") {
+        translatedLyrics = null;
+        translatedLyricsSource = null;
+      }
+    } else if (!translatedLyrics && providerTranslation) {
+      translatedLyrics = providerTranslation;
+      translatedLyricsSource = "provider";
+    }
+    if (!lyrics && options.loadOnlineLyrics) {
+      const onlineResult = await loadOptionalLyrics(options.loadOnlineLyrics);
+      const onlineLyrics = normalizeLyricValue(onlineResult.value);
+      if (onlineLyrics) {
+        lyrics = onlineLyrics;
+        lyricsSource = "online";
+        if (!translatedLyrics && options.loadOnlineTranslation) {
+          const onlineTranslationResult = await loadOptionalLyrics(options.loadOnlineTranslation);
+          const onlineTranslation = normalizeLyricValue(onlineTranslationResult.value);
+          if (onlineTranslation) {
+            translatedLyrics = onlineTranslation;
+            translatedLyricsSource = "online";
+          }
+        }
+      }
+      if (!lyrics && onlineResult.failed) {
+        return {
+          lyrics,
+          translatedLyrics,
+          romanizedLyrics,
+          lyricsSource,
+          translatedLyricsSource,
+          romanizedLyricsSource,
+          failure: "online"
+        };
+      }
+    }
+    const resolved = {
+      lyrics,
+      translatedLyrics,
+      romanizedLyrics,
+      lyricsSource,
+      translatedLyricsSource,
+      romanizedLyricsSource
+    };
+    if (lyrics || translatedLyrics || romanizedLyrics) return resolved;
+    if (amlResult.failed) return { ...resolved, failure: "amll" };
+    if (providerResult.failed) return { ...resolved, failure: "provider" };
+    if (localResult.failed || localTranslationResult.failed || localRomanizationResult.failed) {
+      return { ...resolved, failure: "local" };
+    }
+    return resolved;
+  }
+  function eligibleForAml(track) {
+    const source = track.source ?? (track.id.startsWith("ncm:") ? "ncm" : "local");
+    if (source === "ncm") {
+      const id22 = getNcmSongId(track);
+      return id22 != null && Number.isSafeInteger(id22) && id22 > 0;
+    }
+    if (source !== "local") return false;
+    const match = track.metadataMatch;
+    if (!match || match.providerId !== "ncm" || match.confidence !== "high") return false;
+    const id2 = Number(match.trackId);
+    return Number.isSafeInteger(id2) && id2 > 0;
+  }
+  function normalizeLyricValue(value) {
+    if (typeof value !== "string") return null;
+    return value.length > 0 ? value : null;
+  }
+  async function loadOptionalLyrics(loader) {
+    try {
+      return { value: await loader(), failed: false };
+    } catch {
+      return { value: null, failed: true };
+    }
+  }
+  async function loadOptionalProviderLyrics(loader) {
+    try {
+      return { value: await loader(), failed: false };
+    } catch {
+      return { value: null, failed: true };
+    }
+  }
+  function resolverLyricsInput(current, automaticBaseline, source) {
+    const baseline = automaticBaseline ?? current;
+    if (source === "auto") return baseline;
+    return {
+      ...baseline,
+      lyrics: null,
+      translatedLyrics: null,
+      romanizedLyrics: null,
+      lyricsSource: null,
+      translatedLyricsSource: null,
+      romanizedLyricsSource: null
+    };
+  }
+  const LYRICS_RETRY_DELAYS_MS = [750, 2e3, 5e3];
+  function hasLyricContent(value) {
+    return typeof value === "string" && value.trim().length > 0;
+  }
+  function getAmlSongId(track) {
+    const direct = getNcmSongId(track);
+    if (direct != null && (track.source === "ncm" || track.id.startsWith("ncm:"))) return direct;
+    return Number(track.metadataMatch?.trackId);
+  }
+  function createLyricsLoader(options) {
+    const automaticLyricsBaselines = /* @__PURE__ */ new Map();
+    const activeLyricsLoads = /* @__PURE__ */ new Map();
+    const lyricsLoadGenerationByTrackId = /* @__PURE__ */ new Map();
+    const lyricsRetryTimers = /* @__PURE__ */ new Map();
+    const lyricsRetryAttemptsByTrackId = /* @__PURE__ */ new Map();
+    let lyricsTrackActivation = 0;
+    const AUTOMATIC_LYRICS_BASELINE_LIMIT = 8;
+    const LYRICS_TRACK_COUNTER_LIMIT = 32;
+    function pruneMapToLimit(map, activeTrackId, limit) {
+      for (const key of map.keys()) {
+        if (map.size <= limit) break;
+        if (key === activeTrackId) continue;
+        map.delete(key);
+      }
+    }
+    function pruneLyricsTrackMemory(activeTrackId) {
+      pruneMapToLimit(automaticLyricsBaselines, activeTrackId, AUTOMATIC_LYRICS_BASELINE_LIMIT);
+      pruneMapToLimit(lyricsLoadGenerationByTrackId, activeTrackId, LYRICS_TRACK_COUNTER_LIMIT);
+      pruneMapToLimit(lyricsRetryAttemptsByTrackId, activeTrackId, LYRICS_TRACK_COUNTER_LIMIT);
+    }
+    function getLyricsLoaderMemoryUsage() {
+      return {
+        baselines: automaticLyricsBaselines.size,
+        generations: lyricsLoadGenerationByTrackId.size,
+        retryAttempts: lyricsRetryAttemptsByTrackId.size
+      };
+    }
+    function clearLyricsRetryTimer(trackId) {
+      const timer = lyricsRetryTimers.get(trackId);
+      if (timer != null) options.timers.clearTimeout(timer);
+      lyricsRetryTimers.delete(trackId);
+    }
+    function clearLyricsRetryTimersExcept(activeTrackId) {
+      for (const trackId of lyricsRetryTimers.keys()) {
+        if (trackId !== activeTrackId) clearLyricsRetryTimer(trackId);
+      }
+    }
+    function abortInactiveLyricsLoads(activeTrackId) {
+      for (const [trackId, request] of activeLyricsLoads) {
+        if (trackId !== activeTrackId) request.controller.abort();
+      }
+    }
+    function scheduleCurrentLyricsRetry(trackId, activation) {
+      if (options.currentTrack.value?.id !== trackId || lyricsTrackActivation !== activation) return;
+      const attempt = lyricsRetryAttemptsByTrackId.get(trackId) ?? 0;
+      const delay = LYRICS_RETRY_DELAYS_MS[attempt];
+      if (delay == null) return;
+      lyricsRetryAttemptsByTrackId.set(trackId, attempt + 1);
+      clearLyricsRetryTimer(trackId);
+      lyricsRetryTimers.set(
+        trackId,
+        options.timers.setTimeout(() => {
+          lyricsRetryTimers.delete(trackId);
+          if (options.currentTrack.value?.id !== trackId || lyricsTrackActivation !== activation || hasLyricContent(options.currentTrack.value.lyrics)) {
+            return;
+          }
+          void ensureCurrentTrackLyricsLoaded(options.currentTrack.value, true, true);
+        }, delay)
+      );
+    }
+    function commitResolvedLyrics(triggerTrack, resolverTrack, resolved) {
+      if (options.currentTrack.value?.id !== triggerTrack.id) return;
+      const existing = options.currentTrack.value;
+      const nextLyrics = resolved.lyrics ?? "";
+      if (!nextLyrics && typeof existing?.lyrics === "string" && existing.lyrics.length > 0 && existing.id === triggerTrack.id) {
+        return;
+      }
+      const updatedTrack = {
+        ...resolverTrack,
+        ...existing,
+        lyrics: nextLyrics,
+        translatedLyrics: resolved.translatedLyrics,
+        romanizedLyrics: resolved.romanizedLyrics,
+        lyricsSource: resolved.lyricsSource,
+        translatedLyricsSource: resolved.translatedLyricsSource,
+        romanizedLyricsSource: resolved.romanizedLyricsSource
+      };
+      options.currentTrack.value = updatedTrack;
+      options.patchTrackInQueues(updatedTrack);
+    }
+    async function ensureCurrentTrackLyricsLoaded(triggerTrack = options.currentTrack.value, allowProviderLookup = true, forceReload = false) {
+      const fallbackTrack = options.currentTrack.value;
+      if (!triggerTrack && fallbackTrack) triggerTrack = fallbackTrack;
+      if (!triggerTrack || options.currentTrack.value?.id !== triggerTrack.id) {
+        return;
+      }
+      const activation = lyricsTrackActivation;
+      const lyricsManagement = options.getLyricsManagement();
+      try {
+        await lyricsManagement.ensureLoaded();
+      } catch {
+      }
+      if (options.currentTrack.value?.id !== triggerTrack.id || lyricsTrackActivation !== activation)
+        return;
+      const override = lyricsManagement.entryFor(triggerTrack.id);
+      const requestedSource = override?.source ?? "auto";
+      const layerSource = (key) => {
+        const selection = override?.[key];
+        if (selection === "local" || selection === "provider" || selection === "manual") {
+          return selection;
+        }
+        if (selection === "amll") return "amll";
+        if (requestedSource === "local" || requestedSource === "amll" || requestedSource === "provider")
+          return requestedSource;
+        return "automatic";
+      };
+      const originalLayerSource = layerSource("originalSelection");
+      const translationLayerSource = layerSource("translationSelection");
+      const romanizationLayerSource = layerSource("romanizationSelection");
+      const resolverOriginalSource = originalLayerSource === "manual" ? "automatic" : originalLayerSource;
+      const resolverTranslationSource = translationLayerSource === "manual" ? "automatic" : translationLayerSource;
+      const resolverRomanizationSource = romanizationLayerSource === "manual" ? "automatic" : romanizationLayerSource;
+      const sourceSelectionSignature = `${requestedSource}:${originalLayerSource}:${translationLayerSource}:${romanizationLayerSource}`;
+      const requestSignature = `${sourceSelectionSignature}:${allowProviderLookup ? "provider" : "local"}`;
+      const existingRequest = activeLyricsLoads.get(triggerTrack.id);
+      if (!forceReload && existingRequest?.signature === requestSignature && existingRequest.activation === activation) {
+        await existingRequest.promise;
+        return;
+      }
+      existingRequest?.controller.abort();
+      const previousGeneration = lyricsLoadGenerationByTrackId.get(triggerTrack.id) ?? 0;
+      const loadGeneration = previousGeneration + 1;
+      lyricsLoadGenerationByTrackId.set(triggerTrack.id, loadGeneration);
+      clearLyricsRetryTimer(triggerTrack.id);
+      options.lyricsLoadState.value = { trackId: triggerTrack.id, status: "loading" };
+      const request = {
+        signature: requestSignature,
+        generation: loadGeneration,
+        activation,
+        controller: new AbortController(),
+        promise: Promise.resolve()
+      };
+      const isCurrentRequest = () => activeLyricsLoads.get(triggerTrack.id) === request && lyricsLoadGenerationByTrackId.get(triggerTrack.id) === request.generation && lyricsTrackActivation === request.activation && options.currentTrack.value?.id === triggerTrack.id && !request.controller.signal.aborted;
+      const completeIfCurrent = (status = "ready") => {
+        if (isCurrentRequest()) {
+          clearLyricsRetryTimer(triggerTrack.id);
+          lyricsRetryAttemptsByTrackId.delete(triggerTrack.id);
+          options.lyricsLoadState.value = { trackId: triggerTrack.id, status };
+        }
+      };
+      const run = async () => {
+        if (requestedSource === "manual") {
+          if (options.currentTrack.value?.id === triggerTrack.id && options.currentTrack.value.lyrics == null && options.currentTrack.value.translatedLyrics == null && options.currentTrack.value.romanizedLyrics == null) {
+            commitResolvedLyrics(triggerTrack, triggerTrack, {
+              lyrics: "",
+              translatedLyrics: null,
+              romanizedLyrics: null,
+              lyricsSource: null,
+              translatedLyricsSource: null,
+              romanizedLyricsSource: null
+            });
+          }
+          completeIfCurrent("empty");
+          return;
+        }
+        if ((requestedSource !== "auto" || originalLayerSource === "local" || originalLayerSource === "amll" || originalLayerSource === "provider" || translationLayerSource === "local" || translationLayerSource === "amll" || translationLayerSource === "provider" || romanizationLayerSource === "local" || romanizationLayerSource === "amll" || romanizationLayerSource === "provider") && !automaticLyricsBaselines.has(triggerTrack.id)) {
+          automaticLyricsBaselines.set(triggerTrack.id, { ...triggerTrack });
+        }
+        const resolverTrack = resolverLyricsInput(
+          triggerTrack,
+          automaticLyricsBaselines.get(triggerTrack.id),
+          requestedSource
+        );
+        const hasOriginal = hasLyricContent(resolverTrack.lyrics);
+        const source = getTrackSource(resolverTrack);
+        const canLoadLocalLyrics = source === "local" && (resolverOriginalSource === "local" || resolverOriginalSource === "automatic" && shouldLoadAutomaticOriginal(resolverTrack, "local")) && (!!resolverTrack.dir || !!resolverTrack.filePath) && !!resolverTrack.fileName;
+        const canLoadLocalAuxiliaryLyrics = source === "local" && (!!resolverTrack.dir || !!resolverTrack.filePath) && !!resolverTrack.fileName && (resolverTranslationSource === "local" || resolverTranslationSource === "automatic" && !hasLyricContent(resolverTrack.translatedLyrics) || resolverRomanizationSource === "local" || resolverRomanizationSource === "automatic" && !hasLyricContent(resolverTrack.romanizedLyrics));
+        const canLoadProviderLyrics = allowProviderLookup && (resolverOriginalSource === "provider" || resolverTranslationSource === "provider" || resolverOriginalSource === "automatic" && shouldLoadAutomaticOriginal(resolverTrack, "provider") || resolverTranslationSource === "automatic" && !hasLyricContent(resolverTrack.translatedLyrics));
+        const canLoadAmlLyrics = eligibleForAml(resolverTrack) && (resolverOriginalSource === "amll" || resolverTranslationSource === "amll" || resolverOriginalSource === "automatic" && shouldLoadAutomaticOriginal(resolverTrack, "amll"));
+        const canLoadOnlineLyrics = resolverOriginalSource === "automatic" && options.getAppSettings().value?.onlineLyricsFallback === true && !!resolverTrack.title?.trim() && !!resolverTrack.artist?.trim() && !hasOriginal;
+        if (!canLoadLocalLyrics && !canLoadLocalAuxiliaryLyrics && !canLoadAmlLyrics && !canLoadProviderLyrics && !canLoadOnlineLyrics) {
+          commitResolvedLyrics(triggerTrack, resolverTrack, {
+            lyrics: hasOriginal ? resolverTrack.lyrics : "",
+            translatedLyrics: resolverTrack.translatedLyrics ?? null,
+            romanizedLyrics: resolverTrack.romanizedLyrics ?? null,
+            lyricsSource: resolverTrack.lyricsSource ?? (hasOriginal ? "embedded" : null),
+            translatedLyricsSource: resolverTrack.translatedLyricsSource ?? null,
+            romanizedLyricsSource: resolverTrack.romanizedLyricsSource ?? null
+          });
+          completeIfCurrent(
+            hasOriginal || hasLyricContent(resolverTrack.translatedLyrics) || hasLyricContent(resolverTrack.romanizedLyrics) ? "ready" : "empty"
+          );
+          return;
+        }
+        let resolved;
+        try {
+          resolved = await resolveLyricsWithSources({
+            track: resolverTrack,
+            originalSource: resolverOriginalSource,
+            translationSource: resolverTranslationSource,
+            romanizationSource: resolverRomanizationSource,
+            loadLocalLyrics: canLoadLocalLyrics ? () => options.loadLocalLyrics(resolverTrack, "original", request.controller.signal).catch(() => null) : void 0,
+            loadLocalTranslatedLyrics: canLoadLocalAuxiliaryLyrics ? () => options.loadLocalLyrics(resolverTrack, "translated", request.controller.signal).catch(() => null) : void 0,
+            loadLocalRomanizedLyrics: canLoadLocalAuxiliaryLyrics ? () => options.loadLocalLyrics(resolverTrack, "romanized", request.controller.signal).catch(() => null) : void 0,
+            loadProviderLyrics: canLoadProviderLyrics ? () => options.resolveProviderLyrics(resolverTrack, request.controller.signal) : void 0,
+            loadAmlTtml: canLoadAmlLyrics ? () => options.loadAmlTtml(getAmlSongId(resolverTrack), request.controller.signal) : void 0,
+            loadOnlineLyrics: canLoadOnlineLyrics ? () => options.loadOnlineLyrics(
+              {
+                title: resolverTrack.title,
+                artist: resolverTrack.artist,
+                album: resolverTrack.album || void 0,
+                durationSeconds: Number.isFinite(resolverTrack.duration) ? resolverTrack.duration : void 0
+              },
+              request.controller.signal
+            ) : void 0,
+            loadOnlineTranslation: canLoadOnlineLyrics ? async () => (await options.resolveProviderLyrics(resolverTrack, request.controller.signal))?.translatedLyrics ?? null : void 0
+          });
+        } catch {
+          resolved = {
+            lyrics: resolverTrack.lyrics ?? null,
+            translatedLyrics: resolverTrack.translatedLyrics ?? null,
+            romanizedLyrics: resolverTrack.romanizedLyrics ?? null,
+            lyricsSource: resolverTrack.lyricsSource ?? (hasOriginal ? "embedded" : null),
+            translatedLyricsSource: resolverTrack.translatedLyricsSource ?? null,
+            romanizedLyricsSource: resolverTrack.romanizedLyricsSource ?? null,
+            failure: "provider"
+          };
+        }
+        if (!isCurrentRequest()) return;
+        const currentOverride = lyricsManagement.entryFor(triggerTrack.id);
+        const currentRequestedSource = currentOverride?.source ?? "auto";
+        const currentLayerSource = (key) => {
+          const selection = currentOverride?.[key];
+          if (selection === "local" || selection === "amll" || selection === "provider" || selection === "manual") {
+            return selection;
+          }
+          if (currentRequestedSource === "local" || currentRequestedSource === "amll" || currentRequestedSource === "provider") {
+            return currentRequestedSource;
+          }
+          return "automatic";
+        };
+        if (`${currentRequestedSource}:${currentLayerSource("originalSelection")}:${currentLayerSource("translationSelection")}:${currentLayerSource("romanizationSelection")}` !== sourceSelectionSignature) {
+          completeIfCurrent();
+          return;
+        }
+        if (resolved.failure && !hasLyricContent(resolved.lyrics) && !hasLyricContent(resolved.translatedLyrics) && !hasLyricContent(resolved.romanizedLyrics)) {
+          if (isCurrentRequest()) {
+            options.lyricsLoadState.value = { trackId: triggerTrack.id, status: "failed" };
+            scheduleCurrentLyricsRetry(triggerTrack.id, request.activation);
+          }
+          return;
+        }
+        commitResolvedLyrics(triggerTrack, resolverTrack, resolved);
+        completeIfCurrent(
+          hasLyricContent(resolved.lyrics) || hasLyricContent(resolved.translatedLyrics) || hasLyricContent(resolved.romanizedLyrics) ? "ready" : "empty"
+        );
+      };
+      request.promise = Promise.resolve().then(run);
+      activeLyricsLoads.set(triggerTrack.id, request);
+      try {
+        await request.promise;
+      } finally {
+        if (activeLyricsLoads.get(triggerTrack.id) === request) {
+          activeLyricsLoads.delete(triggerTrack.id);
+        }
+      }
+    }
+    function retryCurrentTrackLyricsIfNeeded(forceReload = false) {
+      const track = options.currentTrack.value;
+      if (!track) return;
+      const loading = options.lyricsLoadState.value.trackId === track.id && options.lyricsLoadState.value.status === "loading";
+      const failed = options.lyricsLoadState.value.trackId === track.id && options.lyricsLoadState.value.status === "failed";
+      if (!hasLyricContent(track.lyrics) || loading) {
+        void ensureCurrentTrackLyricsLoaded(track, true, forceReload);
+        return;
+      }
+      if (failed) {
+        void ensureCurrentTrackLyricsLoaded(track, true, forceReload);
+      }
+    }
+    function onTrackChanged(trackId, previousTrackId) {
+      if (trackId === previousTrackId) return;
+      lyricsTrackActivation += 1;
+      abortInactiveLyricsLoads(trackId);
+      clearLyricsRetryTimersExcept(trackId);
+      pruneLyricsTrackMemory(trackId);
+      if (!trackId) {
+        options.lyricsLoadState.value = { trackId: "", status: "idle" };
+        return;
+      }
+      lyricsRetryAttemptsByTrackId.delete(trackId);
+      options.lyricsLoadState.value = {
+        trackId,
+        status: hasLyricContent(options.currentTrack.value?.lyrics) ? "ready" : "loading"
+      };
+    }
+    function deleteLyricsBaseline(trackId) {
+      automaticLyricsBaselines.delete(trackId);
+    }
+    function clearLyricsBaselines() {
+      automaticLyricsBaselines.clear();
+    }
+    return {
+      getLyricsLoaderMemoryUsage,
+      shutdown: async () => {
+        lyricsTrackActivation++;
+        clearLyricsRetryTimersExcept("");
+        const requests = [...activeLyricsLoads.values()];
+        for (const request of requests) request.controller.abort();
+        await Promise.allSettled(requests.map((request) => request.promise));
+        activeLyricsLoads.clear();
+        automaticLyricsBaselines.clear();
+        lyricsLoadGenerationByTrackId.clear();
+        lyricsRetryAttemptsByTrackId.clear();
+      },
+      ensureCurrentTrackLyricsLoaded,
+      commitResolvedLyrics,
+      retryCurrentTrackLyricsIfNeeded,
+      onTrackChanged,
+      deleteLyricsBaseline,
+      clearLyricsBaselines
+    };
+  }
+  function createLyricsManagement(runtime) {
+    const { document } = runtime;
+    let revision2 = 0;
+    let loading = null;
+    function entryFor(trackId) {
+      return document.value.tracks[trackId];
+    }
+    async function ensureLoaded() {
+      if (loading) return loading;
+      loading = (async () => {
+        let timer;
+        const result = await Promise.race([
+          runtime.repository.load(),
+          new Promise((resolve) => {
+            timer = runtime.timers.setTimeout(() => resolve(null), 3e3);
+          })
+        ]).finally(() => runtime.timers.clearTimeout(timer));
+        if (result) {
+          document.value = cloneLyricsManagementDocument(result.data);
+          revision2 = result.revision;
+        }
+      })().finally(() => {
+        loading = null;
+      });
+      return loading;
+    }
+    async function persist(next) {
+      try {
+        const saved = await runtime.repository.save(next, revision2);
+        document.value = cloneLyricsManagementDocument(saved.data);
+        revision2 = saved.revision;
+        runtime.changed();
+      } catch (error) {
+        if (!isPersistentDataRevisionConflict(error)) throw error;
+        const current = error.current;
+        if (!current) throw error;
+        document.value = cloneLyricsManagementDocument(current.data);
+        revision2 = current.revision;
+        runtime.changed();
+        throw error;
+      }
+    }
+    function nextDocument() {
+      return cloneLyricsManagementDocument(document.value);
+    }
+    function defaultOverride() {
+      return {
+        offsetMs: 0,
+        source: "auto",
+        originalSelection: "automatic",
+        translationSelection: "automatic",
+        romanizationSelection: "automatic",
+        original: null,
+        translation: null,
+        romanization: null,
+        updatedAt: new Date(runtime.now()).toISOString()
+      };
+    }
+    async function updateGlobalOffset(offsetMs) {
+      await ensureLoaded();
+      const next = nextDocument();
+      next.globalOffsetMs = clampLyricOffset(offsetMs);
+      await persist(next);
+    }
+    async function updateVisibility(patch) {
+      await ensureLoaded();
+      const next = nextDocument();
+      if (typeof patch.showOriginal === "boolean") next.showOriginal = patch.showOriginal;
+      if (typeof patch.showTranslation === "boolean") next.showTranslation = patch.showTranslation;
+      if (typeof patch.showRomanization === "boolean") next.showRomanization = patch.showRomanization;
+      await persist(next);
+    }
+    async function updateTrack(trackId, patch) {
+      if (!trackId) return;
+      await ensureLoaded();
+      const next = nextDocument();
+      const previous = next.tracks[trackId] ?? defaultOverride();
+      const override = {
+        ...previous,
+        ...patch,
+        offsetMs: clampLyricOffset(patch.offsetMs ?? previous.offsetMs),
+        updatedAt: new Date(runtime.now()).toISOString()
+      };
+      next.tracks[trackId] = override;
+      await persist(next);
+    }
+    async function selectSource(trackId, source) {
+      await updateTrack(trackId, { source });
+    }
+    return {
+      document,
+      getRevision: () => revision2,
+      ensureLoaded,
+      entryFor,
+      effectiveOffsetSeconds: (trackId) => effectiveLyricOffsetSeconds(document.value.globalOffsetMs, entryFor(trackId)?.offsetMs ?? 0),
+      updateGlobalOffset,
+      updateVisibility,
+      updateTrack,
+      selectSource
+    };
+  }
+  class CoreLyricsService {
+    document = { value: cloneLyricsManagementDocument(DEFAULT_LYRICS_MANAGEMENT) };
+    currentTrack = { value: null };
+    management;
+    loader;
+    loadState = { trackId: "", status: "idle" };
+    contentRevision = 0;
+    error = null;
+    tail = Promise.resolve();
+    active = false;
+    stopped = false;
+    options;
+    constructor(options) {
+      this.options = options;
+      this.management = createLyricsManagement({ ...options, document: this.document });
+      const readLoadState = () => this.loadState;
+      const publishLoadState = (state) => {
+        this.loadState = state;
+        this.changed();
+      };
+      this.loader = createLyricsLoader({
+        ...options.sources,
+        currentTrack: this.currentTrack,
+        lyricsLoadState: {
+          get value() {
+            return readLoadState();
+          },
+          set value(state) {
+            publishLoadState(state);
+          }
+        },
+        getLyricsManagement: () => this.management,
+        patchTrackInQueues: () => this.changed(),
+        timers: options.timers
+      });
+    }
+    changed() {
+      this.contentRevision++;
+      this.options.changed();
+    }
+    async initialize() {
+      try {
+        await this.management.ensureLoaded();
+      } catch (error) {
+        this.error = projectCoreError(error);
+        this.options.failed(error);
+      }
+    }
+    activate() {
+      this.active = true;
+      this.load();
+    }
+    getRevision() {
+      return this.management.getRevision();
+    }
+    getContentRevision() {
+      return this.contentRevision;
+    }
+    selection() {
+      const track = this.currentTrack.value;
+      return track ? { trackId: track.id, occurrenceId: track.queueEntryId ?? null } : null;
+    }
+    fenceCurrent(expected) {
+      const current = this.selection();
+      if (!current || current.trackId !== expected.trackId || current.occurrenceId !== expected.occurrenceId)
+        throw stale$2("Playback selection changed");
+      return this.currentTrack.value;
+    }
+    state() {
+      const { globalOffsetMs, showOriginal, showTranslation, showRomanization } = this.document.value;
+      return {
+        revision: this.getRevision(),
+        contentRevision: this.contentRevision,
+        preferences: { globalOffsetMs, showOriginal, showTranslation, showRomanization },
+        current: this.selection(),
+        loadState: { ...this.loadState },
+        error: this.error
+      };
+    }
+    entry(trackId) {
+      return {
+        revision: this.getRevision(),
+        override: structuredClone(this.management.entryFor(trackId) ?? null)
+      };
+    }
+    content() {
+      const track = this.currentTrack.value;
+      const automatic = track ? {
+        original: track.lyrics,
+        translation: track.translatedLyrics ?? null,
+        romanization: track.romanizedLyrics ?? null,
+        originalSource: track.lyricsSource ?? null,
+        translationSource: track.translatedLyricsSource ?? null,
+        romanizationSource: track.romanizedLyricsSource ?? null
+      } : null;
+      const override = track ? this.management.entryFor(track.id) : void 0;
+      return {
+        revision: this.getRevision(),
+        contentRevision: this.contentRevision,
+        current: this.selection(),
+        automatic,
+        effective: automatic ? projectManagedLyrics(automatic, override) : null,
+        override: override ? { ...override } : null,
+        offsetSeconds: track ? this.management.effectiveOffsetSeconds(track.id) : 0
+      };
+    }
+    observe(track) {
+      if (this.stopped) return;
+      const previous = this.currentTrack.value;
+      if (previous?.id === track?.id) {
+        if (track && previous && track.queueEntryId !== previous.queueEntryId) {
+          this.currentTrack.value = { ...previous, queueEntryId: track.queueEntryId };
+          this.changed();
+        }
+        return;
+      }
+      this.currentTrack.value = track ? { ...track } : null;
+      this.loader.onTrackChanged(track?.id ?? "", previous?.id ?? "");
+      if (this.active) this.load();
+      this.changed();
+    }
+    load() {
+      if (!this.currentTrack.value || this.stopped) return;
+      void this.loader.ensureCurrentTrackLyricsLoaded().catch((error) => {
+        this.error = projectCoreError(error);
+        this.options.failed(error);
+        this.changed();
+      });
+    }
+    edit(command, signal) {
+      if (this.stopped) return Promise.reject(new Error("Lyrics are shutting down"));
+      const work = this.tail.catch(() => void 0).then(async () => {
+        signal?.throwIfAborted();
+        if (command.revision !== this.getRevision()) throw stale$2("Lyrics changed; read fresh state");
+        const edit2 = command.edit;
+        try {
+          switch (edit2.kind) {
+            case "globalOffset":
+              await this.management.updateGlobalOffset(edit2.offsetMs);
+              break;
+            case "visibility":
+              await this.management.updateVisibility(edit2.patch);
+              break;
+            case "track":
+              await this.management.updateTrack(edit2.trackId, edit2.patch);
+              break;
+          }
+        } catch (error) {
+          if (isPersistentDataRevisionConflict(error))
+            throw stale$2("Lyrics changed; read fresh state");
+          throw error;
+        }
+        this.error = null;
+        this.changed();
+        if (edit2.kind === "track" && edit2.trackId === this.currentTrack.value?.id && this.active)
+          this.load();
+        return this.state();
+      });
+      this.tail = work;
+      return work;
+    }
+    async reload(current) {
+      this.fenceCurrent(current);
+      await this.loader.ensureCurrentTrackLyricsLoaded(this.currentTrack.value, true, true);
+    }
+    search(current, signal) {
+      return this.options.search(this.fenceCurrent(current), signal);
+    }
+    importDraft(signal) {
+      return this.options.importDraft(signal);
+    }
+    exportDraft(contents, signal) {
+      return this.options.exportDraft(contents, signal);
+    }
+    async flush() {
+      await this.tail.catch(() => void 0);
+    }
+    async shutdown() {
+      this.stopped = true;
+      await this.loader.shutdown();
+      await this.flush();
+    }
+  }
+  function stale$2(message) {
+    return Object.assign(new Error(message), { code: "STALE_REVISION" });
+  }
+  function providerIdentity(track) {
+    const path = /^[a-zA-Z]:[\\/]/.test(track.id) || /^[\\/]/.test(track.id);
+    const providerId = (track.source || (!path ? track.id.split(":")[0] : "")).trim().toLowerCase();
+    if (!providerId || providerId === "local" || !track.source && !track.id.includes(":"))
+      return null;
+    const prefix = `${providerId}:`;
+    return {
+      providerId,
+      trackId: providerId === "ncm" ? getNcmSongId(track) : track.id.startsWith(prefix) ? track.id.slice(prefix.length).trim() || null : null
+    };
+  }
+  class CorePlayerPresentationService {
+    track = null;
+    state = {
+      current: null,
+      cover: null,
+      coverSource: null,
+      favorite: { available: false, liked: false, loading: false }
+    };
+    revision = 0;
+    currentRequest = null;
+    readWork = Promise.resolve();
+    favoriteRead = Promise.resolve();
+    writes = Promise.resolve();
+    writing = false;
+    stopped = false;
+    options;
+    constructor(options) {
+      this.options = options;
+    }
+    getRevision() {
+      return this.revision;
+    }
+    snapshot() {
+      return structuredClone(this.state);
+    }
+    changed() {
+      this.revision++;
+      this.options.changed();
+    }
+    current(expected) {
+      return this.state.current?.trackId === expected.trackId && this.state.current.occurrenceId === expected.occurrenceId;
+    }
+    observe(track, occurrenceId = track?.queueEntryId ?? null) {
+      if (this.stopped) return;
+      const identity = track ? { trackId: track.id, occurrenceId } : null;
+      const same = identity ? this.current(identity) : this.state.current === null;
+      const artworkChanged = this.track?.cover !== track?.cover || this.track?.coverSource !== track?.coverSource;
+      this.track = track;
+      if (same) {
+        if (artworkChanged) this.refresh();
+        return;
+      }
+      this.currentRequest?.abort();
+      this.state = {
+        current: identity,
+        cover: null,
+        coverSource: null,
+        favorite: { available: false, liked: false, loading: false }
+      };
+      this.changed();
+      if (track) this.refresh();
+    }
+    refresh() {
+      const track = this.track;
+      const expected = this.state.current;
+      if (!track || !expected || this.stopped || this.writing) return;
+      this.currentRequest?.abort();
+      const request = this.currentRequest = new AbortController();
+      const provider = providerIdentity(track);
+      const methods = provider ? this.options.supportedMethods(provider.providerId) : [];
+      this.state.favorite.available = !provider || provider.trackId != null && methods.includes("likeTrack");
+      this.state.favorite.loading = provider?.providerId === "bili" && methods.includes("isTrackLiked");
+      this.changed();
+      const active = () => !request.signal.aborted && this.current(expected);
+      const artwork = this.options.artwork(track, request.signal).then((value) => {
+        if (!active()) return;
+        this.state.cover = value.cover;
+        this.state.coverSource = value.coverSource;
+        this.changed();
+      }).catch((error) => {
+        if (active()) this.options.failed(error);
+      });
+      const liked = !provider ? this.options.playlists.isFavorite(track) : provider.trackId != null && methods.includes("isTrackLiked") ? this.options.callProvider(provider.providerId, "isTrackLiked", [provider.trackId], request.signal).then(Boolean) : Promise.resolve(false);
+      const favorite = liked.then((value) => {
+        if (!active()) return;
+        this.state.favorite.liked = value;
+      }).catch((error) => {
+        if (active()) this.options.failed(error);
+      }).finally(() => {
+        if (!active()) return;
+        this.state.favorite.loading = false;
+        this.changed();
+      });
+      this.favoriteRead = favorite;
+      this.readWork = Promise.all([artwork, favorite]).then(() => void 0);
+    }
+    toggleFavorite(expected, signal) {
+      const work = this.writes.catch(() => void 0).then(async () => {
+        if (this.stopped) throw new Error("Player presentation is shutting down");
+        const assertCurrent = () => {
+          signal?.throwIfAborted();
+          if (!this.current(expected))
+            throw Object.assign(new Error("Playback occurrence changed"), {
+              code: "STALE_REVISION"
+            });
+        };
+        assertCurrent();
+        await this.favoriteRead;
+        assertCurrent();
+        const track = this.track;
+        const provider = providerIdentity(track);
+        if (!this.state.favorite.available) throw new Error("当前音源不支持收藏");
+        this.writing = true;
+        this.state.favorite.loading = true;
+        this.changed();
+        let failed = false;
+        try {
+          const liked = !this.state.favorite.liked;
+          if (provider) {
+            assertCurrent();
+            await this.options.callProvider(provider.providerId, "likeTrack", [
+              provider.trackId,
+              liked
+            ]);
+            if (this.current(expected)) this.state.favorite.liked = liked;
+          } else {
+            const result = await this.options.playlists.toggleFavorite(track, assertCurrent);
+            if (this.current(expected)) this.state.favorite.liked = result;
+          }
+        } catch (error) {
+          failed = true;
+          throw error;
+        } finally {
+          this.writing = false;
+          if (this.current(expected)) {
+            this.state.favorite.loading = false;
+            this.changed();
+          }
+          if (failed || !this.current(expected)) this.refresh();
+        }
+        return this.snapshot();
+      });
+      this.writes = work;
+      return work;
+    }
+    async shutdown() {
+      this.stopped = true;
+      this.currentRequest?.abort();
+      await this.writes.catch(() => void 0);
+      await this.readWork;
     }
   }
   class LibraryQueueSource {
@@ -10082,6 +11659,5858 @@ var TwilightPortableCore = (function(exports) {
         submission.controller.abort(new Error("Core is shutting down"));
       await Promise.allSettled(submissions.map((submission) => submission.work));
     }
+  }
+  function getLogicalTrackKey(track) {
+    const title = normalizeLogicalTrackText(track.title);
+    const artist = normalizeLogicalTrackText(track.artist);
+    if (!title || !artist) return track.id;
+    return `logic:${title}::${artist}`;
+  }
+  function normalizeLogicalTrackText(value) {
+    return (value ?? "").normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+  }
+  function recordingVersionHint(track) {
+    return (track.title + " " + track.album).match(
+      /\blive\b|现场|\bremaster(?:ed)?\b|重制|\bacoustic\b|\bunplugged\b|不插电|\binstrumental\b|伴奏/gi
+    )?.map((hint) => hint.toLowerCase()).sort().join(":") ?? "";
+  }
+  function canShareLogicalTrack(left, right) {
+    if (!left.duration || !right.duration) return true;
+    return Math.abs(left.duration - right.duration) <= 8;
+  }
+  function createRecordingIdentityRules(sourceVersion) {
+    function canShareTrackIdentity(left, right) {
+      if (versionSourceKey(left) === versionSourceKey(right)) return true;
+      const leftVersion = sourceVersion(versionSourceKey(left)), rightVersion = sourceVersion(versionSourceKey(right));
+      if (leftVersion || rightVersion) return !!leftVersion && leftVersion.id === rightVersion?.id;
+      if (getLogicalTrackKey(left) !== getLogicalTrackKey(right)) return false;
+      if (recordingVersionHint(left) !== recordingVersionHint(right)) return false;
+      const leftRemote = recordingRemoteRef(left), rightRemote = recordingRemoteRef(right);
+      if (leftRemote && rightRemote && leftRemote.provider === rightRemote.provider && leftRemote.id !== rightRemote.id)
+        return false;
+      return canShareLogicalTrack(left, right);
+    }
+    return {
+      canShareTrackIdentity,
+      getRecordingTrackKey(track) {
+        const version = sourceVersion(versionSourceKey(track));
+        return version ? `version:${version.id}` : getLogicalTrackKey(track);
+      },
+      preferredSourceKey: (track) => sourceVersion(versionSourceKey(track))?.preferredSource ?? null
+    };
+  }
+  function recordingRemoteRef(track) {
+    const source = getTrackSource(track);
+    if (source === "local") return null;
+    if (track.ncmSongId != null) return { provider: "ncm", id: String(track.ncmSongId) };
+    const separatorIndex = track.id.indexOf(":");
+    const id2 = separatorIndex > 0 ? track.id.slice(separatorIndex + 1).trim() : "";
+    return id2 ? { provider: source, id: id2 } : null;
+  }
+  const LOSSLESS_FORMATS = /* @__PURE__ */ new Set([
+    "flac",
+    "alac",
+    "wav",
+    "wave",
+    "aiff",
+    "aif",
+    "ape",
+    "wv",
+    "dsf",
+    "dff",
+    "mqa"
+  ]);
+  function createLogicalTrackModel(sourceVersion) {
+    const identityRules = createRecordingIdentityRules(sourceVersion);
+    function buildLogicalTracks(inputs) {
+      const groups = [];
+      const groupsByKey = /* @__PURE__ */ new Map();
+      for (const input of inputs) {
+        const variant = toSourceVariant(input);
+        const candidateKey = getRecordingTrackKey(variant.track);
+        const candidates = groupsByKey.get(candidateKey);
+        const existing = candidates?.find(
+          (item) => candidateKey.startsWith("version:") || item.variants.every((member) => canShareTrackIdentity(member.track, variant.track))
+        );
+        if (existing) {
+          existing.variants.push(variant);
+          continue;
+        }
+        const nextGroup = {
+          id: candidates?.length ? `${candidateKey}:${versionSourceKey(variant.track)}` : candidateKey,
+          title: variant.track.title.trim() || "未知歌曲",
+          artist: variant.track.artist.trim() || "未知艺术家",
+          album: variant.track.album.trim() || "未知专辑",
+          preferredTrack: variant.track,
+          variants: [variant]
+        };
+        groups.push(nextGroup);
+        if (candidates) {
+          candidates.push(nextGroup);
+        } else {
+          groupsByKey.set(candidateKey, [nextGroup]);
+        }
+      }
+      for (const group of groups) {
+        group.variants.sort(compareSourceVariants);
+        group.preferredTrack = group.variants[0].track;
+        const preferred = preferredSourceKey(group.preferredTrack);
+        group.preferenceUnavailable = !!preferred && !group.variants.some(
+          (variant) => versionSourceKey(variant.track) === preferred && variant.providerAvailable
+        );
+      }
+      return groups;
+    }
+    function toSourceVariant(input) {
+      const source = getTrackSource(input.track, input.source);
+      const local = source === "local";
+      const track = input.track.source === source ? input.track : { ...input.track, source };
+      return {
+        track,
+        source,
+        sourceName: input.sourceName ?? (local ? "本地音乐" : source),
+        local,
+        lossless: input.lossless ?? isLosslessTrack(input.track),
+        providerAvailable: input.providerAvailable !== false,
+        providerReliability: local ? 1 : clampReliability(input.providerReliability ?? 1)
+      };
+    }
+    function compareSourceVariants(left, right) {
+      return compareSourceVariantPriority(left, right) || left.track.title.localeCompare(right.track.title, "zh") || left.track.id.localeCompare(right.track.id);
+    }
+    function compareSourceVariantPriority(left, right) {
+      return compareBoolean(isPreferredSource(right.track), isPreferredSource(left.track)) || compareBoolean(right.local, left.local) || compareBoolean(right.lossless, left.lossless) || compareBoolean(right.providerAvailable, left.providerAvailable) || right.providerReliability - left.providerReliability;
+    }
+    function compareSourceVariantsByTitle(left, right) {
+      return compareSourceVariantPriority(left, right) || left.track.title.localeCompare(right.track.title, "zh") || left.track.id.localeCompare(right.track.id);
+    }
+    const canShareTrackIdentity = identityRules.canShareTrackIdentity;
+    const getRecordingTrackKey = identityRules.getRecordingTrackKey;
+    const preferredSourceKey = identityRules.preferredSourceKey;
+    function isPreferredSource(track) {
+      return preferredSourceKey(track) === versionSourceKey(track);
+    }
+    function isLosslessTrack(track) {
+      const format = track.format?.trim().toLowerCase();
+      if (format && LOSSLESS_FORMATS.has(format)) return true;
+      if (typeof track.bitDepth === "number" && track.bitDepth >= 16) return true;
+      return false;
+    }
+    function clampReliability(value) {
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.min(1, value));
+    }
+    function compareBoolean(left, right) {
+      if (left === right) return 0;
+      return left ? 1 : -1;
+    }
+    return {
+      buildLogicalTracks,
+      toSourceVariant,
+      compareSourceVariants,
+      compareSourceVariantPriority,
+      compareSourceVariantsByTitle,
+      canShareTrackIdentity,
+      getRecordingTrackKey,
+      preferredSourceKey,
+      isLosslessTrack,
+      clampReliability
+    };
+  }
+  function emptyMusicVersions() {
+    return {
+      version: 1,
+      tracks: { versions: [], families: [] },
+      albums: { versions: [], families: [] }
+    };
+  }
+  function parseMusicVersions(raw) {
+    if (!raw) return emptyMusicVersions();
+    if (raw.length > 8 * 1024 * 1024) throw new Error("版本记录超过 8 MiB");
+    const value = JSON.parse(raw);
+    if (!value || value.version !== 1) throw new Error("不支持的版本记录格式");
+    for (const scope of ["tracks", "albums"]) {
+      const domain = value[scope];
+      if (!domain || !Array.isArray(domain.versions) || !Array.isArray(domain.families) || domain.versions.length > 2e4)
+        throw new Error("版本记录结构无效");
+      const ids = /* @__PURE__ */ new Set(), sources = /* @__PURE__ */ new Set();
+      for (const version of domain.versions) {
+        if (!version || typeof version.id !== "string" || !version.id || ids.has(version.id) || typeof version.label !== "string" || version.label.length > 100 || !Array.isArray(version.sources) || !version.sources.length)
+          throw new Error("版本信息无效");
+        ids.add(version.id);
+        for (const source of version.sources) {
+          if (typeof source !== "string" || !source || source.length > 8192 || sources.has(source))
+            throw new Error("来源身份重复或无效");
+          sources.add(source);
+        }
+        if (version.preferredSource !== null && !version.sources.includes(version.preferredSource))
+          throw new Error("偏好来源不属于该版本");
+      }
+      if (sources.size > 4e4) throw new Error("版本来源超过 40,000 项");
+      const familyIds = /* @__PURE__ */ new Set(), assigned = /* @__PURE__ */ new Set();
+      for (const family of domain.families) {
+        if (!family || typeof family.id !== "string" || !family.id || familyIds.has(family.id) || !Array.isArray(family.versions) || family.versions.length < 2)
+          throw new Error("版本集合无效");
+        familyIds.add(family.id);
+        for (const id2 of family.versions) {
+          if (!ids.has(id2) || assigned.has(id2)) throw new Error("版本集合引用无效");
+          assigned.add(id2);
+        }
+        if (family.preferredVersion !== null && !family.versions.includes(family.preferredVersion))
+          throw new Error("偏好版本不属于该集合");
+      }
+    }
+    return value;
+  }
+  function editMusicVersions(document, scope, operation, keys2, label, newId = () => crypto.randomUUID()) {
+    const selected = [...new Set(keys2)];
+    if (!selected.length) throw new Error("请先选择来源");
+    if (label.trim().length > 100) throw new Error("版本标签最多 100 字");
+    if (["sources", "family"].includes(operation) && selected.length < 2)
+      throw new Error("请至少选择两个来源或版本");
+    if (["label", "prefer-source", "prefer-version", "clear-preference"].includes(operation) && selected.length !== 1)
+      throw new Error("此操作只选择一个来源");
+    const next = structuredClone(document);
+    const domain = next[scope];
+    const bySource = new Map(
+      domain.versions.flatMap(
+        (version) => version.sources.map((source) => [source, version])
+      )
+    );
+    const ensure = (key) => {
+      const existing = bySource.get(key);
+      if (existing) return existing;
+      const version = {
+        id: newId(),
+        label: label.trim() || "未命名版本",
+        sources: [key],
+        preferredSource: null
+      };
+      domain.versions.push(version);
+      bySource.set(key, version);
+      return version;
+    };
+    if (operation === "reset" || operation === "split") {
+      const chosen = new Set(selected);
+      for (const version of domain.versions) {
+        version.sources = version.sources.filter((key) => !chosen.has(key));
+        if (version.preferredSource && chosen.has(version.preferredSource))
+          version.preferredSource = null;
+      }
+      if (operation === "split")
+        for (const key of selected) {
+          bySource.delete(key);
+          ensure(key);
+        }
+    } else {
+      const versions = [...new Set(selected.map(ensure))];
+      if (operation === "sources") {
+        const target = versions[0];
+        const merged = new Set(versions.map((version) => version.id));
+        target.sources = versions.flatMap((version) => version.sources);
+        if (label.trim()) target.label = label.trim();
+        for (const family of domain.families) {
+          family.versions = [
+            ...new Set(family.versions.map((id2) => merged.has(id2) ? target.id : id2))
+          ];
+          if (family.preferredVersion && merged.has(family.preferredVersion))
+            family.preferredVersion = target.id;
+        }
+        domain.versions = domain.versions.filter(
+          (version) => version === target || !merged.has(version.id)
+        );
+        const related = domain.families.filter((family) => family.versions.includes(target.id));
+        if (related.length > 1) {
+          related[0].versions = [...new Set(related.flatMap((family) => family.versions))];
+          domain.families = domain.families.filter(
+            (family) => !related.includes(family) || family === related[0]
+          );
+        }
+      } else if (operation === "family") {
+        const chosen = new Set(versions.map((version) => version.id));
+        const related = domain.families.filter(
+          (family) => family.versions.some((id2) => chosen.has(id2))
+        );
+        for (const family of related) for (const id2 of family.versions) chosen.add(id2);
+        if (chosen.size < 2) throw new Error("所选来源已属于同一版本，请先拆分");
+        domain.families = domain.families.filter((family) => !related.includes(family));
+        domain.families.push({
+          id: related[0]?.id ?? newId(),
+          versions: [...chosen],
+          preferredVersion: related[0]?.preferredVersion ?? null
+        });
+      } else if (operation === "label") {
+        if (!label.trim()) throw new Error("请输入版本标签");
+        versions[0].label = label.trim();
+      } else if (operation === "prefer-source") versions[0].preferredSource = selected[0];
+      else {
+        const family = domain.families.find((item) => item.versions.includes(versions[0].id));
+        if (operation === "prefer-version") {
+          if (!family) throw new Error("请先关联不同版本");
+          family.preferredVersion = versions[0].id;
+        } else {
+          versions[0].preferredSource = null;
+          if (family) family.preferredVersion = null;
+        }
+      }
+    }
+    domain.versions = domain.versions.filter((version) => version.sources.length);
+    const ids = new Set(domain.versions.map((version) => version.id));
+    for (const family of domain.families) {
+      family.versions = family.versions.filter((id2) => ids.has(id2));
+      if (family.preferredVersion && !ids.has(family.preferredVersion)) family.preferredVersion = null;
+    }
+    domain.families = domain.families.filter((family) => family.versions.length > 1);
+    return parseMusicVersions(JSON.stringify(next));
+  }
+  class CoreRecordingVersions {
+    revision = 0;
+    document = emptyMusicVersions();
+    tracks = /* @__PURE__ */ new Map();
+    identity = createLogicalTrackModel((key) => this.tracks.get(key));
+    tail = Promise.resolve();
+    uncertain = false;
+    database;
+    changed;
+    newId;
+    constructor(database, changed = () => {
+    }, newId = () => crypto.randomUUID()) {
+      this.database = database;
+      this.changed = changed;
+      this.newId = newId;
+    }
+    getRevision() {
+      return this.revision;
+    }
+    async initialize() {
+      const next = emptyMusicVersions();
+      let after, revision2;
+      do {
+        const page2 = await this.database.coreStateRead("versions", after, 128, revision2);
+        revision2 = page2.revision;
+        for (const row of page2.rows) {
+          const [scope, kind] = row.key.split(":");
+          next[scope][kind].push(row.value);
+        }
+        after = page2.next ?? void 0;
+      } while (after !== void 0);
+      this.adopt(parseMusicVersions(JSON.stringify(next)), revision2);
+      this.uncertain = false;
+    }
+    adopt(next, revision2) {
+      this.document = next;
+      this.revision = revision2;
+      this.tracks.clear();
+      for (const version of this.document.tracks.versions)
+        for (const source of version.sources) this.tracks.set(source, version);
+    }
+    snapshot() {
+      return structuredClone(this.document);
+    }
+    fence(revision2) {
+      if (revision2 !== this.revision)
+        throw Object.assign(new Error("版本记录已变化，请重新预览"), { code: "STALE_REVISION" });
+    }
+    async page(query2) {
+      if (this.uncertain) await this.initialize();
+      this.fence(query2.revision);
+      const items = this.document[query2.scope][query2.kind], offset = query2.offset ?? 0;
+      return structuredClone({
+        revision: this.revision,
+        total: items.length,
+        offset,
+        items: items.slice(offset, offset + (query2.limit ?? 128))
+      });
+    }
+    edit(edit2, signal) {
+      const work = this.tail.catch(() => void 0).then(async () => {
+        signal?.throwIfAborted();
+        if (this.uncertain) await this.initialize();
+        this.fence(edit2.revision);
+        const next = editMusicVersions(
+          this.document,
+          edit2.scope,
+          edit2.operation,
+          edit2.keys,
+          edit2.label,
+          this.newId
+        );
+        try {
+          const revision2 = await this.database.coreVersionsReplace(next, this.revision);
+          this.adopt(next, revision2);
+          this.changed();
+          return { revision: revision2 };
+        } catch (error) {
+          this.uncertain = true;
+          await this.initialize();
+          this.changed();
+          throw error;
+        }
+      });
+      this.tail = work;
+      return work;
+    }
+    async flush() {
+      await this.tail.catch(() => void 0);
+      if (this.uncertain) await this.initialize();
+    }
+  }
+  function isAggregatePlaylist(playlist) {
+    return playlist.kind === "aggregate";
+  }
+  const MAX_PLAYLIST_IMPORT_BYTES = 8 * 1024 * 1024;
+  const MAX_PLAYLIST_IMPORT_ENTRIES = 2e4;
+  function cleanLine(value) {
+    return value.replace(/^\uFEFF/, "").trim();
+  }
+  function normalizePath(value) {
+    return value.trim().replace(/\//g, "\\").replace(/\\+/g, "\\").toLocaleLowerCase("en-US");
+  }
+  function basename(value) {
+    const normalized = value.replace(/\\/g, "/");
+    return normalized.slice(normalized.lastIndexOf("/") + 1).toLocaleLowerCase("en-US");
+  }
+  function validateText(text2) {
+    if (new TextEncoder().encode(text2).byteLength > MAX_PLAYLIST_IMPORT_BYTES) {
+      throw new Error("歌单文件超过 8 MiB 导入上限");
+    }
+  }
+  function pushEntry(entries, warnings, entry) {
+    if (!entry.path || entry.path.includes("\0")) {
+      warnings.push("已跳过空路径或包含 NUL 字符的条目");
+      return;
+    }
+    if (entries.length >= MAX_PLAYLIST_IMPORT_ENTRIES) {
+      throw new Error(`歌单条目超过 ${MAX_PLAYLIST_IMPORT_ENTRIES.toLocaleString()} 首上限`);
+    }
+    entries.push(entry);
+  }
+  function parseExtInf(value) {
+    const match = /^#EXTINF:([+-]?\d+(?:\.\d+)?)\s*,\s*(.*)$/i.exec(value);
+    if (!match) return {};
+    const seconds = Number(match[1]);
+    return {
+      ...Number.isFinite(seconds) && seconds >= 0 ? { durationSeconds: seconds } : {},
+      ...match[2] ? { title: match[2].trim() } : {}
+    };
+  }
+  function parseM3u(text2, format) {
+    const entries = [];
+    const warnings = [];
+    let pending = {};
+    for (const raw of text2.split(/\r?\n/)) {
+      const line = cleanLine(raw);
+      if (!line) continue;
+      if (/^#EXTINF:/i.test(line)) {
+        pending = parseExtInf(line);
+        continue;
+      }
+      if (line.startsWith("#")) continue;
+      pushEntry(entries, warnings, { path: line, ...pending });
+      pending = {};
+    }
+    return { format, entries, warnings };
+  }
+  function parsePls(text2) {
+    const fields2 = /* @__PURE__ */ new Map();
+    const warnings = [];
+    let inPlaylistSection = false;
+    for (const raw of text2.split(/\r?\n/)) {
+      const line = cleanLine(raw);
+      if (!line || line.startsWith(";") || line.startsWith("#")) continue;
+      if (/^\[playlist\]$/i.test(line)) {
+        inPlaylistSection = true;
+        continue;
+      }
+      if (!inPlaylistSection) continue;
+      const equals = line.indexOf("=");
+      if (equals <= 0) continue;
+      const key = line.slice(0, equals).trim();
+      const value = line.slice(equals + 1).trim();
+      const match = /^(file|title|length)(\d+)$/i.exec(key);
+      if (!match) continue;
+      const index = Number(match[2]);
+      if (!Number.isSafeInteger(index) || index < 1 || index > MAX_PLAYLIST_IMPORT_ENTRIES) {
+        warnings.push(`已跳过非法 PLS 条目序号: ${key}`);
+        continue;
+      }
+      const current = fields2.get(index) ?? {};
+      if (match[1].toLocaleLowerCase() === "file") current.path = value;
+      if (match[1].toLocaleLowerCase() === "title") current.title = value;
+      if (match[1].toLocaleLowerCase() === "length") {
+        const duration = Number(value);
+        if (Number.isFinite(duration) && duration >= 0) current.durationSeconds = duration;
+      }
+      fields2.set(index, current);
+    }
+    const entries = [];
+    for (const [, entry] of [...fields2.entries()].sort(([left], [right]) => left - right)) {
+      if (!entry.path) {
+        warnings.push("已跳过没有 FileN 的 PLS 条目");
+        continue;
+      }
+      pushEntry(entries, warnings, entry);
+    }
+    return { format: "pls", entries, warnings };
+  }
+  function parsePlaylistDocument(text2, fileName) {
+    validateText(text2);
+    const extension = fileName.trim().split(".").pop()?.toLocaleLowerCase("en-US");
+    if (extension === "pls") return parsePls(text2);
+    if (extension === "m3u8") return parseM3u(text2, "m3u8");
+    if (extension === "m3u") return parseM3u(text2, "m3u");
+    throw new Error("仅支持 M3U、M3U8 和 PLS 歌单文件");
+  }
+  function toPortablePath(path) {
+    return path.replace(/\\/g, "/");
+  }
+  function exportPlaylistDocument(tracks2, format) {
+    const writer = createPlaylistDocumentWriter(format);
+    for (const track of tracks2) writer.append(track);
+    return writer.finish();
+  }
+  function createPlaylistDocumentWriter(format) {
+    const rows = [format === "pls" ? "[playlist]" : "#EXTM3U"];
+    let count = 0;
+    return {
+      append(track) {
+        const number2 = ++count, title = track.artist ? `${track.artist} - ${track.title}` : track.title, duration = Math.max(0, Math.round(track.duration || 0));
+        if (format === "pls")
+          rows.push(
+            `File${number2}=${toPortablePath(track.filePath)}`,
+            `Title${number2}=${title}`,
+            `Length${number2}=${duration}`
+          );
+        else rows.push(`#EXTINF:${duration},${title}`, toPortablePath(track.filePath));
+      },
+      finish() {
+        const tail = format === "pls" ? [`NumberOfEntries=${count}`, "Version=2"] : [];
+        return `${[...rows, ...tail].join("\r\n")}\r
+`;
+      }
+    };
+  }
+  function findPlaylistRelocations(missingTracks, candidates) {
+    const relocations = [];
+    const unresolvedTrackIds = [];
+    const ambiguousTrackIds = [];
+    const usedCandidateIds = /* @__PURE__ */ new Set();
+    const byPath = new Map(candidates.map((track) => [normalizePath(track.filePath), track]));
+    for (const missing of missingTracks) {
+      if (byPath.has(normalizePath(missing.filePath))) continue;
+      const filename = basename(missing.filePath || missing.fileName);
+      const filenameMatches = candidates.filter(
+        (candidate) => !usedCandidateIds.has(candidate.id) && basename(candidate.filePath) === filename
+      );
+      const metadataMatches = candidates.filter((candidate) => {
+        if (usedCandidateIds.has(candidate.id)) return false;
+        return candidate.title.trim().toLocaleLowerCase() === missing.title.trim().toLocaleLowerCase() && candidate.artist.trim().toLocaleLowerCase() === missing.artist.trim().toLocaleLowerCase() && Math.abs((candidate.duration || 0) - (missing.duration || 0)) <= 2;
+      });
+      const matches = filenameMatches.length === 1 ? filenameMatches : metadataMatches;
+      if (matches.length === 1) {
+        usedCandidateIds.add(matches[0].id);
+        relocations.push({ trackId: missing.id, fromPath: missing.filePath, toTrack: matches[0] });
+      } else if (matches.length > 1 || filenameMatches.length > 1) {
+        ambiguousTrackIds.push(missing.id);
+      } else {
+        unresolvedTrackIds.push(missing.id);
+      }
+    }
+    return { relocations, unresolvedTrackIds, ambiguousTrackIds };
+  }
+  function reorderStableIds(ids, movingIds, targetIndex) {
+    const moving = new Set(movingIds);
+    const picked = ids.filter((id2) => moving.has(id2));
+    if (picked.length === 0) return [...ids];
+    const rest = ids.filter((id2) => !moving.has(id2));
+    const beforeMoving = ids.slice(0, Math.max(0, targetIndex)).filter((id2) => moving.has(id2)).length;
+    const insertion = Math.max(0, Math.min(rest.length, targetIndex - beforeMoving));
+    return [...rest.slice(0, insertion), ...picked, ...rest.slice(insertion)];
+  }
+  class PlaylistTransactionRejectedError extends Error {
+  }
+  function describeError(error) {
+    return error instanceof Error && error.message ? error.message : String(error || "Unknown persistence error");
+  }
+  class PlaylistPersistence {
+    options;
+    setTimer;
+    clearTimer;
+    pendingSnapshot = null;
+    pendingBase = null;
+    timer = null;
+    writeChain = Promise.resolve();
+    writing = false;
+    dirty = false;
+    failureCount = 0;
+    lastError = null;
+    retryable = true;
+    constructor(options) {
+      this.options = options;
+      this.setTimer = options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
+      this.clearTimer = options.clearTimeout ?? globalThis.clearTimeout.bind(globalThis);
+    }
+    enqueue(snapshot, base = snapshot) {
+      const clone2 = this.options.cloneSnapshot ?? cloneForPersistence;
+      if (this.pendingSnapshot === null) this.pendingBase = clone2(base);
+      this.pendingSnapshot = clone2(snapshot);
+      this.dirty = true;
+      if (this.retryable) this.schedule(this.options.flushDelayMs);
+      else this.publish("error");
+    }
+    async flush() {
+      this.clearScheduledFlush();
+      await Promise.resolve();
+      if (!this.retryable) return false;
+      const failuresAtStart = this.failureCount;
+      do {
+        await this.commitPending();
+        await this.writeChain;
+        if (this.failureCount > failuresAtStart) break;
+        this.clearScheduledFlush();
+      } while (this.pendingSnapshot !== null);
+      return !this.dirty;
+    }
+    dispose() {
+      this.clearScheduledFlush();
+    }
+    /** Read authority first. Check, queue reset and publication share one turn. */
+    async discardPending(check, apply) {
+      await this.writeChain;
+      check();
+      this.clearScheduledFlush();
+      this.pendingSnapshot = null;
+      this.pendingBase = null;
+      this.dirty = false;
+      this.retryable = true;
+      this.failureCount = 0;
+      this.lastError = null;
+      apply();
+      if (!this.dirty) this.publish("idle");
+    }
+    schedule(delayMs, publishPending = true) {
+      this.clearScheduledFlush();
+      if (publishPending) this.publish("pending");
+      this.timer = this.setTimer(() => {
+        this.timer = null;
+        void this.commitPending();
+      }, delayMs);
+      if (this.timer && typeof this.timer === "object" && "unref" in this.timer) {
+        this.timer.unref();
+      }
+    }
+    async commitPending() {
+      if (!this.retryable) return;
+      if (this.writing) {
+        await this.writeChain;
+        return;
+      }
+      const snapshot = this.pendingSnapshot;
+      const base = this.pendingBase;
+      if (snapshot === null || base === null) {
+        if (!this.dirty) this.publish("idle");
+        return;
+      }
+      this.pendingSnapshot = null;
+      this.pendingBase = null;
+      this.writing = true;
+      this.writeChain = Promise.resolve().then(async () => {
+        try {
+          await this.options.write(snapshot, base);
+          if (this.pendingSnapshot === null) {
+            this.dirty = false;
+            this.failureCount = 0;
+            this.lastError = null;
+            this.publish("idle");
+          }
+        } catch (error) {
+          if (this.pendingSnapshot === null) {
+            this.pendingSnapshot = snapshot;
+            this.pendingBase = base;
+          } else {
+            this.pendingBase = base;
+          }
+          this.dirty = true;
+          this.failureCount += 1;
+          this.lastError = describeError(error);
+          this.retryable = this.options.shouldRetry?.(error) !== false;
+          this.publish("error");
+          if (this.retryable) this.schedule(this.options.retryDelayMs, false);
+          else this.clearScheduledFlush();
+        }
+      }).finally(() => {
+        this.writing = false;
+        if (this.retryable && this.pendingSnapshot !== null && this.timer === null) {
+          this.schedule(this.options.flushDelayMs);
+        }
+      });
+      await this.writeChain;
+    }
+    clearScheduledFlush() {
+      if (this.timer === null) return;
+      this.clearTimer(this.timer);
+      this.timer = null;
+    }
+    publish(state) {
+      this.options.onStatus?.({
+        state,
+        dirty: this.dirty,
+        failureCount: this.failureCount,
+        lastError: this.lastError,
+        ...!this.retryable ? { canRetry: false } : {}
+      });
+    }
+  }
+  function cloneForPersistence(snapshot) {
+    return JSON.parse(JSON.stringify(snapshot));
+  }
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  function externalMembershipIntent(base, local) {
+    return base.generation !== local.generation || !equal(
+      base.entries.map((entry) => entry.entryId),
+      local.entries.map((entry) => entry.entryId)
+    );
+  }
+  function replayExternalPlaylist(base, local, current) {
+    const baseRefresh = externalRefreshGeneration(base);
+    if (externalRefreshGeneration(local) !== baseRefresh) {
+      const latest = new Map(current.entries.map((entry) => [entry.entryId, entry]));
+      return {
+        ...clone(local),
+        entries: local.entries.map((entry) => {
+          const other = latest.get(entry.entryId);
+          return other && other.revision > entry.revision ? {
+            ...clone(entry),
+            revision: other.revision,
+            manualBinding: other.manualBinding ? clone(other.manualBinding) : void 0,
+            resolution: clone(other.resolution)
+          } : clone(entry);
+        })
+      };
+    }
+    const membershipIntent = externalMembershipIntent(base, local);
+    const old = new Map(base.entries.map((entry) => [entry.entryId, entry]));
+    const after = new Map(local.entries.map((entry) => [entry.entryId, entry]));
+    const manualIntent = local.entries.some(
+      (entry) => entry.revision > (old.get(entry.entryId)?.revision ?? entry.revision)
+    );
+    const sameRefresh = externalRefreshGeneration(current) === baseRefresh;
+    if (!sameRefresh) {
+      if (membershipIntent)
+        throw new PlaylistTransactionRejectedError(
+          "导入歌单已刷新，未保存本次成员操作，请重新读取后重试"
+        );
+      if (!manualIntent) return clone(current);
+    }
+    if (!membershipIntent && !manualIntent && base.generation !== current.generation)
+      return clone(current);
+    const next = clone(current);
+    for (const key of ["complete", "readError", "expectedTotal", "locallyEdited"]) {
+      if (sameRefresh && !equal(base[key], local[key])) Object.assign(next, { [key]: local[key] });
+    }
+    next.entries = next.entries.filter((entry) => !old.has(entry.entryId) || after.has(entry.entryId)).map((entry) => {
+      const before = old.get(entry.entryId), changed = after.get(entry.entryId);
+      if (!before || !changed || equal(before, changed)) return entry;
+      if (changed.revision > before.revision && changed.revision >= entry.revision)
+        return {
+          ...entry,
+          revision: changed.revision,
+          manualBinding: changed.manualBinding ? clone(changed.manualBinding) : void 0,
+          resolution: clone(changed.resolution)
+        };
+      if (base.generation === current.generation && !equal(before.resolution, changed.resolution) && changed.revision === entry.revision && equal(entry.manualBinding, before.manualBinding))
+        return { ...entry, resolution: clone(changed.resolution) };
+      return entry;
+    });
+    const ids = new Set(next.entries.map((entry) => entry.entryId));
+    for (const entry of local.entries) {
+      if (!old.has(entry.entryId) && !ids.has(entry.entryId)) {
+        next.entries.push(clone(entry));
+        ids.add(entry.entryId);
+      }
+    }
+    const localOrder = local.entries.filter((entry) => old.has(entry.entryId) && ids.has(entry.entryId)).map((entry) => entry.entryId);
+    const baseOrder = base.entries.filter((entry) => ids.has(entry.entryId)).map((entry) => entry.entryId);
+    if (!equal(localOrder, baseOrder)) {
+      const entries = new Map(next.entries.map((entry) => [entry.entryId, entry]));
+      next.entries = [
+        ...localOrder.map((id2) => entries.get(id2)),
+        ...next.entries.filter((entry) => !old.has(entry.entryId))
+      ];
+    }
+    if (next.entries.length > EXTERNAL_PLAYLIST_MAX_ENTRIES)
+      throw new PlaylistTransactionRejectedError("合并后的歌单超过 20,000 条上限，未保存本次操作");
+    const changedMembership = !equal(
+      current.entries.map((entry) => entry.entryId),
+      next.entries.map((entry) => entry.entryId)
+    );
+    next.entries = next.entries.map((entry, position) => ({ ...entry, position }));
+    if (membershipIntent) {
+      next.refreshGeneration = baseRefresh;
+      if (base.generation !== local.generation) next.generation = local.generation;
+      if (changedMembership)
+        next.membershipRevision = current.membershipRevision + Math.max(1, local.membershipRevision - base.membershipRevision);
+      else next.membershipRevision = Math.max(current.membershipRevision, local.membershipRevision);
+    }
+    return next;
+  }
+  function normalizePortableLibraryPath(filePath) {
+    const normalized = filePath.replace(/\//g, "\\").replace(/\\+/g, "\\");
+    return /^[a-zA-Z]:\\/.test(normalized) ? normalized.toLocaleLowerCase("en-US") : normalized;
+  }
+  function nonEmptySnapshots(snapshots) {
+    return Object.keys(snapshots).length > 0 ? snapshots : void 0;
+  }
+  function mergeAlbumGroupsByReleaseEvidence(albumMap) {
+    const result = /* @__PURE__ */ new Map();
+    const fallbackIdByReleaseEvidence = /* @__PURE__ */ new Map();
+    for (const [id2, group] of albumMap) {
+      if (!id2.startsWith("dir:")) {
+        result.set(id2, group);
+        continue;
+      }
+      const firstTrack = group.tracks[0];
+      const coverTrack = group.tracks.find((track) => !!track.cover);
+      const coverIdentity = coverTrack ? getAlbumCoverIdentity(coverTrack) : "";
+      if (!firstTrack || !coverIdentity) {
+        result.set(id2, group);
+        continue;
+      }
+      const album = normalizeAlbumIdentityText(firstTrack.album || "未知专辑");
+      const evidenceKey = `${coverIdentity}${album}`;
+      const targetId = fallbackIdByReleaseEvidence.get(evidenceKey);
+      if (!targetId) {
+        fallbackIdByReleaseEvidence.set(evidenceKey, id2);
+        result.set(id2, group);
+        continue;
+      }
+      const target = result.get(targetId);
+      if (!target) {
+        result.set(id2, group);
+        continue;
+      }
+      target.tracks.push(...group.tracks);
+      target.cover ||= group.cover;
+    }
+    return result;
+  }
+  const compareAlbumFileNames = new Intl.Collator("zh", { numeric: true, sensitivity: "base" }).compare;
+  function compareAlbumTrackOrder(left, right) {
+    const disc = albumOrderIndex(left.discNumber) - albumOrderIndex(right.discNumber);
+    if (disc !== 0) return disc;
+    const track = albumOrderIndex(left.trackNumber) - albumOrderIndex(right.trackNumber);
+    if (track !== 0) return track;
+    const byFile = compareAlbumFileNames(left.fileName || "", right.fileName || "");
+    if (byFile !== 0) return byFile;
+    return (left.title || "").localeCompare(right.title || "", "zh");
+  }
+  function deduplicateLibraryPaths(paths) {
+    const values = /* @__PURE__ */ new Map();
+    for (const path of paths) {
+      const trimmed = path.trim();
+      const normalized = normalizeLibraryPath(trimmed);
+      if (trimmed && normalized && !values.has(normalized)) values.set(normalized, trimmed);
+    }
+    return [...values.values()];
+  }
+  function toPlaylistTrackSnapshot(track) {
+    const source = getTrackSource(track);
+    return {
+      id: track.id,
+      ...track.isrc ? { isrc: track.isrc } : {},
+      ...track.queueEntryId !== void 0 ? { queueEntryId: track.queueEntryId } : {},
+      title: track.title,
+      artist: track.artist,
+      ...track.artists !== void 0 ? { artists: track.artists.map((item) => ({ ...item })) } : {},
+      album: track.album,
+      ...track.releaseDate !== void 0 ? { releaseDate: track.releaseDate } : {},
+      ...track.genre !== void 0 ? { genre: track.genre } : {},
+      ...track.albumArtist !== void 0 ? { albumArtist: track.albumArtist } : {},
+      ...track.albumId !== void 0 ? { albumId: track.albumId } : {},
+      ...track.discNumber !== void 0 ? { discNumber: track.discNumber } : {},
+      ...track.trackNumber !== void 0 ? { trackNumber: track.trackNumber } : {},
+      filePath: track.filePath,
+      fileName: track.fileName,
+      ...track.dir !== void 0 ? { dir: track.dir } : {},
+      ...track.subTrack !== void 0 ? { subTrack: track.subTrack } : {},
+      ...track.cueRange !== void 0 ? { cueRange: { ...track.cueRange } } : {},
+      ...track.cueSheetPath !== void 0 ? { cueSheetPath: track.cueSheetPath } : {},
+      ...track.cueEncoding !== void 0 ? { cueEncoding: track.cueEncoding } : {},
+      duration: track.duration,
+      size: track.size,
+      cover: track.cover,
+      ...track.coverSmall !== void 0 ? { coverSmall: track.coverSmall } : {},
+      ...track.coverSmallSource !== void 0 ? { coverSmallSource: track.coverSmallSource } : {},
+      ...track.coverSource !== void 0 ? { coverSource: track.coverSource } : {},
+      lyrics: null,
+      ...track.source !== void 0 ? { source: track.source } : {},
+      ...track.ncmSongId !== void 0 ? { ncmSongId: track.ncmSongId } : {},
+      ...track.networkSource !== void 0 ? { networkSource: track.networkSource } : {},
+      ...track.audioFingerprint !== void 0 ? { audioFingerprint: { ...track.audioFingerprint } } : {},
+      ...source === "local" && track.streamUrl !== void 0 ? { streamUrl: track.streamUrl } : {},
+      ...track.streamQuality !== void 0 ? { streamQuality: track.streamQuality } : {},
+      ...track.format !== void 0 ? { format: track.format } : {},
+      ...track.sampleRate !== void 0 ? { sampleRate: track.sampleRate } : {},
+      ...track.bitrate !== void 0 ? { bitrate: track.bitrate } : {},
+      ...track.bitDepth !== void 0 ? { bitDepth: track.bitDepth } : {},
+      ...track.bpm !== void 0 ? { bpm: track.bpm } : {},
+      ...track.addedAt !== void 0 ? { addedAt: track.addedAt } : {},
+      ...track.replayGainTrackGainDb !== void 0 ? { replayGainTrackGainDb: track.replayGainTrackGainDb } : {},
+      ...track.replayGainAlbumGainDb !== void 0 ? { replayGainAlbumGainDb: track.replayGainAlbumGainDb } : {},
+      ...track.replayGainTrackPeak !== void 0 ? { replayGainTrackPeak: track.replayGainTrackPeak } : {},
+      ...track.replayGainAlbumPeak !== void 0 ? { replayGainAlbumPeak: track.replayGainAlbumPeak } : {},
+      ...track.r128TrackGainDb !== void 0 ? { r128TrackGainDb: track.r128TrackGainDb } : {},
+      ...track.r128AlbumGainDb !== void 0 ? { r128AlbumGainDb: track.r128AlbumGainDb } : {}
+    };
+  }
+  function hasHeavySnapshotPayload(track) {
+    return !!(track.lyrics || track.translatedLyrics || track.romanizedLyrics || track.bpmAnalysis || track.metadataMatch);
+  }
+  function slimPlaylistLegacySnapshots(playlist) {
+    const snapshots = playlist.trackSnapshots;
+    if (!snapshots) return playlist;
+    let changed = false;
+    const next = {};
+    for (const [trackId, snapshot] of Object.entries(snapshots)) {
+      if (hasHeavySnapshotPayload(snapshot)) {
+        next[trackId] = toPlaylistTrackSnapshot(snapshot);
+        changed = true;
+      } else {
+        next[trackId] = snapshot;
+      }
+    }
+    return changed ? { ...playlist, trackSnapshots: next } : playlist;
+  }
+  function replayPlaylistTransaction(base, local, authoritative) {
+    const baseById = new Map(base.map((playlist) => [playlist.id, playlist]));
+    const localById = new Map(local.map((playlist) => [playlist.id, playlist]));
+    const merged = new Map(authoritative.map((playlist) => [playlist.id, clonePlaylist(playlist)]));
+    for (const playlist of base) {
+      if (!localById.has(playlist.id)) merged.delete(playlist.id);
+    }
+    for (const localPlaylist of local) {
+      const basePlaylist = baseById.get(localPlaylist.id);
+      const current = merged.get(localPlaylist.id);
+      if (!basePlaylist) {
+        merged.set(localPlaylist.id, clonePlaylist(localPlaylist));
+        continue;
+      }
+      if (!current) {
+        if (basePlaylist.imported) {
+          if (localPlaylist.imported && externalMembershipIntent(basePlaylist.imported, localPlaylist.imported))
+            throw new PlaylistTransactionRejectedError(
+              "导入歌单已删除，未保存本次成员操作，请重新读取后重试"
+            );
+          continue;
+        }
+        if (!playlistDataEqual(basePlaylist, localPlaylist)) {
+          merged.set(localPlaylist.id, clonePlaylist(localPlaylist));
+        }
+        continue;
+      }
+      merged.set(localPlaylist.id, replayPlaylistRecord(basePlaylist, localPlaylist, current));
+    }
+    const ordered = authoritative.map((playlist) => merged.get(playlist.id)).filter((playlist) => !!playlist);
+    const known = new Set(ordered.map((playlist) => playlist.id));
+    for (const playlist of local) {
+      const next = merged.get(playlist.id);
+      if (next && !known.has(next.id)) {
+        ordered.push(next);
+        known.add(next.id);
+      }
+    }
+    return ordered;
+  }
+  function replayPlaylistRecord(base, local, current) {
+    if ((!base.imported && !local.imported && current.imported || base.kind !== current.kind && base.kind === local.kind) && !playlistDataEqual(base.trackIds, local.trackIds))
+      throw new PlaylistTransactionRejectedError(
+        "歌单类型已变化，未保存本次成员操作，请重新读取后重试"
+      );
+    const next = clonePlaylist(current);
+    if (base.imported && local.imported && !current.imported) {
+      if (externalMembershipIntent(base.imported, local.imported))
+        throw new PlaylistTransactionRejectedError(
+          "歌单类型已变化，未保存本次成员操作，请重新读取后重试"
+        );
+    } else if (base.imported && local.imported && current.imported)
+      next.imported = replayExternalPlaylist(base.imported, local.imported, current.imported);
+    else if (!playlistDataEqual(base.imported, local.imported))
+      next.imported = local.imported ? clonePlaylist(local.imported) : void 0;
+    if (base.name !== local.name) next.name = local.name;
+    if (base.isDefault !== local.isDefault) next.isDefault = local.isDefault;
+    if (base.createdAt !== local.createdAt) next.createdAt = local.createdAt;
+    if (base.cover !== local.cover) next.cover = local.cover;
+    if (base.updatedAt !== local.updatedAt) next.updatedAt = local.updatedAt;
+    if (base.kind !== local.kind) next.kind = local.kind;
+    if ((base.pinnedAt ?? null) !== (local.pinnedAt ?? null)) next.pinnedAt = local.pinnedAt;
+    if (!playlistDataEqual(base.hiddenSources, local.hiddenSources)) {
+      next.hiddenSources = local.hiddenSources ? clonePlaylist(local.hiddenSources) : void 0;
+    }
+    if (!playlistDataEqual(base.variantPreferences, local.variantPreferences)) {
+      next.variantPreferences = local.variantPreferences ? clonePlaylist(local.variantPreferences) : void 0;
+    }
+    const baseIds = new Set(base.trackIds);
+    const localIds = new Set(local.trackIds);
+    const locallyRemoved = new Set(base.trackIds.filter((id2) => !localIds.has(id2)));
+    const locallyAdded = local.trackIds.filter((id2) => !baseIds.has(id2));
+    let nextIds = current.trackIds.filter((id2) => !locallyRemoved.has(id2));
+    const nextIdSet = new Set(nextIds);
+    for (const id2 of locallyAdded) {
+      if (!nextIdSet.has(id2)) {
+        nextIds.push(id2);
+        nextIdSet.add(id2);
+      }
+    }
+    const baseSet = new Set(base.trackIds);
+    const localBaseOrder = local.trackIds.filter((id2) => baseSet.has(id2) && nextIdSet.has(id2));
+    const baseOrder = base.trackIds.filter((id2) => nextIdSet.has(id2));
+    if (!playlistDataEqual(localBaseOrder, baseOrder)) {
+      const orderedIds = new Set(localBaseOrder);
+      nextIds = [
+        ...localBaseOrder,
+        ...nextIds.filter((id2) => !baseSet.has(id2) && !orderedIds.has(id2))
+      ];
+    }
+    next.trackIds = nextIds;
+    const baseSnapshots = base.trackSnapshots ?? {};
+    const localSnapshots = local.trackSnapshots ?? {};
+    const snapshots = { ...current.trackSnapshots ?? {} };
+    for (const id2 of locallyRemoved) delete snapshots[id2];
+    for (const [id2, snapshot] of Object.entries(localSnapshots)) {
+      const before = baseSnapshots[id2];
+      if (!before || !playlistDataEqual(before, snapshot)) snapshots[id2] = clonePlaylist(snapshot);
+    }
+    for (const id2 of Object.keys(baseSnapshots)) {
+      if (!localSnapshots[id2] && localIds.has(id2)) delete snapshots[id2];
+    }
+    for (const id2 of Object.keys(snapshots)) {
+      if (!nextIdSet.has(id2)) delete snapshots[id2];
+    }
+    next.trackSnapshots = Object.keys(snapshots).length > 0 ? snapshots : void 0;
+    return next;
+  }
+  function clonePlaylist(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+  function playlistDataEqual(left, right) {
+    if (left === right) return true;
+    if (Array.isArray(left) || Array.isArray(right)) {
+      if (!Array.isArray(left) || !Array.isArray(right)) return false;
+      if (left.length !== right.length) return false;
+      for (let index = 0; index < left.length; index += 1) {
+        if (!playlistDataEqual(left[index], right[index])) return false;
+      }
+      return true;
+    }
+    if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) {
+      return left === right;
+    }
+    const leftRecord = left;
+    const rightRecord = right;
+    for (const key of Object.keys(leftRecord)) {
+      if (leftRecord[key] === void 0) continue;
+      if (!playlistDataEqual(leftRecord[key], rightRecord[key])) return false;
+    }
+    for (const key of Object.keys(rightRecord)) {
+      if (rightRecord[key] === void 0) continue;
+      if (leftRecord[key] === void 0) return false;
+    }
+    return true;
+  }
+  function createPlaylistState({
+    playlists,
+    runtime,
+    playlistPersistenceStatus,
+    playlistPersistenceNotice,
+    onChange
+  }) {
+    let playlistsRevision = 0;
+    let playlistAuthoritativeSnapshot = [];
+    let playlistPersistence = null;
+    function clonePlaylistSnapshot(source = playlists.value) {
+      return runtime.clone(source);
+    }
+    function getPlaylistPersistence() {
+      if (playlistPersistence) return playlistPersistence;
+      playlistPersistence = new PlaylistPersistence({
+        write: persistPlaylistSnapshot,
+        onStatus: (status) => {
+          playlistPersistenceStatus.value = status;
+        },
+        flushDelayMs: 250,
+        retryDelayMs: 1e3,
+        // queuePlaylistPersistence only ever enqueues clonePlaylistSnapshot()
+        // results (frozen plain data), so the queue does not need to re-clone.
+        cloneSnapshot: (snapshot) => snapshot,
+        shouldRetry: (error) => !(error instanceof PlaylistTransactionRejectedError)
+      });
+      return playlistPersistence;
+    }
+    function queuePlaylistPersistence(base) {
+      onChange();
+      runtime.notify();
+      const before = persistentSnapshot(base ?? playlistAuthoritativeSnapshot, false);
+      getPlaylistPersistence().enqueue(persistentSnapshot(playlists.value), before);
+    }
+    function persistentSnapshot(source, clone2 = true) {
+      const snapshot = source.filter((playlist) => !playlist.transient);
+      return clone2 ? clonePlaylistSnapshot(snapshot) : snapshot;
+    }
+    function isPlaylistData(value) {
+      return Array.isArray(value);
+    }
+    async function loadPlaylistEnvelopeForConflict() {
+      const loaded = await runtime.repository.load();
+      return isVersionedDataEnvelope(loaded, isPlaylistData) ? loaded : null;
+    }
+    async function persistPlaylistSnapshot(snapshot, base) {
+      let expectedRevision = playlistsRevision;
+      let desired = playlistDataEqual(base, playlistAuthoritativeSnapshot) ? snapshot : replayPlaylistTransaction(base, snapshot, playlistAuthoritativeSnapshot);
+      let recoveredConflictRevision = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const saved = await runtime.repository.save(desired, expectedRevision);
+          if (isVersionedDataEnvelope(saved, isPlaylistData)) {
+            playlistsRevision = saved.revision;
+            playlistAuthoritativeSnapshot = clonePlaylistSnapshot(saved.data);
+            if (playlistDataEqual(persistentSnapshot(playlists.value), snapshot)) {
+              playlists.value = [
+                ...clonePlaylistSnapshot(saved.data),
+                ...playlists.value.filter((playlist) => playlist.transient)
+              ];
+              onChange();
+            }
+          } else {
+            playlistAuthoritativeSnapshot = clonePlaylistSnapshot(desired);
+          }
+          if (recoveredConflictRevision !== null) {
+            playlistPersistenceNotice.value = {
+              kind: "revision-conflict-recovered",
+              message: "检测到歌单被其他窗口更新，已合并权威版本并保存本次修改",
+              authoritativeRevision: recoveredConflictRevision,
+              recoveredAt: new Date(runtime.now()).toISOString()
+            };
+          }
+          return;
+        } catch (error) {
+          if (!isPersistentDataRevisionConflict(error)) throw error;
+          const current = isVersionedDataEnvelope(error.current, isPlaylistData) ? error.current : await loadPlaylistEnvelopeForConflict();
+          if (!current) throw error;
+          desired = replayPlaylistTransaction(base, snapshot, current.data);
+          playlistsRevision = current.revision;
+          expectedRevision = current.revision;
+          recoveredConflictRevision = current.revision;
+        }
+      }
+      throw new Error("Playlist persistence revision conflict did not settle after 3 retries");
+    }
+    async function savePlaylists() {
+      queuePlaylistPersistence();
+    }
+    async function flushPlaylists() {
+      return getPlaylistPersistence().flush();
+    }
+    async function loadPlaylists() {
+      const loadedResult = await runtime.repository.load();
+      applyLoadedPlaylists(loadedResult);
+    }
+    async function reloadPlaylistsDiscardingChanges() {
+      if (playlistPersistenceStatus.value.canRetry !== false)
+        throw new Error("当前没有需要重新读取的歌单成员冲突");
+      const before = clonePlaylistSnapshot();
+      const loadedResult = await runtime.repository.load();
+      const saved = isVersionedDataEnvelope(loadedResult, isPlaylistData) ? loadedResult.data : loadedResult;
+      if (!isRecoveryData(saved)) throw new Error("未读取到有效歌单，已保留未保存的修改");
+      const prepared = prepareLoadedPlaylists(loadedResult);
+      await getPlaylistPersistence().discardPending(
+        () => {
+          if (playlistPersistenceStatus.value.canRetry !== false || !playlistDataEqual(before, playlists.value))
+            throw new Error("读取期间歌单又有变化，已保留未保存的修改，请重试");
+        },
+        () => applyPreparedPlaylists(prepared)
+      );
+    }
+    function isRecoveryData(value) {
+      if (!Array.isArray(value)) return false;
+      const ids = /* @__PURE__ */ new Set();
+      return value.every((playlist) => {
+        if (!playlist || typeof playlist.id !== "string" || !playlist.id || ids.has(playlist.id) || typeof playlist.name !== "string" || typeof playlist.createdAt !== "string" || !Array.isArray(playlist.trackIds) || playlist.trackIds.some((id2) => typeof id2 !== "string"))
+          return false;
+        ids.add(playlist.id);
+        if (!playlist.imported) return true;
+        const data = playlist.imported;
+        return typeof data.generation === "string" && Number.isSafeInteger(data.membershipRevision) && Array.isArray(data.entries) && data.entries.every(
+          (entry) => entry && typeof entry.entryId === "string" && Number.isSafeInteger(entry.revision) && Number.isSafeInteger(entry.position) && !!entry.original && !!entry.resolution
+        );
+      });
+    }
+    function prepareLoadedPlaylists(loadedResult) {
+      const saved = isVersionedDataEnvelope(loadedResult, isPlaylistData) ? loadedResult.data : loadedResult;
+      const revision2 = isVersionedDataEnvelope(loadedResult, isPlaylistData) ? loadedResult.revision : 0;
+      const DEFAULT_PLAYLIST = {
+        id: "pl_favorites",
+        name: "我收藏的音乐",
+        trackIds: [],
+        isDefault: true,
+        createdAt: new Date(runtime.now()).toISOString()
+      };
+      if (!saved || !Array.isArray(saved) || saved.length === 0) {
+        return { revision: revision2, loaded: [DEFAULT_PLAYLIST], authority: [], needsSave: true };
+      }
+      const loaded = saved.map(slimPlaylistLegacySnapshots);
+      if (!loaded.find((p) => p.isDefault)) {
+        loaded.unshift(DEFAULT_PLAYLIST);
+      }
+      return { revision: revision2, loaded, authority: clonePlaylistSnapshot(loaded), needsSave: false };
+    }
+    function applyPreparedPlaylists(prepared) {
+      playlistsRevision = prepared.revision;
+      playlistAuthoritativeSnapshot = prepared.authority;
+      playlists.value = prepared.loaded;
+      onChange();
+      if (prepared.needsSave) queuePlaylistPersistence([]);
+    }
+    function applyLoadedPlaylists(loadedResult) {
+      applyPreparedPlaylists(prepareLoadedPlaylists(loadedResult));
+    }
+    return {
+      getRevision: () => playlistsRevision,
+      dispose: () => playlistPersistence?.dispose(),
+      clonePlaylistSnapshot,
+      queuePlaylistPersistence,
+      savePlaylists,
+      flushPlaylists,
+      loadPlaylists,
+      reloadPlaylistsDiscardingChanges
+    };
+  }
+  function withExternalMembership(data, entries) {
+    if (entries.length > EXTERNAL_PLAYLIST_MAX_ENTRIES) throw new Error("歌单超过 20,000 条上限");
+    return {
+      ...data,
+      entries: entries.map((entry, position) => ({ ...entry, position })),
+      refreshGeneration: externalRefreshGeneration(data),
+      generation: crypto.randomUUID(),
+      membershipRevision: data.membershipRevision + 1,
+      locallyEdited: true
+    };
+  }
+  function externalEntryForTrack(track, position) {
+    const snapshot = toPlaylistTrackSnapshot(track);
+    return {
+      entryId: crypto.randomUUID(),
+      position,
+      revision: 0,
+      original: {
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        duration: track.duration,
+        ...track.isrc ? { isrc: track.isrc } : {}
+      },
+      manualBinding: snapshot,
+      resolution: {
+        state: getTrackSource(track) === "local" ? "local" : "streaming",
+        track: snapshot
+      }
+    };
+  }
+  function copyExternalEntry(entry, position) {
+    return clonePlaylist({
+      ...entry,
+      entryId: crypto.randomUUID(),
+      position,
+      ...entry.manualBinding ? { manualBinding: toPlaylistTrackSnapshot(entry.manualBinding) } : {},
+      resolution: {
+        ...entry.resolution,
+        ...entry.resolution.track ? { track: toPlaylistTrackSnapshot(entry.resolution.track) } : {}
+      }
+    });
+  }
+  function createExternalPlaylistCommands(options) {
+    const { runtime } = options;
+    const id2 = runtime.newId;
+    function mutate(playlistId, apply) {
+      const playlist = options.playlists.value.find((p) => p.id === playlistId);
+      if (!playlist?.imported) return false;
+      const base = options.clonePlaylistSnapshot();
+      if (!apply(playlist)) return false;
+      if (playlist.transient) runtime.notify();
+      else options.queuePlaylistPersistence(base);
+      return true;
+    }
+    function uniqueName(input) {
+      const stem = input.trim().slice(0, 70) || "导入的歌单";
+      let name = stem, n = 2;
+      while (options.playlists.value.some((p) => !p.kind && p.name === name))
+        name = `${stem} (${n++})`;
+      return name;
+    }
+    function createExternalPlaylist(document, transient = false) {
+      if (document.songs.length > EXTERNAL_PLAYLIST_MAX_ENTRIES)
+        throw new Error("歌单超过 20,000 条上限");
+      const base = options.clonePlaylistSnapshot(), playlistId = `pl_${id2()}`, now = new Date(runtime.now()).toISOString();
+      options.playlists.value = [
+        ...options.playlists.value,
+        {
+          id: playlistId,
+          name: uniqueName(document.name),
+          trackIds: [],
+          createdAt: now,
+          ...transient ? { transient: true } : {},
+          imported: {
+            version: 1,
+            source: document.source,
+            entries: reconcileImportEntries([], document.songs, id2),
+            complete: document.complete,
+            expectedTotal: document.total,
+            importedAt: now,
+            generation: id2(),
+            membershipRevision: 0
+          }
+        }
+      ];
+      if (transient) runtime.notify();
+      else options.queuePlaylistPersistence(base);
+      return playlistId;
+    }
+    function adoptExternalPlaylist(preview) {
+      if (!preview.imported?.complete) throw new Error("歌单尚未完整读取，完成后才能保存");
+      if (options.playlists.value.some((p) => p.id === preview.id)) throw new Error("歌单已经保存");
+      const base = options.clonePlaylistSnapshot();
+      const playlist = structuredClone(preview);
+      delete playlist.transient;
+      playlist.name = uniqueName(playlist.name);
+      options.playlists.value = [...options.playlists.value, playlist];
+      options.queuePlaylistPersistence(base);
+      return playlist.id;
+    }
+    function saveExternalPlaylist(playlistId) {
+      const playlist = options.playlists.value.find((p) => p.id === playlistId && p.imported);
+      if (!playlist) throw new Error("歌单已被删除");
+      if (!playlist.transient) return playlistId;
+      if (!playlist.imported.complete) throw new Error("歌单尚未完整读取，完成后才能保存");
+      const base = options.clonePlaylistSnapshot();
+      delete playlist.transient;
+      options.queuePlaylistPersistence(base);
+      return playlistId;
+    }
+    function discardExternalPlaylist(playlistId) {
+      const playlist = options.playlists.value.find((p) => p.id === playlistId && p.transient);
+      if (!playlist) return false;
+      options.playlists.value = options.playlists.value.filter((p) => p !== playlist);
+      runtime.notify();
+      return true;
+    }
+    function appendExternalPlaylistPage(playlistId, generation, songs, total, complete) {
+      return mutate(playlistId, (p) => {
+        const data = p.imported;
+        if (data.generation !== generation || data.complete) return false;
+        if (data.entries.length + songs.length > EXTERNAL_PLAYLIST_MAX_ENTRIES)
+          throw new Error("歌单超过 20,000 条上限");
+        const offset = data.entries.length;
+        data.entries = [
+          ...data.entries,
+          ...reconcileImportEntries([], songs, id2).map((e) => ({
+            ...e,
+            position: e.position + offset
+          }))
+        ];
+        data.membershipRevision++;
+        data.expectedTotal = total;
+        data.complete = complete;
+        delete data.readError;
+        return true;
+      });
+    }
+    function setExternalPlaylistReadError(playlistId, generation, error) {
+      return mutate(playlistId, (p) => {
+        if (p.imported.generation !== generation) return false;
+        p.imported.readError = error;
+        return true;
+      });
+    }
+    function applyExternalResolution(playlistId, generation, entryId, revision2, resolution) {
+      return applyExternalResolutions(playlistId, generation, [{ entryId, revision: revision2, resolution }]);
+    }
+    function applyExternalResolutions(playlistId, generation, updates) {
+      return mutate(playlistId, (p) => {
+        const data = p.imported;
+        if (data.generation !== generation) return false;
+        const byId = new Map(updates.map((update) => [update.entryId, update]));
+        let changed = false;
+        data.entries = data.entries.map((entry) => {
+          const update = byId.get(entry.entryId);
+          if (!update || entry.revision !== update.revision) return entry;
+          const resolution = update.resolution;
+          changed = true;
+          return {
+            ...entry,
+            resolution: {
+              ...resolution,
+              ...resolution.track ? { track: toPlaylistTrackSnapshot(resolution.track) } : {}
+            }
+          };
+        });
+        return changed;
+      });
+    }
+    function bindExternalEntry(playlistId, entryId, track) {
+      return mutate(playlistId, (p) => {
+        const data = p.imported, entry = data.entries.find((e) => e.entryId === entryId);
+        if (!entry) return false;
+        const binding = track ? toPlaylistTrackSnapshot(track) : void 0;
+        data.entries = data.entries.map(
+          (e) => e === entry ? {
+            ...e,
+            revision: e.revision + 1,
+            manualBinding: binding,
+            resolution: { state: "pending" }
+          } : e
+        );
+        return true;
+      });
+    }
+    function refreshExternalPlaylist(playlistId, document, overwrite = false) {
+      const playlist = options.playlists.value.find((p) => p.id === playlistId);
+      if (!playlist?.imported) throw new Error("歌单已被删除");
+      if (!document.complete) throw new Error("尚未完整读取，不能更新歌单");
+      if (document.songs.length > EXTERNAL_PLAYLIST_MAX_ENTRIES)
+        throw new Error("歌单超过 20,000 条上限");
+      if (playlist.imported.locallyEdited && !overwrite) return createExternalPlaylist(document);
+      mutate(playlistId, (p) => {
+        const data = p.imported;
+        data.entries = reconcileImportEntries(data.entries, document.songs, id2);
+        data.source = document.source;
+        data.generation = id2();
+        data.refreshGeneration = data.generation;
+        data.membershipRevision++;
+        data.complete = true;
+        data.importedAt = new Date(runtime.now()).toISOString();
+        data.expectedTotal = document.songs.length;
+        delete data.readError;
+        delete data.locallyEdited;
+        return true;
+      });
+      return playlistId;
+    }
+    function removeExternalEntries(playlistId, entryIds) {
+      return mutate(playlistId, (p) => {
+        const data = p.imported, selected = new Set(entryIds);
+        p.imported = withExternalMembership(
+          data,
+          data.entries.filter((e) => !selected.has(e.entryId))
+        );
+        return true;
+      });
+    }
+    return {
+      createExternalPlaylist,
+      adoptExternalPlaylist,
+      saveExternalPlaylist,
+      discardExternalPlaylist,
+      appendExternalPlaylistPage,
+      setExternalPlaylistReadError,
+      applyExternalResolution,
+      applyExternalResolutions,
+      bindExternalEntry,
+      refreshExternalPlaylist,
+      removeExternalEntries
+    };
+  }
+  function importedPlayableTracks(entries) {
+    return entries.flatMap((entry) => {
+      const track = entry.resolution.track;
+      return track && (entry.resolution.state === "local" || entry.resolution.state === "streaming") ? [{ ...track, queueEntryId: entry.entryId }] : [];
+    });
+  }
+  function createPlaylistTrackResolver({
+    tracks: tracks2,
+    trackById,
+    getTracksRevision,
+    runtime
+  }) {
+    const {
+      buildLogicalTracks,
+      canShareTrackIdentity,
+      preferredSourceKey,
+      getRecordingTrackKey: getLogicalTrackKey2
+    } = runtime.identity;
+    let localLogicalTrackMapRevision = -1;
+    let localLogicalVersionRevision = -1;
+    let localLogicalTrackMapCache = /* @__PURE__ */ new Map();
+    let playlistIdentityCache = null;
+    function getPlaylistTrackSnapshot(playlist, trackId) {
+      return trackById.get(trackId) ?? playlist.trackSnapshots?.[trackId];
+    }
+    function getPlaylistIdentity(playlist) {
+      if (playlistIdentityCache && playlistIdentityCache.playlist === playlist && playlistIdentityCache.trackIds === playlist.trackIds && playlistIdentityCache.snapshots === playlist.trackSnapshots && playlistIdentityCache.tracksRevision === getTracksRevision() && playlistIdentityCache.versionRevision === runtime.versions.revision()) {
+        return playlistIdentityCache;
+      }
+      const ids = /* @__PURE__ */ new Set();
+      const snapshotsByLogicalKey = /* @__PURE__ */ new Map();
+      for (const trackId of playlist.trackIds) {
+        ids.add(trackId);
+        const snapshot = getPlaylistTrackSnapshot(playlist, trackId);
+        if (!snapshot) continue;
+        const key = getLogicalTrackKey2(snapshot);
+        const bucket = snapshotsByLogicalKey.get(key);
+        if (bucket) bucket.push(snapshot);
+        else snapshotsByLogicalKey.set(key, [snapshot]);
+      }
+      playlistIdentityCache = {
+        playlist,
+        trackIds: playlist.trackIds,
+        snapshots: playlist.trackSnapshots,
+        tracksRevision: getTracksRevision(),
+        versionRevision: runtime.versions.revision(),
+        ids,
+        snapshotsByLogicalKey
+      };
+      return playlistIdentityCache;
+    }
+    function getLocalLogicalTrackMap() {
+      runtime.versions.ensure();
+      if (localLogicalTrackMapRevision === getTracksRevision() && localLogicalVersionRevision === runtime.versions.revision()) {
+        return localLogicalTrackMapCache;
+      }
+      const result = /* @__PURE__ */ new Map();
+      const localInputs = (function* () {
+        for (const track of tracks2.value) {
+          if (getTrackSource(track) !== "local") continue;
+          yield {
+            track,
+            source: "local",
+            sourceName: "本地音乐",
+            providerAvailable: true
+          };
+        }
+      })();
+      for (const logicalTrack of buildLogicalTracks(localInputs)) {
+        const key = getLogicalTrackKey2(logicalTrack.preferredTrack);
+        const existing = result.get(key);
+        if (existing) existing.variants.push(...logicalTrack.variants);
+        else result.set(key, { ...logicalTrack, variants: [...logicalTrack.variants] });
+      }
+      localLogicalTrackMapCache = result;
+      localLogicalTrackMapRevision = getTracksRevision();
+      localLogicalVersionRevision = runtime.versions.revision();
+      return result;
+    }
+    function resolvePlaylistTracks(playlist, preserveSources = false) {
+      if (playlist.imported) return importedPlayableTracks(playlist.imported.entries);
+      let localLogicalTracks = null;
+      return playlist.trackIds.map((trackId) => {
+        const exact = trackById.get(trackId);
+        if (exact) return exact;
+        const snapshot = playlist.trackSnapshots?.[trackId];
+        if (!snapshot) return void 0;
+        const local = getTrackSource(snapshot) === "local";
+        if (preserveSources && !local) return snapshot;
+        localLogicalTracks ??= getLocalLogicalTrackMap();
+        const source = preferredSourceKey(snapshot);
+        const replacement = localLogicalTracks.get(getLogicalTrackKey2(snapshot))?.variants.find(
+          (variant) => canShareTrackIdentity(snapshot, variant.track) && (!source || versionSourceKey(variant.track) === source)
+        )?.track;
+        return replacement ?? (local ? void 0 : snapshot);
+      }).filter((track) => !!track);
+    }
+    return {
+      getPlaylistTrackSnapshot,
+      getPlaylistIdentity,
+      resolvePlaylistTracks,
+      invalidate: () => {
+        playlistIdentityCache = null;
+      }
+    };
+  }
+  async function stagePlaylistPages(produce, consume, signal) {
+    function checkAbort() {
+      if (signal?.aborted) throw new Error("歌单操作已取消");
+    }
+    checkAbort();
+    let accepting = true, failed = false;
+    let guard;
+    try {
+      guard = await produce(async (page2) => {
+        try {
+          checkAbort();
+          if (!accepting || failed) throw new Error("歌单数据源已关闭");
+          if (!Array.isArray(page2) || page2.length > LIBRARY_PAGE_SIZE)
+            throw new Error(`歌单每批最多 ${LIBRARY_PAGE_SIZE} 首`);
+          consume(page2);
+        } catch (error) {
+          failed = true;
+          throw error;
+        }
+      });
+    } finally {
+      accepting = false;
+    }
+    return () => {
+      checkAbort();
+      if (failed) throw new Error("歌单分批读取失败，请重试");
+      guard?.();
+      checkAbort();
+    };
+  }
+  function validateTrack(track) {
+    if (!track || typeof track.id !== "string" || !track.id) throw new Error("歌单曲目身份无效");
+    if (track.source === "playlist-import") throw new Error("未匹配的导入条目不能作为可播放曲目添加");
+  }
+  function putSnapshot(snapshots, id2, snapshot) {
+    Object.defineProperty(snapshots, id2, {
+      value: snapshot,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+  }
+  function createPlaylistPageCommands(options) {
+    const { playlists, runtime } = options;
+    const { canShareTrackIdentity, getRecordingTrackKey } = runtime.identity;
+    function currentPlaylist(target) {
+      const current = playlists.value.find((playlist) => playlist.id === target.id);
+      if (!current || current.kind !== target.kind || !!current.imported !== target.imported)
+        throw new Error("歌单已删除或类型已变化，请重新选择");
+      if (current.imported && externalRefreshGeneration(current.imported) !== target.refreshGeneration)
+        throw new Error("导入歌单已刷新，请重新选择");
+      return current;
+    }
+    function captureTarget(id2) {
+      const playlist = playlists.value.find((item) => item.id === id2);
+      if (!playlist) throw new Error("歌单已不存在，请重新选择");
+      return {
+        id: id2,
+        kind: playlist.kind,
+        imported: !!playlist.imported,
+        ...playlist.imported ? { refreshGeneration: externalRefreshGeneration(playlist.imported) } : {}
+      };
+    }
+    function memberIds(playlist) {
+      return playlist.imported ? playlist.imported.entries.map((entry) => entry.entryId) : playlist.trackIds;
+    }
+    function publish(next) {
+      const changes = new Map(next.map((playlist) => [playlist.id, playlist]));
+      const before = next.some((playlist) => !playlist.transient) ? options.clonePlaylistSnapshot() : null;
+      const updated = playlists.value.map((playlist) => {
+        const replacement = changes.get(playlist.id);
+        changes.delete(playlist.id);
+        return replacement ?? playlist;
+      });
+      playlists.value = [...updated, ...changes.values()];
+      if (before) options.queuePlaylistPersistence(before);
+    }
+    async function addTrackPagesToExternalPlaylistById(id2, produce, signal) {
+      const target = captureTarget(id2);
+      if (!target.imported) throw new Error("请选择导入歌单");
+      const additions = [];
+      const finish = await stagePlaylistPages(
+        produce,
+        (page2) => {
+          if (additions.length + page2.length > EXTERNAL_PLAYLIST_MAX_ENTRIES)
+            throw new Error("歌单超过 20,000 条上限");
+          for (const track of page2) {
+            validateTrack(track);
+            additions.push(externalEntryForTrack(track, additions.length));
+          }
+        },
+        signal
+      );
+      finish();
+      const current = currentPlaylist(target);
+      if (!additions.length) return 0;
+      publish([
+        {
+          ...current,
+          imported: withExternalMembership(current.imported, [
+            ...current.imported.entries,
+            ...additions
+          ])
+        }
+      ]);
+      return additions.length;
+    }
+    async function collectIds(target, produce, signal, maximum) {
+      return collectItems(target, produce, (id2) => ({ id: id2 }), signal, maximum);
+    }
+    async function collectMembers(target, produce, signal, maximum) {
+      return collectItems(target, produce, (member) => member, signal, maximum);
+    }
+    async function collectItems(target, produce, asMember, signal, maximum) {
+      const original = currentPlaylist(target);
+      const originalIds = new Set(memberIds(original));
+      const selected = /* @__PURE__ */ new Set();
+      const snapshots = /* @__PURE__ */ new Map();
+      const finish = await stagePlaylistPages(
+        produce,
+        (page2) => {
+          for (const item of page2) {
+            const member = asMember(item);
+            const id2 = member?.id;
+            if (typeof id2 !== "string" || !id2) throw new Error("歌单成员身份无效");
+            if (originalIds.has(id2)) {
+              selected.add(id2);
+              if (maximum !== void 0 && selected.size > maximum)
+                throw new Error("歌单超过 20,000 条上限");
+              if (!original.imported && !Object.hasOwn(original.trackSnapshots ?? {}, id2) && !options.trackById.has(id2) && member.track?.id === id2 && !snapshots.has(id2)) {
+                validateTrack(member.track);
+                snapshots.set(id2, toPlaylistTrackSnapshot(member.track));
+              }
+            }
+          }
+        },
+        signal
+      );
+      return { selected, snapshots, finish };
+    }
+    function withoutTracks(current, selected) {
+      if (current.imported) {
+        const entries = current.imported.entries.filter((entry) => !selected.has(entry.entryId));
+        const removed2 = current.imported.entries.length - entries.length;
+        return {
+          next: removed2 ? { ...current, imported: withExternalMembership(current.imported, entries) } : current,
+          removed: removed2
+        };
+      }
+      const trackIds = current.trackIds.filter((id2) => !selected.has(id2));
+      const removed = current.trackIds.length - trackIds.length;
+      if (!removed) return { next: current, removed };
+      const snapshots = { ...current.trackSnapshots };
+      for (const id2 of selected) delete snapshots[id2];
+      return { next: { ...current, trackIds, trackSnapshots: nonEmptySnapshots(snapshots) }, removed };
+    }
+    async function removeTrackIdPagesFromPlaylistById(id2, produce, signal) {
+      const target = captureTarget(id2);
+      const { selected, finish } = await collectIds(target, produce, signal);
+      finish();
+      const { next, removed } = withoutTracks(currentPlaylist(target), selected);
+      if (removed) publish([next]);
+      return removed;
+    }
+    async function movePlaylistTrackIdPagesById(sourceId, targetId, produce, signal) {
+      return moveMembers(
+        sourceId,
+        targetId,
+        (target, maximum) => collectIds(target, produce, signal, maximum)
+      );
+    }
+    async function movePlaylistMemberPagesById(sourceId, targetId, produce, signal) {
+      return moveMembers(
+        sourceId,
+        targetId,
+        (target, maximum) => collectMembers(target, produce, signal, maximum)
+      );
+    }
+    async function moveMembers(sourceId, targetId, collect) {
+      const sourceTarget = captureTarget(sourceId), targetTarget = captureTarget(targetId);
+      const {
+        selected,
+        snapshots: fallbacks,
+        finish
+      } = await collect(
+        sourceTarget,
+        targetTarget.imported ? EXTERNAL_PLAYLIST_MAX_ENTRIES : void 0
+      );
+      finish();
+      const source = currentPlaylist(sourceTarget), target = currentPlaylist(targetTarget);
+      if (sourceId === targetId) return { moved: 0, sourceRemoved: 0 };
+      if (!!source.transient !== !!target.transient) throw new Error("请先保存导入歌单，再移动歌曲");
+      const { next: nextSource, removed: sourceRemoved } = withoutTracks(source, selected);
+      if (!sourceRemoved) return { moved: 0, sourceRemoved: 0 };
+      const known = new Set(target.trackIds), trackIds = target.trackIds.slice();
+      const snapshots = { ...target.trackSnapshots };
+      const entries = target.imported?.entries.slice();
+      let moved = 0;
+      function appendEntry(entry) {
+        if (entries.length >= EXTERNAL_PLAYLIST_MAX_ENTRIES)
+          throw new Error("歌单超过 20,000 条上限");
+        entries.push(entry);
+        moved++;
+      }
+      function appendTrack(id2, snapshot) {
+        if (entries) {
+          if (!snapshot) throw new Error("原配置成员缺少快照，请从完整查询提供精确身份后重试");
+          appendEntry(externalEntryForTrack(snapshot, entries.length));
+          return;
+        }
+        if (!known.has(id2)) {
+          known.add(id2);
+          trackIds.push(id2);
+          moved++;
+        }
+        if (snapshot && !Object.hasOwn(snapshots, id2))
+          putSnapshot(snapshots, id2, toPlaylistTrackSnapshot(snapshot));
+      }
+      if (source.imported) {
+        for (const entry of source.imported.entries) {
+          if (!selected.has(entry.entryId)) continue;
+          if (entries) appendEntry(copyExternalEntry(entry, entries.length));
+          else {
+            const snapshot = entry.resolution.track;
+            if (!snapshot || !["local", "streaming"].includes(entry.resolution.state))
+              throw new Error("选中条目尚未匹配，普通歌单无法保存其信息，请选择导入歌单");
+            appendTrack(snapshot.id, snapshot);
+          }
+        }
+      } else {
+        for (const id2 of source.trackIds) {
+          if (!selected.has(id2)) continue;
+          const snapshot = (Object.hasOwn(source.trackSnapshots ?? {}, id2) ? source.trackSnapshots[id2] : void 0) ?? options.trackById.get(id2) ?? fallbacks.get(id2);
+          appendTrack(id2, snapshot);
+        }
+      }
+      const updatedAt = new Date(runtime.now()).toISOString();
+      publish([
+        { ...nextSource, updatedAt },
+        entries ? { ...target, imported: withExternalMembership(target.imported, entries), updatedAt } : { ...target, trackIds, trackSnapshots: nonEmptySnapshots(snapshots), updatedAt }
+      ]);
+      return { moved, sourceRemoved };
+    }
+    async function reorderPlaylistTrackIdPagesById(id2, produce, targetIndex, signal) {
+      if (!Number.isInteger(targetIndex)) throw new Error("歌单目标位置无效");
+      const target = captureTarget(id2);
+      const originalOrder = memberIds(currentPlaylist(target)).slice();
+      const { selected, finish } = await collectIds(target, produce, signal);
+      finish();
+      const current = currentPlaylist(target);
+      const currentIds = memberIds(current);
+      const currentPositions = new Map(currentIds.map((trackId, index) => [trackId, index]));
+      let insertion = currentIds.length;
+      for (let index = Math.max(0, targetIndex); index < originalOrder.length; index++) {
+        const anchor = originalOrder[index], position = currentPositions.get(anchor);
+        if (!selected.has(anchor) && position !== void 0) {
+          insertion = position;
+          break;
+        }
+      }
+      const trackIds = reorderStableIds(currentIds, selected, insertion);
+      if (playlistDataEqual(currentIds, trackIds)) return false;
+      const byId = new Map(current.imported?.entries.map((entry) => [entry.entryId, entry]));
+      publish([
+        {
+          ...current,
+          updatedAt: new Date(runtime.now()).toISOString(),
+          ...current.imported ? {
+            imported: withExternalMembership(
+              current.imported,
+              trackIds.map((id22) => byId.get(id22))
+            )
+          } : { trackIds }
+        }
+      ]);
+      return true;
+    }
+    function recordingIndex(playlist) {
+      const ids = new Set(playlist?.trackIds);
+      const byKey = /* @__PURE__ */ new Map();
+      function add(id2, track) {
+        ids.add(id2);
+        const key = getRecordingTrackKey(track), entry = { id: id2, track };
+        const bucket = byKey.get(key);
+        if (bucket) bucket.push(entry);
+        else byKey.set(key, [entry]);
+      }
+      for (const id2 of ids) {
+        const snapshot = options.getPlaylistTrackSnapshot(playlist, id2);
+        if (snapshot) add(id2, snapshot);
+      }
+      function matches(track) {
+        return ids.has(track.id) || !!byKey.get(getRecordingTrackKey(track))?.some((candidate) => canShareTrackIdentity(candidate.track, track));
+      }
+      return { ids, byKey, add, matches };
+    }
+    function captureFavorites(signal) {
+      if (signal?.aborted) throw new Error("歌单操作已取消");
+      runtime.versions.ensure();
+      const tracksRevision = options.getTracksRevision(), versionRevision = runtime.versions.revision();
+      const original = options.getDefaultFavoritePlaylist();
+      if (original?.imported) throw new Error("导入歌单暂不支持流式收藏编辑");
+      const base = original ? clonePlaylist(original) : void 0;
+      function current() {
+        if (tracksRevision !== options.getTracksRevision() || versionRevision !== runtime.versions.revision())
+          throw new Error("曲库或录音版本已变化，请重新选择");
+        const latest = options.getDefaultFavoritePlaylist() ?? void 0;
+        if (latest?.id !== base?.id || latest?.kind !== base?.kind || latest?.imported)
+          throw new Error("收藏歌单已删除或类型已变化，请重新选择");
+        return latest;
+      }
+      return { base, current };
+    }
+    async function readFavoriteTrackPages(produce, signal) {
+      const { base, current } = captureFavorites(signal);
+      const index = recordingIndex(base);
+      let count = 0, favoriteCount = 0;
+      const finish = await stagePlaylistPages(
+        produce,
+        (page2) => {
+          for (const track of page2) {
+            validateTrack(track);
+            count++;
+            if (index.matches(track)) favoriteCount++;
+          }
+        },
+        signal
+      );
+      finish();
+      const latest = current();
+      const latestIds = new Set(latest?.trackIds);
+      if (index.ids.size !== latestIds.size || [...index.ids].some((id2) => !latestIds.has(id2)) || !playlistDataEqual(base?.trackSnapshots, latest?.trackSnapshots))
+        throw new Error("收藏状态已变化，请重试");
+      return { count, favoriteCount };
+    }
+    async function setFavoriteTrackPages(produce, favorite, signal, exactAdditions) {
+      const { base, current } = captureFavorites(signal);
+      const index = recordingIndex(base);
+      const additions = /* @__PURE__ */ new Map(), removals = /* @__PURE__ */ new Set();
+      const finish = await stagePlaylistPages(
+        produce,
+        (page2) => {
+          for (const track of page2) {
+            validateTrack(track);
+            if (favorite) {
+              if (index.ids.has(track.id) || !exactAdditions?.has(track.id) && index.matches(track)) continue;
+              const snapshot = toPlaylistTrackSnapshot(track);
+              additions.set(track.id, snapshot);
+              index.add(track.id, snapshot);
+            } else {
+              if (index.ids.has(track.id)) removals.add(track.id);
+              for (const candidate of index.byKey.get(getRecordingTrackKey(track)) ?? []) {
+                if (canShareTrackIdentity(candidate.track, track)) removals.add(candidate.id);
+              }
+            }
+          }
+        },
+        signal
+      );
+      finish();
+      const latest = current();
+      if (!favorite) {
+        if (!latest) return 0;
+        const { next: next2, removed } = withoutTracks(latest, removals);
+        if (removed) publish([next2]);
+        return removed;
+      }
+      if (!additions.size) return 0;
+      const latestIndex = recordingIndex(latest);
+      const next = latest ? {
+        ...latest,
+        trackIds: latest.trackIds.slice(),
+        trackSnapshots: { ...latest.trackSnapshots }
+      } : {
+        id: `pl_${runtime.newId()}`,
+        name: "我收藏的音乐",
+        isDefault: true,
+        trackIds: [],
+        trackSnapshots: {},
+        createdAt: new Date(runtime.now()).toISOString()
+      };
+      let added = 0;
+      for (const snapshot of additions.values()) {
+        if (latestIndex.ids.has(snapshot.id) || !exactAdditions?.has(snapshot.id) && latestIndex.matches(snapshot)) continue;
+        latestIndex.add(snapshot.id, snapshot);
+        next.trackIds.push(snapshot.id);
+        putSnapshot(next.trackSnapshots, snapshot.id, snapshot);
+        added++;
+      }
+      if (added) publish([next]);
+      return added;
+    }
+    return {
+      addTrackPagesToExternalPlaylistById,
+      removeTrackIdPagesFromPlaylistById,
+      movePlaylistTrackIdPagesById,
+      movePlaylistMemberPagesById,
+      reorderPlaylistTrackIdPagesById,
+      readFavoriteTrackPages,
+      setFavoriteTrackPages
+    };
+  }
+  const DEFAULT_FAVORITE_PLAYLIST_NAME = "我收藏的音乐";
+  function createPlaylistController(options) {
+    const { playlists, tracks: tracks2, trackById, runtime } = options;
+    const { getRecordingTrackKey: getLogicalTrackKey2, canShareTrackIdentity } = runtime.identity;
+    const resolver = createPlaylistTrackResolver(options);
+    const state = createPlaylistState({ ...options, onChange: resolver.invalidate });
+    const { clonePlaylistSnapshot, queuePlaylistPersistence } = state;
+    const external = createExternalPlaylistCommands({
+      playlists,
+      runtime,
+      clonePlaylistSnapshot,
+      queuePlaylistPersistence
+    });
+    const { getPlaylistTrackSnapshot, getPlaylistIdentity, resolvePlaylistTracks } = resolver;
+    const pageCommands = createPlaylistPageCommands({
+      ...options,
+      getDefaultFavoritePlaylist,
+      getPlaylistTrackSnapshot,
+      clonePlaylistSnapshot,
+      queuePlaylistPersistence
+    });
+    function findLocalPlaylistByName(name) {
+      return playlists.value.find((item) => !isAggregatePlaylist(item) && item.name === name);
+    }
+    function hasSiblingPlaylistName(playlist, name) {
+      return playlists.value.some(
+        (item) => item.id !== playlist.id && isAggregatePlaylist(item) === isAggregatePlaylist(playlist) && item.name === name
+      );
+    }
+    function ensurePlaylist(name, options2 = {}) {
+      const existing = findLocalPlaylistByName(name);
+      if (existing) return existing;
+      const playlist = {
+        id: `pl_${runtime.newId()}`,
+        name,
+        trackIds: [],
+        ...options2.isDefault ? { isDefault: true } : {},
+        createdAt: new Date(runtime.now()).toISOString()
+      };
+      playlists.value = [...playlists.value, playlist];
+      return playlist;
+    }
+    function createPlaylist(name) {
+      const existing = findLocalPlaylistByName(name);
+      if (existing) return existing.id;
+      const base = clonePlaylistSnapshot();
+      const playlist = ensurePlaylist(name);
+      queuePlaylistPersistence(base);
+      return playlist.id;
+    }
+    function createPlaylistWithTracks(name, playlistTracks) {
+      const base = clonePlaylistSnapshot();
+      const existing = findLocalPlaylistByName(name);
+      const playlist = existing ?? ensurePlaylist(name);
+      const changed = appendTracksToPlaylist(playlist, playlistTracks);
+      if (!existing || changed) queuePlaylistPersistence(base);
+      return playlist.id;
+    }
+    async function stagePlaylistTrackPages(original, name, produce, signal, kind) {
+      if (signal?.aborted) throw new Error("歌单操作已取消");
+      if (original?.imported)
+        return {
+          id: original.id,
+          added: await pageCommands.addTrackPagesToExternalPlaylistById(original.id, produce, signal)
+        };
+      const base = original ? clonePlaylist(original) : void 0;
+      const draft = base ? { ...base, trackIds: base.trackIds.slice(), trackSnapshots: { ...base.trackSnapshots } } : {
+        id: `pl_${runtime.newId()}`,
+        name,
+        trackIds: [],
+        trackSnapshots: {},
+        ...kind ? { kind } : {},
+        createdAt: new Date(runtime.now()).toISOString()
+      };
+      const known = new Set(draft.trackIds);
+      let changed = false;
+      const finish = await stagePlaylistPages(
+        produce,
+        (page2) => {
+          for (const track of page2) {
+            if (!track || typeof track.id !== "string" || !track.id)
+              throw new Error("歌单曲目身份无效");
+            if (track.source === "playlist-import")
+              throw new Error("未匹配的导入条目不能作为可播放曲目添加");
+            if (!known.has(track.id)) {
+              known.add(track.id);
+              draft.trackIds.push(track.id);
+              changed = true;
+            }
+            if (!Object.hasOwn(draft.trackSnapshots, track.id)) {
+              Object.defineProperty(draft.trackSnapshots, track.id, {
+                value: toPlaylistTrackSnapshot(track),
+                enumerable: true,
+                configurable: true,
+                writable: true
+              });
+              changed = true;
+            }
+          }
+        },
+        signal
+      );
+      finish();
+      const current = base ? playlists.value.find((item) => item.id === base.id) : void 0;
+      if (base && (!current || current.kind !== base.kind || current.imported))
+        throw new Error("目标歌单已删除或类型已变化，请重新选择");
+      if (!base && playlists.value.some((item) => item.kind === kind && item.name === name))
+        throw new Error("读取期间已创建同名歌单，请重新选择");
+      if (base && !changed) return { id: base.id, added: 0 };
+      if (current?.trackSnapshots) {
+        for (const id2 of Object.keys(draft.trackSnapshots)) {
+          if (Object.hasOwn(current.trackSnapshots, id2))
+            draft.trackSnapshots[id2] = current.trackSnapshots[id2];
+        }
+      }
+      draft.trackSnapshots = nonEmptySnapshots(draft.trackSnapshots);
+      const next = base && current ? replayPlaylistRecord(base, draft, current) : draft;
+      const added = next.trackIds.length - (current?.trackIds.length ?? 0);
+      const before = clonePlaylistSnapshot();
+      playlists.value = current ? playlists.value.map((item) => item.id === current.id ? next : item) : [...playlists.value, next];
+      queuePlaylistPersistence(before);
+      return { id: next.id, added };
+    }
+    async function createPlaylistWithTrackPages(name, produce, signal) {
+      const normalized = normalizePlaylistName(name);
+      return (await stagePlaylistTrackPages(
+        findLocalPlaylistByName(normalized),
+        normalized,
+        produce,
+        signal
+      )).id;
+    }
+    async function addTrackPagesToPlaylistById(playlistId, produce, signal) {
+      const playlist = playlists.value.find((item) => item.id === playlistId);
+      if (!playlist) throw new Error("目标歌单已不存在，请重新选择");
+      return (await stagePlaylistTrackPages(playlist, playlist.name, produce, signal)).added;
+    }
+    async function createAggregatePlaylistWithTrackPages(name, produce, signal) {
+      const normalized = normalizePlaylistName(name);
+      const existing = playlists.value.find(
+        (item) => isAggregatePlaylist(item) && item.name === normalized
+      );
+      return (await stagePlaylistTrackPages(existing, normalized, produce, signal, "aggregate")).id;
+    }
+    function normalizePlaylistName(value) {
+      const normalized = value.trim().replace(/\s+/g, " ");
+      if (!normalized) throw new Error("歌单名称不能为空");
+      if (normalized.length > 80) throw new Error("歌单名称不能超过 80 个字符");
+      return normalized;
+    }
+    function touchPlaylist(playlist) {
+      playlist.updatedAt = new Date(runtime.now()).toISOString();
+    }
+    function updatePlaylist(playlist, patch) {
+      const base = clonePlaylistSnapshot();
+      Object.assign(playlist, patch);
+      touchPlaylist(playlist);
+      queuePlaylistPersistence(base);
+      return true;
+    }
+    function renamePlaylist(playlistId, name) {
+      const playlist = playlists.value.find((item) => item.id === playlistId);
+      if (!playlist) return false;
+      const normalizedName = normalizePlaylistName(name);
+      if (playlist.name === normalizedName) return false;
+      if (hasSiblingPlaylistName(playlist, normalizedName)) {
+        throw new Error("已存在同名歌单");
+      }
+      return updatePlaylist(playlist, { name: normalizedName });
+    }
+    function setPlaylistCover(playlistId, cover) {
+      const playlist = playlists.value.find((item) => item.id === playlistId);
+      if (!playlist) return false;
+      const nextCover = cover?.trim() || null;
+      if (nextCover && nextCover.length > 8 * 1024 * 1024) {
+        throw new Error("歌单封面数据超过 8 MiB 上限");
+      }
+      if (nextCover && !/^(data:image\/(?:png|jpeg|webp);base64,|cover:\/\/)/i.test(nextCover)) {
+        throw new Error("歌单封面必须是受支持的图片数据");
+      }
+      if ((playlist.cover ?? null) === nextCover) return false;
+      return updatePlaylist(playlist, { cover: nextCover });
+    }
+    function copyPlaylist(playlistId, name) {
+      const source = playlists.value.find((item) => item.id === playlistId);
+      if (!source) return null;
+      const normalizedName = normalizePlaylistName(name);
+      if (hasSiblingPlaylistName(source, normalizedName)) {
+        throw new Error("已存在同名歌单");
+      }
+      const base = clonePlaylistSnapshot();
+      const now = new Date(runtime.now()).toISOString();
+      const copy = {
+        ...clonePlaylist(source),
+        id: `pl_${runtime.newId()}`,
+        name: normalizedName,
+        isDefault: false,
+        createdAt: now,
+        updatedAt: now
+      };
+      playlists.value = [...playlists.value, copy];
+      queuePlaylistPersistence(base);
+      return copy.id;
+    }
+    function reorderPlaylistTracks(playlistName, trackIds, targetIndex) {
+      const playlist = findLocalPlaylistByName(playlistName);
+      if (!playlist || !Number.isInteger(targetIndex)) return false;
+      const nextTrackIds = reorderStableIds(playlist.trackIds, trackIds, targetIndex);
+      if (playlistDataEqual(nextTrackIds, playlist.trackIds)) return false;
+      return updatePlaylist(playlist, { trackIds: nextTrackIds });
+    }
+    function movePlaylistTracks(sourcePlaylistName, targetPlaylistName, trackIds) {
+      const source = findLocalPlaylistByName(sourcePlaylistName);
+      const target = findLocalPlaylistByName(targetPlaylistName);
+      if (!source || !target || source === target) return { moved: 0, sourceRemoved: 0 };
+      const selected = new Set(trackIds);
+      if (selected.size === 0) return { moved: 0, sourceRemoved: 0 };
+      const sourceIds = source.trackIds.filter((id2) => selected.has(id2));
+      if (sourceIds.length === 0) return { moved: 0, sourceRemoved: 0 };
+      const base = clonePlaylistSnapshot();
+      const targetKnown = new Set(target.trackIds);
+      const nextTargetIds = target.trackIds.slice();
+      const nextTargetSnapshots = { ...target.trackSnapshots ?? {} };
+      let moved = 0;
+      for (const id2 of sourceIds) {
+        if (!targetKnown.has(id2)) {
+          targetKnown.add(id2);
+          nextTargetIds.push(id2);
+          moved++;
+        }
+        const snapshot = source.trackSnapshots?.[id2] ?? trackById.get(id2);
+        if (snapshot && !nextTargetSnapshots[id2])
+          nextTargetSnapshots[id2] = toPlaylistTrackSnapshot(snapshot);
+      }
+      source.trackIds = source.trackIds.filter((id2) => !selected.has(id2));
+      if (source.trackSnapshots) {
+        const nextSourceSnapshots = { ...source.trackSnapshots };
+        for (const id2 of selected) delete nextSourceSnapshots[id2];
+        source.trackSnapshots = nonEmptySnapshots(nextSourceSnapshots);
+      }
+      target.trackIds = nextTargetIds;
+      target.trackSnapshots = nonEmptySnapshots(nextTargetSnapshots);
+      touchPlaylist(source);
+      touchPlaylist(target);
+      queuePlaylistPersistence(base);
+      return { moved, sourceRemoved: sourceIds.length };
+    }
+    function importPlaylistDocument(name, fileName, contents) {
+      const parsed = parsePlaylistDocument(contents, fileName);
+      return applyPlaylistEntries(name, parsed.entries, parsed.warnings);
+    }
+    function applyPlaylistEntries(name, entries, warnings = []) {
+      return applyPlaylistEntryBatch([{ name, entries, warnings }])[0];
+    }
+    function applyPlaylistEntryBatch(batch) {
+      if (batch.length === 0) return [];
+      const normalizedNames = batch.map((item) => normalizePlaylistName(item.name));
+      const byPath = /* @__PURE__ */ new Map();
+      for (const track of tracks2.value)
+        byPath.set(normalizePortableLibraryPath(track.filePath), track);
+      const resolved = batch.map(({ entries, warnings = [] }, index) => {
+        const imported = [];
+        let unresolvedEntries = 0;
+        for (const entry of entries) {
+          const normalizedPath = normalizePortableLibraryPath(entry.path);
+          let matched = byPath.get(normalizedPath);
+          if (!matched && !/^[a-zA-Z]:\\/.test(normalizedPath) && !normalizedPath.startsWith("\\")) {
+            const suffix = `\\${normalizedPath}`;
+            const candidates = tracks2.value.filter(
+              (track) => normalizePortableLibraryPath(track.filePath).endsWith(suffix)
+            );
+            if (candidates.length === 1) matched = candidates[0];
+          }
+          if (matched) imported.push(matched);
+          else unresolvedEntries++;
+        }
+        return { name: normalizedNames[index], imported, unresolvedEntries, warnings };
+      });
+      return applyResolvedImports(resolved);
+    }
+    function applyResolvedImports(batch) {
+      const base = clonePlaylistSnapshot();
+      let batchChanged = false;
+      const results = batch.map(({ name: normalizedName, imported, unresolvedEntries, warnings }) => {
+        const existing = findLocalPlaylistByName(normalizedName);
+        const playlist = existing ?? ensurePlaylist(normalizedName);
+        const changed = appendTracksToPlaylist(playlist, imported);
+        if (changed || !existing) {
+          touchPlaylist(playlist);
+          batchChanged = true;
+        }
+        return {
+          playlistId: playlist.id,
+          importedCount: imported.length,
+          unresolvedEntries,
+          warnings
+        };
+      });
+      if (batchChanged) queuePlaylistPersistence(base);
+      return results;
+    }
+    async function importPlaylistEntryBatchAsync(batch) {
+      if (!batch.length) return [];
+      const names = batch.map((item) => normalizePlaylistName(item.name));
+      const targets = names.map((name) => findLocalPlaylistByName(name)?.id);
+      const resolved = await options.resolveImportPaths?.(
+        batch.flatMap((item) => item.entries.map((entry) => entry.path))
+      );
+      for (let i = 0; i < names.length; i++)
+        if (targets[i] && findLocalPlaylistByName(names[i])?.id !== targets[i])
+          throw new Error("目标歌单已被重命名或删除，请重新导入");
+      if (resolved == null) return applyPlaylistEntryBatch(batch);
+      if (resolved.length !== batch.reduce((total, item) => total + item.entries.length, 0))
+        throw new Error("曲库返回了不完整的歌单匹配结果");
+      let offset = 0;
+      return applyResolvedImports(
+        batch.map((item, i) => {
+          const matched = resolved.slice(offset, offset + item.entries.length);
+          offset += item.entries.length;
+          return {
+            name: names[i],
+            imported: matched.filter((track) => track !== null),
+            unresolvedEntries: matched.filter((track) => track === null).length,
+            warnings: item.warnings ?? []
+          };
+        })
+      );
+    }
+    async function importPlaylistDocumentAsync(name, fileName, contents) {
+      const parsed = parsePlaylistDocument(contents, fileName);
+      return (await importPlaylistEntryBatchAsync([
+        { name, entries: parsed.entries, warnings: parsed.warnings }
+      ]))[0];
+    }
+    function importPlaylistPathBatchAsync(batch) {
+      return importPlaylistEntryBatchAsync(
+        batch.map((item) => ({ name: item.name, entries: item.paths.map((path) => ({ path })) }))
+      );
+    }
+    function importPlaylistPaths(name, paths) {
+      return applyPlaylistEntries(
+        name,
+        paths.map((path) => ({ path }))
+      );
+    }
+    function importPlaylistPathBatch(batch) {
+      return applyPlaylistEntryBatch(
+        batch.map(({ name, paths }) => ({
+          name,
+          entries: paths.map((path) => ({ path }))
+        }))
+      );
+    }
+    function exportPlaylistDocumentForStore(playlistName, format) {
+      const playlist = findLocalPlaylistByName(playlistName);
+      if (!playlist) return null;
+      return exportPlaylistDocument(getPlaylistTracks(playlistName), format);
+    }
+    function repairPlaylistMissingTracks(playlistName, candidates) {
+      const playlist = findLocalPlaylistByName(playlistName);
+      if (!playlist) return { relocations: [], unresolvedTrackIds: [], ambiguousTrackIds: [] };
+      const missing = playlist.trackIds.filter((id2) => !trackById.has(id2)).map((id2) => playlist.trackSnapshots?.[id2]).filter((track) => !!track && getTrackSource(track) === "local");
+      const result = findPlaylistRelocations(missing, candidates);
+      return applyPlaylistRelocations(playlist, result);
+    }
+    async function exportPlaylistDocumentAsync(playlistName, format) {
+      const playlist = findLocalPlaylistByName(playlistName);
+      if (!playlist) return null;
+      const id2 = playlist.id, ids = playlist.trackIds.slice(), snapshots = playlist.trackSnapshots;
+      const document = await options.exportDocument?.(playlist, format);
+      const current = findLocalPlaylistByName(playlistName);
+      if (current?.id !== id2 || !playlistDataEqual(current.trackIds, ids) || !playlistDataEqual(current.trackSnapshots, snapshots))
+        throw new Error("歌单在导出期间发生变化，请重试");
+      return document ?? exportPlaylistDocumentForStore(playlistName, format);
+    }
+    async function repairPlaylistMissingTracksAsync(playlistId, candidates) {
+      const original = playlists.value.find(
+        (item) => item.id === playlistId && !isAggregatePlaylist(item)
+      );
+      if (!original) throw new Error("目标歌单已不存在，请重新修复");
+      const name = original.name, ids = original.trackIds.slice(), snapshots = original.trackSnapshots ? clonePlaylist(original.trackSnapshots) : void 0;
+      const present = await options.readTrackPresence?.(ids);
+      const playlist = playlists.value.find((item) => item.id === playlistId);
+      if (!playlist || playlist.name !== name || isAggregatePlaylist(playlist))
+        throw new Error("目标歌单已被重命名或删除，请重新修复");
+      if (present == null && typeof candidates !== "string")
+        return repairPlaylistMissingTracks(name, candidates);
+      const currentIds = new Set(playlist.trackIds);
+      const missing = [];
+      for (const id2 of ids) {
+        if (!currentIds.has(id2) || (present ?? trackById).has(id2)) continue;
+        const snapshot = snapshots?.[id2];
+        if (!snapshot || getTrackSource(snapshot) !== "local") continue;
+        if (!playlistDataEqual(snapshot, playlist.trackSnapshots?.[id2]))
+          throw new Error("歌单曲目在检查期间发生变化，请重新修复");
+        missing.push(snapshot);
+      }
+      if (typeof candidates !== "string")
+        return applyPlaylistRelocations(playlist, findPlaylistRelocations(missing, candidates));
+      if (!options.findRelocationsInFolder) throw new Error("歌单目录修复尚不可用");
+      const result = await options.findRelocationsInFolder(missing, candidates);
+      const nowPresent = present == null ? trackById : await options.readTrackPresence(missing.map((track) => track.id));
+      if (nowPresent == null) throw new Error("曲库存储在修复期间发生变化，请重试");
+      if (present != null && missing.some((track) => nowPresent.has(track.id)))
+        throw new Error("曲库在修复期间发生变化，请重新检查缺失文件");
+      const current = playlists.value.find((item) => item.id === playlistId);
+      if (!current || current.name !== name || isAggregatePlaylist(current))
+        throw new Error("目标歌单已被重命名或删除，请重新修复");
+      const kept = new Set(current.trackIds);
+      for (const track of missing)
+        if (kept.has(track.id) && !playlistDataEqual(snapshots?.[track.id], current.trackSnapshots?.[track.id]))
+          throw new Error("歌单曲目在修复期间发生变化，请重新修复");
+      result.relocations = result.relocations.filter(
+        (item) => kept.has(item.trackId) && !nowPresent.has(item.trackId)
+      );
+      result.unresolvedTrackIds = result.unresolvedTrackIds.filter(
+        (id2) => kept.has(id2) && !nowPresent.has(id2)
+      );
+      result.ambiguousTrackIds = result.ambiguousTrackIds.filter(
+        (id2) => kept.has(id2) && !nowPresent.has(id2)
+      );
+      return applyPlaylistRelocations(current, result);
+    }
+    function applyPlaylistRelocations(playlist, result) {
+      if (result.relocations.length === 0) return result;
+      const base = clonePlaylistSnapshot();
+      const replacements = new Map(result.relocations.map((item) => [item.trackId, item.toTrack]));
+      const nextTrackIds = [];
+      const snapshots = { ...playlist.trackSnapshots ?? {} };
+      const seen = /* @__PURE__ */ new Set();
+      for (const id2 of playlist.trackIds) {
+        const replacement = replacements.get(id2);
+        const nextId = replacement?.id ?? id2;
+        if (seen.has(nextId)) continue;
+        seen.add(nextId);
+        nextTrackIds.push(nextId);
+        if (replacement) {
+          delete snapshots[id2];
+          snapshots[nextId] = toPlaylistTrackSnapshot(replacement);
+        }
+      }
+      playlist.trackIds = nextTrackIds;
+      playlist.trackSnapshots = nonEmptySnapshots(snapshots);
+      touchPlaylist(playlist);
+      queuePlaylistPersistence(base);
+      return result;
+    }
+    function deletePlaylist(playlistId) {
+      const pl = playlists.value.find((p) => p.id === playlistId);
+      if (!pl || pl.isDefault) return;
+      const base = clonePlaylistSnapshot();
+      playlists.value = playlists.value.filter((p) => p.id !== playlistId);
+      queuePlaylistPersistence(base);
+    }
+    function addToPlaylist(playlistName, trackId, trackSnapshot) {
+      const track = trackSnapshot ?? trackById.get(trackId);
+      if (track) {
+        addTracksToPlaylist(playlistName, [track]);
+        return;
+      }
+      const playlist = findLocalPlaylistByName(playlistName);
+      if (!playlist || playlist.trackIds.includes(trackId)) return;
+      const base = clonePlaylistSnapshot();
+      playlist.trackIds = [...playlist.trackIds, trackId];
+      queuePlaylistPersistence(base);
+    }
+    function appendTracksToPlaylist(playlist, playlistTracks) {
+      if (playlist.imported) {
+        if (playlist.imported.entries.length + playlistTracks.length > 2e4)
+          throw new Error("歌单超过 20,000 条上限");
+        const offset = playlist.imported.entries.length;
+        playlist.imported = withExternalMembership(playlist.imported, [
+          ...playlist.imported.entries,
+          ...playlistTracks.map((track, index) => externalEntryForTrack(track, offset + index))
+        ]);
+        return playlistTracks.length > 0;
+      }
+      const knownIds = new Set(playlist.trackIds);
+      const nextTrackIds = playlist.trackIds.slice();
+      const nextSnapshots = { ...playlist.trackSnapshots ?? {} };
+      let changed = false;
+      for (const track of playlistTracks) {
+        if (!knownIds.has(track.id)) {
+          knownIds.add(track.id);
+          nextTrackIds.push(track.id);
+          changed = true;
+        }
+        const snapshot = toPlaylistTrackSnapshot(track);
+        if (!nextSnapshots[track.id]) {
+          nextSnapshots[track.id] = snapshot;
+          changed = true;
+        }
+      }
+      if (!changed) return false;
+      playlist.trackIds = nextTrackIds;
+      playlist.trackSnapshots = nonEmptySnapshots(nextSnapshots);
+      return true;
+    }
+    function addTracksToPlaylistRecord(playlist, playlistTracks) {
+      if (playlistTracks.length === 0) return 0;
+      const base = clonePlaylistSnapshot();
+      const beforeCount = playlist.imported?.entries.length ?? playlist.trackIds.length;
+      const changed = appendTracksToPlaylist(playlist, playlistTracks);
+      if (changed) queuePlaylistPersistence(base);
+      return (playlist.imported?.entries.length ?? playlist.trackIds.length) - beforeCount;
+    }
+    function addTracksToPlaylist(playlistName, playlistTracks) {
+      const playlist = findLocalPlaylistByName(playlistName);
+      return playlist ? addTracksToPlaylistRecord(playlist, playlistTracks) : 0;
+    }
+    function addTracksToPlaylistById(playlistId, playlistTracks) {
+      const playlist = playlists.value.find((item) => item.id === playlistId);
+      return playlist ? addTracksToPlaylistRecord(playlist, playlistTracks) : 0;
+    }
+    function removeFromPlaylist(playlistName, trackId) {
+      removeTracksFromPlaylist(playlistName, [trackId]);
+    }
+    function removeTracksFromPlaylistRecord(playlist, trackIds) {
+      const removedIds = new Set(trackIds);
+      if (playlist.imported) {
+        const selected = playlist.imported.entries.filter(
+          (e) => removedIds.has(e.entryId) || e.resolution.track && removedIds.has(e.resolution.track.id)
+        ).map((e) => e.entryId);
+        external.removeExternalEntries(playlist.id, selected);
+        return selected.length;
+      }
+      if (removedIds.size === 0) return 0;
+      const nextTrackIds = playlist.trackIds.filter((trackId) => !removedIds.has(trackId));
+      const removedCount = playlist.trackIds.length - nextTrackIds.length;
+      if (removedCount === 0) return 0;
+      const base = clonePlaylistSnapshot();
+      playlist.trackIds = nextTrackIds;
+      if (playlist.trackSnapshots) {
+        const nextSnapshots = { ...playlist.trackSnapshots };
+        for (const trackId of removedIds) delete nextSnapshots[trackId];
+        playlist.trackSnapshots = nonEmptySnapshots(nextSnapshots);
+      }
+      queuePlaylistPersistence(base);
+      return removedCount;
+    }
+    function removeTracksFromPlaylist(playlistName, trackIds) {
+      const playlist = findLocalPlaylistByName(playlistName);
+      return playlist ? removeTracksFromPlaylistRecord(playlist, trackIds) : 0;
+    }
+    function removeTracksFromPlaylistById(playlistId, trackIds) {
+      const playlist = playlists.value.find((item) => item.id === playlistId);
+      return playlist ? removeTracksFromPlaylistRecord(playlist, trackIds) : 0;
+    }
+    function getDefaultFavoritePlaylist() {
+      return playlists.value.find((playlist) => playlist.isDefault) ?? findLocalPlaylistByName(DEFAULT_FAVORITE_PLAYLIST_NAME) ?? null;
+    }
+    function isFavoriteTrack(track) {
+      const playlist = getDefaultFavoritePlaylist();
+      if (!playlist) return false;
+      const identity = getPlaylistIdentity(playlist);
+      if (identity.ids.has(track.id)) return true;
+      const candidates = identity.snapshotsByLogicalKey.get(getLogicalTrackKey2(track));
+      return candidates?.some((candidate) => canShareTrackIdentity(candidate, track)) ?? false;
+    }
+    function addFavoriteTrack(track) {
+      return setFavoriteTracks([track], true) > 0;
+    }
+    function removeFavoriteTrack(track) {
+      return setFavoriteTracks([track], false) > 0;
+    }
+    function setFavoriteTracks(favoriteTracks, favorite, exactAdditions) {
+      if (favoriteTracks.length === 0) return 0;
+      const playlist = getDefaultFavoritePlaylist();
+      if (favorite) {
+        const base2 = clonePlaylistSnapshot();
+        const target = playlist ?? ensurePlaylist(DEFAULT_FAVORITE_PLAYLIST_NAME, { isDefault: true });
+        const identity = getPlaylistIdentity(target);
+        const knownIds = new Set(identity.ids);
+        const knownByLogicalKey = /* @__PURE__ */ new Map();
+        for (const [key, snapshots] of identity.snapshotsByLogicalKey) {
+          knownByLogicalKey.set(key, [...snapshots]);
+        }
+        const toAdd = favoriteTracks.filter((track) => {
+          if (knownIds.has(track.id)) return false;
+          const logicalKey = getLogicalTrackKey2(track);
+          const known = knownByLogicalKey.get(logicalKey);
+          if (!exactAdditions?.has(track.id) && known?.some((candidate) => canShareTrackIdentity(candidate, track))) return false;
+          knownIds.add(track.id);
+          if (known) known.push(track);
+          else knownByLogicalKey.set(logicalKey, [track]);
+          return true;
+        });
+        const created = !playlist;
+        const added = appendTracksToPlaylist(target, toAdd);
+        if (created || added) queuePlaylistPersistence(base2);
+        return toAdd.length;
+      }
+      if (!playlist) return 0;
+      const ids = new Set(favoriteTracks.map((track) => track.id));
+      const requestedByLogicalKey = /* @__PURE__ */ new Map();
+      for (const track of favoriteTracks) {
+        const key = getLogicalTrackKey2(track);
+        const bucket = requestedByLogicalKey.get(key);
+        if (bucket) bucket.push(track);
+        else requestedByLogicalKey.set(key, [track]);
+      }
+      const nextTrackIds = playlist.trackIds.filter((trackId) => {
+        if (ids.has(trackId)) return false;
+        const snapshot = getPlaylistTrackSnapshot(playlist, trackId);
+        if (!snapshot) return true;
+        const requested = requestedByLogicalKey.get(getLogicalTrackKey2(snapshot));
+        return !requested?.some((track) => canShareTrackIdentity(track, snapshot));
+      });
+      const removedCount = playlist.trackIds.length - nextTrackIds.length;
+      if (removedCount === 0) return 0;
+      const base = clonePlaylistSnapshot();
+      const keptTrackIds = new Set(nextTrackIds);
+      playlist.trackIds = nextTrackIds;
+      if (playlist.trackSnapshots) {
+        const snapshots = { ...playlist.trackSnapshots };
+        for (const trackId of Object.keys(snapshots)) {
+          if (!keptTrackIds.has(trackId)) delete snapshots[trackId];
+        }
+        playlist.trackSnapshots = nonEmptySnapshots(snapshots);
+      }
+      queuePlaylistPersistence(base);
+      return removedCount;
+    }
+    function getPlaylistTracks(playlistName) {
+      const pl = findLocalPlaylistByName(playlistName);
+      return pl ? resolvePlaylistTracks(pl) : [];
+    }
+    function getPlaylistTracksById(playlistId) {
+      const pl = playlists.value.find((p) => p.id === playlistId);
+      if (!pl) return [];
+      return resolvePlaylistTracks(pl, isAggregatePlaylist(pl));
+    }
+    function createAggregatePlaylist(name) {
+      const normalizedName = normalizePlaylistName(name);
+      const existing = playlists.value.find(
+        (playlist2) => isAggregatePlaylist(playlist2) && playlist2.name === normalizedName
+      );
+      if (existing) return existing.id;
+      const base = clonePlaylistSnapshot();
+      const playlist = {
+        id: `pl_${runtime.newId()}`,
+        name: normalizedName,
+        trackIds: [],
+        kind: "aggregate",
+        createdAt: new Date(runtime.now()).toISOString()
+      };
+      playlists.value = [...playlists.value, playlist];
+      queuePlaylistPersistence(base);
+      return playlist.id;
+    }
+    function setPlaylistPinned(playlistId, pinned) {
+      const playlist = playlists.value.find((item) => item.id === playlistId);
+      if (!playlist) return false;
+      if (pinned === !!playlist.pinnedAt) return false;
+      return updatePlaylist(playlist, {
+        pinnedAt: pinned ? new Date(runtime.now()).toISOString() : null
+      });
+    }
+    function setPlaylistHiddenSources(playlistId, sources) {
+      const playlist = playlists.value.find((item) => item.id === playlistId);
+      if (!playlist) return false;
+      const normalized = Array.from(new Set(sources.map((source) => source.trim()).filter(Boolean)));
+      const nextValue = normalized.length > 0 ? normalized : void 0;
+      if (playlistDataEqual(playlist.hiddenSources, nextValue)) return false;
+      return updatePlaylist(playlist, { hiddenSources: nextValue });
+    }
+    function setPlaylistVariantPreference(playlistId, anchorTrackId, source) {
+      const playlist = playlists.value.find((item) => item.id === playlistId);
+      if (!playlist || !anchorTrackId) return false;
+      const current = playlist.variantPreferences ?? {};
+      const normalizedSource = source?.trim() || null;
+      if ((current[anchorTrackId] ?? null) === normalizedSource) return false;
+      const next = { ...current };
+      if (normalizedSource) next[anchorTrackId] = normalizedSource;
+      else delete next[anchorTrackId];
+      return updatePlaylist(playlist, {
+        variantPreferences: Object.keys(next).length > 0 ? next : void 0
+      });
+    }
+    function replacePlaylistTrackReference(oldTrackId, replacementTrack) {
+      if (!oldTrackId || oldTrackId === replacementTrack.id) return 0;
+      const base = clonePlaylistSnapshot();
+      let count = 0;
+      for (const playlist of playlists.value) {
+        if (playlist.imported) {
+          let changed = false;
+          playlist.imported.entries = playlist.imported.entries.map((entry) => {
+            if (entry.manualBinding && entry.manualBinding.id !== oldTrackId) return entry;
+            if (entry.manualBinding?.id !== oldTrackId && entry.resolution.track?.id !== oldTrackId)
+              return entry;
+            changed = true;
+            const snapshot = toPlaylistTrackSnapshot(replacementTrack);
+            return {
+              ...entry,
+              revision: entry.revision + 1,
+              ...entry.manualBinding ? { manualBinding: snapshot } : {},
+              resolution: {
+                ...entry.resolution,
+                state: getTrackSource(replacementTrack) === "local" ? "local" : "streaming",
+                track: snapshot
+              }
+            };
+          });
+          if (changed) count++;
+          continue;
+        }
+        if (!playlist.trackIds.includes(oldTrackId)) continue;
+        const nextTrackIds = [];
+        const seenTrackIds = /* @__PURE__ */ new Set();
+        for (const trackId of playlist.trackIds) {
+          const nextTrackId = trackId === oldTrackId ? replacementTrack.id : trackId;
+          if (seenTrackIds.has(nextTrackId)) continue;
+          seenTrackIds.add(nextTrackId);
+          nextTrackIds.push(nextTrackId);
+        }
+        playlist.trackIds = nextTrackIds;
+        const snapshots = { ...playlist.trackSnapshots ?? {} };
+        delete snapshots[oldTrackId];
+        snapshots[replacementTrack.id] = toPlaylistTrackSnapshot(replacementTrack);
+        playlist.trackSnapshots = nonEmptySnapshots(snapshots);
+        count++;
+      }
+      if (count) queuePlaylistPersistence(base);
+      return count;
+    }
+    return {
+      ...state,
+      ...external,
+      ...pageCommands,
+      createPlaylist,
+      createPlaylistWithTracks,
+      createPlaylistWithTrackPages,
+      createAggregatePlaylistWithTrackPages,
+      addTrackPagesToPlaylistById,
+      renamePlaylist,
+      setPlaylistCover,
+      copyPlaylist,
+      reorderPlaylistTracks,
+      movePlaylistTracks,
+      importPlaylistDocument,
+      importPlaylistDocumentAsync,
+      importPlaylistPathBatchAsync,
+      importPlaylistPaths,
+      importPlaylistPathBatch,
+      exportPlaylistDocument: exportPlaylistDocumentForStore,
+      exportPlaylistDocumentAsync,
+      repairPlaylistMissingTracks,
+      repairPlaylistMissingTracksAsync,
+      deletePlaylist,
+      addToPlaylist,
+      addTracksToPlaylist,
+      addTracksToPlaylistById,
+      removeFromPlaylist,
+      removeTracksFromPlaylist,
+      removeTracksFromPlaylistById,
+      isFavoriteTrack,
+      addFavoriteTrack,
+      removeFavoriteTrack,
+      setFavoriteTracks,
+      getPlaylistTracks,
+      getPlaylistTracksById,
+      createAggregatePlaylist,
+      setPlaylistPinned,
+      setPlaylistHiddenSources,
+      setPlaylistVariantPreference,
+      replacePlaylistTrackReference
+    };
+  }
+  async function resolveLibraryPlaylistImportPaths(paths, api) {
+    const result = [];
+    let revision2;
+    for (let offset = 0; offset < paths.length; offset += LIBRARY_PAGE_SIZE) {
+      const requested = paths.slice(offset, offset + LIBRARY_PAGE_SIZE);
+      const matches = await api.lookupTracksByPaths([...requested], revision2);
+      if (matches.ids.length !== requested.length) throw new Error("曲库返回了不完整的歌单匹配结果");
+      if (revision2 !== void 0 && matches.revision !== revision2)
+        throw new Error("曲库在导入期间发生变化，请重试");
+      revision2 = matches.revision;
+      const ids = [...new Set(matches.ids.filter((id2) => id2 !== null))];
+      const page2 = ids.length ? await api.getTracksByIds(ids, revision2) : null;
+      if (page2 && (page2.revision !== revision2 || page2.tracks.length !== ids.length))
+        throw new Error("曲库在导入期间发生变化，请重试");
+      const tracks2 = new Map(
+        page2?.tracks.map((record2) => {
+          const track = toPlaylistTrackSnapshot(libraryTrack(record2));
+          return [track.id, track];
+        }) ?? []
+      );
+      for (const id2 of matches.ids) {
+        const track = id2 === null ? null : tracks2.get(id2);
+        if (track === void 0) throw new Error("曲库返回了不完整的歌单曲目");
+        result.push(track);
+      }
+    }
+    if (revision2 !== void 0 && (await api.getMetadata()).revision !== revision2)
+      throw new Error("曲库在导入期间发生变化，请重试");
+    return result;
+  }
+  function normalizeSearchText(value) {
+    return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  }
+  const searchBlobByTrack = /* @__PURE__ */ new WeakMap();
+  function getTrackSearchBlob(track) {
+    let blob = searchBlobByTrack.get(track);
+    if (blob === void 0) {
+      const title = normalizeSearchText(track.title);
+      const artist = normalizeSearchText(track.artist);
+      const album = normalizeSearchText(track.album);
+      const titleInitials = getPinyinInitials(track.title);
+      const artistInitials = getPinyinInitials(track.artist);
+      const albumInitials = getPinyinInitials(track.album);
+      blob = [title, artist, album, titleInitials, artistInitials, albumInitials].join("\0");
+      searchBlobByTrack.set(track, blob);
+    }
+    return blob;
+  }
+  const FIELD_BOOST = {
+    title: 5,
+    artist: 3,
+    titleInitials: 2,
+    album: 1.5,
+    artistInitials: 1.4,
+    albumInitials: 1,
+    fileName: 0.5
+  };
+  const FIELD_AVG_LEN = {
+    title: 10,
+    artist: 8,
+    album: 12,
+    initials: 5,
+    fileName: 14
+  };
+  const BM25_K1 = 1.2;
+  const BM25_B = 0.2;
+  const PHRASE_COMPOUND_RATE = 1.05;
+  const CJK_EXTENDED_PATTERN = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/u;
+  const PURE_DIGITS_PATTERN = /^\d+$/;
+  const STOP_WORDS = /* @__PURE__ */ new Set(["the", "and", "for", "with", "from"]);
+  function round4(value) {
+    return Math.round(value * 1e4) / 1e4;
+  }
+  function tokenizeWords(text2) {
+    if (!text2) return [];
+    return text2.toLowerCase().split(/[^\p{L}\p{N}]+/gu).filter(Boolean);
+  }
+  function prepareSearchQuery(query2, typoPenaltyFactor = 1) {
+    const raw = query2.trim();
+    const fullNormalized = normalizeSearchText(raw);
+    const tokens = raw ? raw.split(/\s+/u).map((part) => normalizeSearchText(part)).filter(Boolean) : [];
+    return {
+      raw,
+      fullNormalized,
+      tokens,
+      isMultiToken: tokens.length >= 2,
+      typoPenaltyFactor
+    };
+  }
+  function prepareSearchFields(input) {
+    const rawTitle = input.title ?? "";
+    const rawArtist = input.artist ?? "";
+    const rawAlbum = input.album ?? "";
+    const normTitle = input.normTitle !== void 0 ? input.normTitle : normalizeSearchText(rawTitle);
+    const normArtist = input.normArtist !== void 0 ? input.normArtist : normalizeSearchText(rawArtist);
+    const normAlbum = input.normAlbum !== void 0 ? input.normAlbum : normalizeSearchText(rawAlbum);
+    const titleInitials = input.titleInitials !== void 0 ? input.titleInitials : getPinyinInitials(rawTitle);
+    const artistInitials = input.artistInitials !== void 0 ? input.artistInitials : getPinyinInitials(rawArtist);
+    const albumInitials = input.albumInitials !== void 0 ? input.albumInitials : getPinyinInitials(rawAlbum);
+    const normFileName = input.normFileName !== void 0 ? input.normFileName : input.fileName ? normalizeSearchText(input.fileName) : "";
+    return {
+      rawTitle,
+      rawArtist,
+      rawAlbum,
+      normTitle,
+      normArtist,
+      normAlbum,
+      titleInitials,
+      artistInitials,
+      albumInitials,
+      normFileName,
+      titleWords: tokenizeWords(rawTitle),
+      artistWords: tokenizeWords(rawArtist),
+      albumWords: tokenizeWords(rawAlbum)
+    };
+  }
+  function prepareSearchFieldsFromBlob(blob, separator, raw, normFileName) {
+    const [
+      normTitle = "",
+      normArtist = "",
+      normAlbum = "",
+      titleInitials = "",
+      artistInitials = "",
+      albumInitials = ""
+    ] = blob.split(separator);
+    return prepareSearchFields({
+      title: raw.title,
+      artist: raw.artist,
+      album: raw.album,
+      fileName: raw.fileName,
+      normTitle,
+      normArtist,
+      normAlbum,
+      titleInitials,
+      artistInitials,
+      albumInitials,
+      normFileName
+    });
+  }
+  function fieldMatchesToken(fields2, token2, searchFileName) {
+    if (!token2) return false;
+    return fields2.normTitle.includes(token2) || fields2.normArtist.includes(token2) || fields2.normAlbum.includes(token2) || fields2.titleInitials.includes(token2) || fields2.artistInitials.includes(token2) || fields2.albumInitials.includes(token2) || searchFileName && fields2.normFileName.includes(token2);
+  }
+  function matchesPreparedSearch(fields2, query2, searchFileName = true) {
+    if (!query2.fullNormalized) return false;
+    if (fieldMatchesToken(fields2, query2.fullNormalized, searchFileName)) {
+      return true;
+    }
+    if (query2.isMultiToken) {
+      return query2.tokens.every((token2) => fieldMatchesToken(fields2, token2, searchFileName));
+    }
+    return false;
+  }
+  function countOccurrences(haystack, needle) {
+    if (!haystack || !needle) return 0;
+    let count = 0;
+    let pos = 0;
+    while (pos <= haystack.length - needle.length) {
+      const idx = haystack.indexOf(needle, pos);
+      if (idx === -1) break;
+      count += 1;
+      if (count >= 3) return 3;
+      pos = idx + Math.max(1, needle.length);
+    }
+    return count;
+  }
+  function computeFieldTokenBm25(fieldValue, token2, avgLen, boost) {
+    if (!fieldValue || !token2 || !fieldValue.includes(token2)) return 0;
+    const coverage = Math.min(1, token2.length / Math.max(1, fieldValue.length));
+    const tf = Math.min(3, countOccurrences(fieldValue, token2));
+    const normDl = fieldValue.length / avgLen;
+    const saturation = tf * (BM25_K1 + 1) / (tf + BM25_K1 * (1 - BM25_B + BM25_B * normDl));
+    return saturation * coverage * boost * 10;
+  }
+  function computeFieldBm25(fieldValue, query2, avgLen, boost) {
+    if (!fieldValue || !query2.fullNormalized) return 0;
+    if (fieldValue.includes(query2.fullNormalized)) {
+      return computeFieldTokenBm25(fieldValue, query2.fullNormalized, avgLen, boost);
+    }
+    if (!query2.isMultiToken) return 0;
+    let sum = 0;
+    for (const token2 of query2.tokens) {
+      if (fieldValue.includes(token2)) {
+        sum += computeFieldTokenBm25(fieldValue, token2, avgLen, boost);
+      }
+    }
+    return sum;
+  }
+  function findLongestContiguousTokenRun(fields2, tokens) {
+    if (tokens.length < 2) return 0;
+    const wordLists = [fields2.titleWords, fields2.artistWords, fields2.albumWords];
+    let maxRun = 0;
+    for (const words of wordLists) {
+      if (words.length === 0) continue;
+      for (let start = 0; start < tokens.length; start++) {
+        for (let wIdx = 0; wIdx < words.length; wIdx++) {
+          let run = 0;
+          while (start + run < tokens.length && wIdx + run < words.length && (words[wIdx + run] === tokens[start + run] || words[wIdx + run].startsWith(tokens[start + run]))) {
+            run += 1;
+          }
+          if (run > maxRun) maxRun = run;
+        }
+      }
+    }
+    const normTargets = [fields2.normTitle, fields2.normArtist, fields2.normAlbum];
+    for (const target of normTargets) {
+      if (!target) continue;
+      for (let start = 0; start < tokens.length; start++) {
+        let joined = tokens[start];
+        for (let end = start + 1; end < tokens.length; end++) {
+          joined += tokens[end];
+          const len = end - start + 1;
+          if (len > maxRun && target.includes(joined)) {
+            maxRun = len;
+          }
+        }
+      }
+    }
+    return maxRun >= 2 ? maxRun : 0;
+  }
+  function scorePreparedSearchRelevance(fields2, query2, options) {
+    const searchFileName = options?.searchFileName ?? true;
+    const typoPenaltyFactor = options?.typoPenaltyFactor ?? query2.typoPenaltyFactor ?? 1;
+    if (!matchesPreparedSearch(fields2, query2, searchFileName)) {
+      return {
+        exact: 0,
+        prefix: 0,
+        phrase: 0,
+        ftsBm25: 0,
+        favorite: 0,
+        playCount: 0,
+        typoPenaltyFactor,
+        total: 0
+      };
+    }
+    const q = query2.fullNormalized;
+    let exact = 0;
+    if (fields2.normTitle === q) exact += 500;
+    else if (fields2.normTitle.includes(q)) exact += 100;
+    if (fields2.normArtist === q) exact += 300;
+    else if (fields2.normArtist.includes(q)) exact += 55;
+    if (fields2.normAlbum === q) exact += 80;
+    else if (fields2.normAlbum.includes(q)) exact += 25;
+    if (q.length >= 2 && fields2.titleInitials === q) exact += 65;
+    if (q.length >= 2 && fields2.artistInitials === q) exact += 50;
+    if (q.length >= 2 && fields2.albumInitials === q) exact += 35;
+    if (searchFileName && fields2.normFileName === q) exact += 15;
+    if (fields2.normTitle !== q && fields2.titleWords.includes(q)) exact += 180;
+    if (fields2.normArtist !== q && fields2.artistWords.includes(q)) exact += 110;
+    if (fields2.normAlbum !== q && fields2.albumWords.includes(q)) exact += 40;
+    if (query2.isMultiToken) {
+      const tokens = query2.tokens;
+      let exactTitleSpan = false;
+      let exactArtistSpan = false;
+      let exactAlbumSpan = false;
+      for (let i = 0; i < tokens.length; i++) {
+        let span = "";
+        for (let j = i; j < tokens.length; j++) {
+          span += tokens[j];
+          if (span === q) continue;
+          if (fields2.normTitle && span === fields2.normTitle) exactTitleSpan = true;
+          if (fields2.normArtist && span === fields2.normArtist) exactArtistSpan = true;
+          if (fields2.normAlbum && span === fields2.normAlbum) exactAlbumSpan = true;
+        }
+      }
+      if (exactTitleSpan && exactArtistSpan) {
+        exact += 450;
+      } else {
+        if (exactTitleSpan && fields2.normTitle !== q) exact += 220;
+        if (exactArtistSpan && fields2.normArtist !== q) exact += 140;
+        if (exactAlbumSpan && fields2.normAlbum !== q) exact += 60;
+      }
+    }
+    let prefix = 0;
+    if (fields2.normTitle !== q && fields2.normTitle.startsWith(q)) prefix += 250;
+    if (fields2.normArtist !== q && fields2.normArtist.startsWith(q)) prefix += 150;
+    if (fields2.normAlbum !== q && fields2.normAlbum.startsWith(q)) prefix += 45;
+    if (fields2.titleInitials !== q && fields2.titleInitials.startsWith(q)) prefix += 35;
+    if (fields2.artistInitials !== q && fields2.artistInitials.startsWith(q)) prefix += 25;
+    if (fields2.albumInitials !== q && fields2.albumInitials.startsWith(q)) prefix += 18;
+    if (searchFileName && fields2.normFileName !== q && fields2.normFileName.startsWith(q)) {
+      prefix += 8;
+    }
+    if (!fields2.normTitle.startsWith(q) && !fields2.titleWords.includes(q) && fields2.titleWords.some((w) => w.startsWith(q))) {
+      prefix += 120;
+    }
+    if (!fields2.normArtist.startsWith(q) && !fields2.artistWords.includes(q) && fields2.artistWords.some((w) => w.startsWith(q))) {
+      prefix += 75;
+    }
+    if (!fields2.normAlbum.startsWith(q) && !fields2.albumWords.includes(q) && fields2.albumWords.some((w) => w.startsWith(q))) {
+      prefix += 25;
+    }
+    let phrase = 0;
+    if (query2.isMultiToken) {
+      let matchedCount = 0;
+      const titleMatchedIndices = /* @__PURE__ */ new Set();
+      const artistMatchedIndices = /* @__PURE__ */ new Set();
+      for (let i = 0; i < query2.tokens.length; i++) {
+        const t = query2.tokens[i];
+        if (fieldMatchesToken(fields2, t, searchFileName)) {
+          matchedCount += 1;
+        }
+        if (fields2.normTitle.includes(t) || fields2.titleInitials.includes(t)) {
+          titleMatchedIndices.add(i);
+        }
+        if (fields2.normArtist.includes(t) || fields2.artistInitials.includes(t)) {
+          artistMatchedIndices.add(i);
+        }
+      }
+      if (matchedCount === query2.tokens.length) {
+        phrase += 160;
+        let crossTitleArtist = false;
+        for (const tIdx of titleMatchedIndices) {
+          for (const aIdx of artistMatchedIndices) {
+            if (tIdx !== aIdx) {
+              crossTitleArtist = true;
+              break;
+            }
+          }
+          if (crossTitleArtist) break;
+        }
+        if (crossTitleArtist) {
+          phrase += 80;
+        }
+      }
+      const runLength = findLongestContiguousTokenRun(fields2, query2.tokens);
+      if (runLength >= 2) {
+        phrase += Math.round((Math.pow(PHRASE_COMPOUND_RATE, runLength) - 1) * 200);
+      }
+    }
+    const fieldScores = [];
+    const titleBm25 = computeFieldBm25(
+      fields2.normTitle,
+      query2,
+      FIELD_AVG_LEN.title,
+      FIELD_BOOST.title
+    );
+    if (titleBm25 > 0) fieldScores.push(titleBm25);
+    const artistBm25 = computeFieldBm25(
+      fields2.normArtist,
+      query2,
+      FIELD_AVG_LEN.artist,
+      FIELD_BOOST.artist
+    );
+    if (artistBm25 > 0) fieldScores.push(artistBm25);
+    const titleInitialsBm25 = computeFieldBm25(
+      fields2.titleInitials,
+      query2,
+      FIELD_AVG_LEN.initials,
+      FIELD_BOOST.titleInitials
+    );
+    if (titleInitialsBm25 > 0) fieldScores.push(titleInitialsBm25);
+    const albumBm25 = computeFieldBm25(
+      fields2.normAlbum,
+      query2,
+      FIELD_AVG_LEN.album,
+      FIELD_BOOST.album
+    );
+    if (albumBm25 > 0) fieldScores.push(albumBm25);
+    const artistInitialsBm25 = computeFieldBm25(
+      fields2.artistInitials,
+      query2,
+      FIELD_AVG_LEN.initials,
+      FIELD_BOOST.artistInitials
+    );
+    if (artistInitialsBm25 > 0) fieldScores.push(artistInitialsBm25);
+    const albumInitialsBm25 = computeFieldBm25(
+      fields2.albumInitials,
+      query2,
+      FIELD_AVG_LEN.initials,
+      FIELD_BOOST.albumInitials
+    );
+    if (albumInitialsBm25 > 0) fieldScores.push(albumInitialsBm25);
+    if (searchFileName) {
+      const fileNameBm25 = computeFieldBm25(
+        fields2.normFileName,
+        query2,
+        FIELD_AVG_LEN.fileName,
+        FIELD_BOOST.fileName
+      );
+      if (fileNameBm25 > 0) fieldScores.push(fileNameBm25);
+    }
+    fieldScores.sort((a, b) => b - a);
+    let rawBm25 = 0;
+    if (fieldScores.length > 0) {
+      rawBm25 = fieldScores[0];
+      for (let i = 1; i < fieldScores.length; i++) {
+        rawBm25 += 0.25 * fieldScores[i];
+      }
+    }
+    const ftsBm25 = round4(rawBm25);
+    let favorite = 0;
+    if (options?.signals?.banned) {
+      favorite = -200;
+    } else if (options?.signals?.favorite) {
+      favorite = 80;
+    }
+    const rawPlayCount = options?.signals?.playCount ?? 0;
+    const playCountPart = rawPlayCount > 0 ? Math.min(60, Math.round(Math.log1p(rawPlayCount) * 18 * 100) / 100) : 0;
+    const lastPlayedPart = (options?.signals?.lastPlayed ?? 0) > 0 ? 15 : 0;
+    const playCount = round4(playCountPart + lastPlayedPart);
+    const total = round4((exact + prefix + phrase + ftsBm25) * typoPenaltyFactor + favorite + playCount);
+    return {
+      exact,
+      prefix,
+      phrase,
+      ftsBm25,
+      favorite,
+      playCount,
+      typoPenaltyFactor,
+      total
+    };
+  }
+  function scoreTrackSearchRelevance(track, query2, options) {
+    const preparedQuery = typeof query2 === "string" ? prepareSearchQuery(query2, options?.typoPenaltyFactor ?? 1) : query2;
+    const preparedFields = prepareSearchFields(track);
+    return scorePreparedSearchRelevance(preparedFields, preparedQuery, options);
+  }
+  function getMaxSymSpellTolerance(token2) {
+    if (!token2 || token2.length <= 2) return 0;
+    if (CJK_EXTENDED_PATTERN.test(token2)) return 0;
+    for (const ch of token2) {
+      if (isCjkChar(ch)) return 0;
+    }
+    if (PURE_DIGITS_PATTERN.test(token2)) return 0;
+    if (token2.length <= 5) return 1;
+    return 2;
+  }
+  function damerauLevenshteinDistance(a, b, maxDistance = 2) {
+    if (a === b) return 0;
+    const lenA = a.length;
+    const lenB = b.length;
+    if (Math.abs(lenA - lenB) > maxDistance) return maxDistance + 1;
+    if (lenA === 0) return lenB <= maxDistance ? lenB : maxDistance + 1;
+    if (lenB === 0) return lenA <= maxDistance ? lenA : maxDistance + 1;
+    let prevPrevRow = new Int32Array(lenB + 1);
+    let prevRow = new Int32Array(lenB + 1);
+    let currRow = new Int32Array(lenB + 1);
+    for (let j = 0; j <= lenB; j++) {
+      prevRow[j] = j;
+    }
+    let prevRowMin = 0;
+    for (let i = 1; i <= lenA; i++) {
+      currRow[0] = i;
+      let rowMin = currRow[0];
+      const chA = a.charCodeAt(i - 1);
+      for (let j = 1; j <= lenB; j++) {
+        const chB = b.charCodeAt(j - 1);
+        const cost = chA === chB ? 0 : 1;
+        let val = Math.min(
+          prevRow[j] + 1,
+          // deletion
+          currRow[j - 1] + 1,
+          // insertion
+          prevRow[j - 1] + cost
+          // substitution
+        );
+        if (i > 1 && j > 1 && chA === b.charCodeAt(j - 2) && a.charCodeAt(i - 2) === chB) {
+          val = Math.min(val, prevPrevRow[j - 2] + 1);
+        }
+        currRow[j] = val;
+        if (val < rowMin) rowMin = val;
+      }
+      if (rowMin > maxDistance && prevRowMin > maxDistance) {
+        return maxDistance + 1;
+      }
+      prevRowMin = rowMin;
+      const tmp = prevPrevRow;
+      prevPrevRow = prevRow;
+      prevRow = currRow;
+      currRow = tmp;
+    }
+    const distance = prevRow[lenB];
+    return distance <= maxDistance ? distance : maxDistance + 1;
+  }
+  function generateDeleteVariants(wordPrefix, maxEditDistance) {
+    const results = /* @__PURE__ */ new Set();
+    results.add(wordPrefix);
+    let currentLevel = /* @__PURE__ */ new Set([wordPrefix]);
+    for (let dist = 1; dist <= maxEditDistance; dist++) {
+      const nextLevel = /* @__PURE__ */ new Set();
+      for (const item of currentLevel) {
+        if (item.length <= 1) continue;
+        for (let i = 0; i < item.length; i++) {
+          const deleted = item.slice(0, i) + item.slice(i + 1);
+          if (!results.has(deleted)) {
+            results.add(deleted);
+            nextLevel.add(deleted);
+          }
+        }
+      }
+      currentLevel = nextLevel;
+      if (currentLevel.size === 0) break;
+    }
+    return results;
+  }
+  class SymSpellIndex {
+    maxDictionaryEditDistance = 2;
+    prefixLength = 7;
+    maxUnigrams = 5e4;
+    maxBigrams = 5e4;
+    unigrams = /* @__PURE__ */ new Map();
+    deletes = /* @__PURE__ */ new Map();
+    bigrams = /* @__PURE__ */ new Map();
+    get unigramCount() {
+      return this.unigrams.size;
+    }
+    get bigramCount() {
+      return this.bigrams.size;
+    }
+    clear() {
+      this.unigrams.clear();
+      this.deletes.clear();
+      this.bigrams.clear();
+    }
+    addTerm(term, count = 1) {
+      if (!term || count <= 0) return;
+      const normalized = normalizeSearchText(term);
+      if (normalized.length < 3) return;
+      if (STOP_WORDS.has(normalized)) return;
+      if (getMaxSymSpellTolerance(normalized) === 0) return;
+      const existing = this.unigrams.get(normalized);
+      if (existing !== void 0) {
+        this.unigrams.set(normalized, existing + count);
+        return;
+      }
+      if (this.unigrams.size >= this.maxUnigrams) return;
+      this.unigrams.set(normalized, count);
+      const keyPrefix = normalized.length > this.prefixLength ? normalized.slice(0, this.prefixLength) : normalized;
+      const variants = generateDeleteVariants(keyPrefix, this.maxDictionaryEditDistance);
+      for (const variant of variants) {
+        let bucket = this.deletes.get(variant);
+        if (!bucket) {
+          bucket = [normalized];
+          this.deletes.set(variant, bucket);
+        } else {
+          bucket.push(normalized);
+        }
+      }
+    }
+    addBigram(first, second, count = 1) {
+      if (!first || !second || count <= 0) return;
+      const w1 = normalizeSearchText(first);
+      const w2 = normalizeSearchText(second);
+      if (w1.length < 2 || w2.length < 2) return;
+      const key = `${w1} ${w2}`;
+      const existing = this.bigrams.get(key);
+      if (existing !== void 0) {
+        this.bigrams.set(key, existing + count);
+        return;
+      }
+      if (this.bigrams.size >= this.maxBigrams) return;
+      this.bigrams.set(key, count);
+    }
+    addText(text2, weight = 1) {
+      if (!text2 || weight <= 0) return;
+      const words = tokenizeWords(text2);
+      const eligibleWords = [];
+      for (const rawWord of words) {
+        const w = normalizeSearchText(rawWord);
+        if (!w) continue;
+        if (w.length >= 3 && !STOP_WORDS.has(w) && getMaxSymSpellTolerance(w) > 0) {
+          this.addTerm(w, weight);
+          eligibleWords.push(w);
+        } else if (w.length >= 2 && getMaxSymSpellTolerance(w) >= 0 && !CJK_EXTENDED_PATTERN.test(w)) {
+          eligibleWords.push(w);
+        }
+      }
+      for (let i = 0; i + 1 < eligibleWords.length; i++) {
+        this.addBigram(eligibleWords[i], eligibleWords[i + 1], weight);
+      }
+      const initials = getPinyinInitials(text2);
+      if (initials.length >= 4) {
+        this.addTerm(initials, weight);
+      }
+    }
+    addTrack(fields2) {
+      if (fields2.title) this.addText(fields2.title, 3);
+      if (fields2.artist) this.addText(fields2.artist, 2);
+      if (fields2.album) this.addText(fields2.album, 1);
+    }
+    lookup(token2, maxEditDistance) {
+      const w = normalizeSearchText(token2);
+      if (!w) return [];
+      const exactFreq = this.unigrams.get(w);
+      if (exactFreq !== void 0) {
+        return [{ term: w, distance: 0, frequency: exactFreq, score: 1 }];
+      }
+      if (STOP_WORDS.has(w)) {
+        return [];
+      }
+      const maxTol = getMaxSymSpellTolerance(w);
+      const tol = maxEditDistance !== void 0 ? Math.min(maxEditDistance, maxTol) : maxTol;
+      if (tol <= 0) {
+        return [];
+      }
+      const queryPrefix = w.length > this.prefixLength ? w.slice(0, this.prefixLength) : w;
+      const queryVariants = generateDeleteVariants(queryPrefix, tol);
+      if (w.length > this.prefixLength) {
+        const extendedPrefix = w.slice(0, this.prefixLength + tol);
+        for (const v of generateDeleteVariants(extendedPrefix, tol)) {
+          if (v.length <= this.prefixLength) {
+            queryVariants.add(v);
+          }
+        }
+      }
+      const candidates = /* @__PURE__ */ new Set();
+      for (const variant of queryVariants) {
+        const bucket = this.deletes.get(variant);
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) {
+          candidates.add(bucket[i]);
+        }
+      }
+      const suggestions = [];
+      for (const cand of candidates) {
+        if (Math.abs(cand.length - w.length) > tol) continue;
+        const d = damerauLevenshteinDistance(w, cand, tol);
+        if (d > tol) continue;
+        const sharesFirstChar = cand.charCodeAt(0) === w.charCodeAt(0);
+        if (!sharesFirstChar && d > 1 && w.length < 5) continue;
+        const freq = this.unigrams.get(cand) ?? 1;
+        const score = Math.pow(0.78, d) * (sharesFirstChar ? 1.15 : 1) * (1 + Math.log10(1 + freq) * 0.15) / (1 + Math.abs(cand.length - w.length) * 0.05);
+        suggestions.push({
+          term: cand,
+          distance: d,
+          frequency: freq,
+          score: round4(score)
+        });
+      }
+      suggestions.sort((a, b) => {
+        if (a.distance !== b.distance) return a.distance - b.distance;
+        if (b.score !== a.score) return b.score - a.score;
+        if (b.frequency !== a.frequency) return b.frequency - a.frequency;
+        return a.term.localeCompare(b.term);
+      });
+      return suggestions.slice(0, 10);
+    }
+    suggestQuery(query2) {
+      const rawParts = query2.trim().split(/\s+/u).map((part) => normalizeSearchText(part)).filter(Boolean);
+      if (rawParts.length === 0) return null;
+      const tokenCandidateLists = [];
+      for (const token2 of rawParts) {
+        if (STOP_WORDS.has(token2) || getMaxSymSpellTolerance(token2) === 0) {
+          tokenCandidateLists.push([
+            {
+              term: token2,
+              distance: 0,
+              frequency: this.unigrams.get(token2) ?? 0,
+              score: 1
+            }
+          ]);
+          continue;
+        }
+        const suggestions = this.lookup(token2);
+        if (suggestions.length === 0) {
+          return null;
+        }
+        tokenCandidateLists.push(suggestions.slice(0, 5));
+      }
+      if (tokenCandidateLists.length === 1) {
+        const best = tokenCandidateLists[0][0];
+        if (best.distance === 0) return null;
+        return {
+          originalQuery: query2,
+          correctedQuery: best.term,
+          tokens: [best.term],
+          totalDistance: best.distance,
+          penaltyFactor: Math.pow(0.8, best.distance)
+        };
+      }
+      let beam = tokenCandidateLists[0].map((cand) => ({
+        tokens: [cand.term],
+        totalDistance: cand.distance,
+        score: cand.score
+      }));
+      for (let i = 1; i < tokenCandidateLists.length; i++) {
+        const nextCandidates = tokenCandidateLists[i];
+        const nextBeam = [];
+        for (const state of beam) {
+          const prevTerm = state.tokens[state.tokens.length - 1];
+          for (const cand of nextCandidates) {
+            const bigramFreq = this.bigrams.get(`${prevTerm} ${cand.term}`) ?? 0;
+            const bigramBonus = bigramFreq > 0 ? 1 + Math.log10(1 + bigramFreq) * 1.5 : 1;
+            nextBeam.push({
+              tokens: [...state.tokens, cand.term],
+              totalDistance: state.totalDistance + cand.distance,
+              score: state.score + cand.score * bigramBonus
+            });
+          }
+        }
+        nextBeam.sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          return a.totalDistance - b.totalDistance;
+        });
+        beam = nextBeam.slice(0, 8);
+      }
+      const bestSequence = beam[0];
+      if (!bestSequence || bestSequence.totalDistance === 0) {
+        return null;
+      }
+      return {
+        originalQuery: query2,
+        correctedQuery: bestSequence.tokens.join(" "),
+        tokens: bestSequence.tokens,
+        totalDistance: bestSequence.totalDistance,
+        penaltyFactor: Math.pow(0.8, bestSequence.totalDistance)
+      };
+    }
+  }
+  const albumSearchText = /* @__PURE__ */ new WeakMap();
+  function normalizeLocalStreamingQuery(value) {
+    return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  }
+  function normalizePageBounds(limit = 30, offset = 0) {
+    return {
+      limit: Math.max(0, limit),
+      offset: Math.max(0, offset)
+    };
+  }
+  function collectPagedMatches(items, query2, limit, offset, matches, mapResult) {
+    const page2 = [];
+    const bounds = normalizePageBounds(limit, offset);
+    let total = 0;
+    for (const item of items) {
+      if (!matches(item, query2)) continue;
+      if (total >= bounds.offset && page2.length < bounds.limit) {
+        page2.push(mapResult(item));
+      }
+      total++;
+    }
+    return { items: page2, total };
+  }
+  function searchLocalStreamingPlaylists(playlists, keywords, limit, offset) {
+    const query2 = normalizeLocalStreamingQuery(keywords.trim());
+    if (!query2) return { playlists: [], total: 0 };
+    const result = collectPagedMatches(
+      playlists,
+      query2,
+      limit,
+      offset,
+      (playlist, q) => normalizeLocalStreamingQuery(playlist.name).includes(q),
+      (playlist) => ({
+        id: playlist.id,
+        name: playlist.name,
+        cover: null,
+        trackCount: "count" in playlist ? playlist.count : playlist.trackIds.length
+      })
+    );
+    return { playlists: result.items, total: result.total };
+  }
+  function searchLocalStreamingAlbums(albums, keywords, limit, offset) {
+    const queries = keywords.trim().split(/\s+/u).map(normalizeLocalStreamingQuery).filter(Boolean);
+    if (!queries.length) return { albums: [], total: 0 };
+    const runSearch = (activeQueries) => collectPagedMatches(
+      albums,
+      keywords,
+      limit,
+      offset,
+      (album) => {
+        if (!album.id) return false;
+        let text2 = albumSearchText.get(album);
+        if (text2 === void 0) {
+          text2 = [
+            normalizeLocalStreamingQuery(album.name),
+            normalizeLocalStreamingQuery(album.artist ?? ""),
+            getPinyinInitials(album.name),
+            getPinyinInitials(album.artist ?? "")
+          ].join("\0");
+          albumSearchText.set(album, text2);
+        }
+        return activeQueries.every((query2) => text2.includes(query2));
+      },
+      (album) => ({
+        id: album.id,
+        name: album.name,
+        artist: album.artist,
+        cover: album.cover,
+        coverSource: album.coverSource,
+        trackCount: album.trackCount
+      })
+    );
+    let result = runSearch(queries);
+    if (result.total === 0 && queries.some((q) => getMaxSymSpellTolerance(q) > 0)) {
+      const symSpell = new SymSpellIndex();
+      for (const album of albums) {
+        if (!album.id) continue;
+        symSpell.addText(album.name, 3);
+        if (album.artist) symSpell.addText(album.artist, 2);
+      }
+      const suggestion = symSpell.suggestQuery(keywords);
+      if (suggestion) {
+        result = runSearch(suggestion.tokens);
+      }
+    }
+    return { albums: result.items, total: result.total };
+  }
+  function searchLocalStreamingArtists(artists, keywords, limit, offset) {
+    const query2 = normalizeLocalStreamingQuery(keywords.trim());
+    if (!query2) return { artists: [], total: 0 };
+    const runSearch = (activeQuery) => collectPagedMatches(
+      artists,
+      activeQuery,
+      limit,
+      offset,
+      (artist, q) => normalizeLocalStreamingQuery(artist.name).includes(q),
+      (artist) => ({
+        id: artist.name,
+        name: artist.name,
+        picUrl: artist.cover,
+        musicSize: artist.trackCount
+      })
+    );
+    let result = runSearch(query2);
+    if (result.total === 0 && getMaxSymSpellTolerance(query2) > 0) {
+      const symSpell = new SymSpellIndex();
+      for (const artist of artists) {
+        symSpell.addText(artist.name, 3);
+      }
+      const suggestion = symSpell.suggestQuery(keywords);
+      if (suggestion) {
+        result = runSearch(normalizeLocalStreamingQuery(suggestion.correctedQuery));
+      }
+    }
+    return { artists: result.items, total: result.total };
+  }
+  function createAggregatePlaylistModel(identity) {
+    const {
+      getRecordingTrackKey: getLogicalTrackKey2,
+      preferredSourceKey,
+      canShareTrackIdentity,
+      compareSourceVariants,
+      toSourceVariant
+    } = identity;
+    function isAggregatePlaylist2(playlist) {
+      return playlist.kind === "aggregate";
+    }
+    function sortAggregatePlaylists(playlists) {
+      return playlists.map((playlist, index) => ({ playlist, index })).sort((left, right) => {
+        const leftPinned = left.playlist.pinnedAt || "";
+        const rightPinned = right.playlist.pinnedAt || "";
+        if (leftPinned && rightPinned && leftPinned !== rightPinned) {
+          return rightPinned.localeCompare(leftPinned);
+        }
+        if (!!leftPinned !== !!rightPinned) return leftPinned ? -1 : 1;
+        const leftTouched = left.playlist.updatedAt || left.playlist.createdAt || "";
+        const rightTouched = right.playlist.updatedAt || right.playlist.createdAt || "";
+        if (leftTouched !== rightTouched) return rightTouched.localeCompare(leftTouched);
+        return left.index - right.index;
+      }).map((entry) => entry.playlist);
+    }
+    function buildAggregateRows({
+      tracks: tracks2,
+      hiddenSources = [],
+      variantPreferences = {}
+    }) {
+      const hidden = new Set(hiddenSources);
+      const rows = [];
+      for (const group of groupTracksByRecording(tracks2)) {
+        const allVariants = group.slice().sort(compareSourceVariants);
+        const anchorTrackId = allVariants.reduce(
+          (anchor, variant) => variant.track.id < anchor ? variant.track.id : anchor,
+          allVariants[0].track.id
+        );
+        const visibleVariants = allVariants.filter((variant) => !hidden.has(variant.source));
+        if (visibleVariants.length === 0) continue;
+        const preferred = variantPreferences[anchorTrackId];
+        const pinnedVariant = preferred ? visibleVariants.find((variant) => variant.source === preferred) : void 0;
+        const selectedVariant = pinnedVariant ?? visibleVariants[0];
+        rows.push({
+          anchorTrackId,
+          title: selectedVariant.track.title,
+          artist: selectedVariant.track.artist,
+          album: selectedVariant.track.album,
+          allVariants,
+          visibleVariants,
+          selectedVariant,
+          variantPinned: !!pinnedVariant,
+          preferenceUnavailable: !pinnedVariant && !!preferredSourceKey(selectedVariant.track) && !visibleVariants.some(
+            (variant) => versionSourceKey(variant.track) === preferredSourceKey(selectedVariant.track)
+          )
+        });
+      }
+      return rows;
+    }
+    function collectAggregateSources(tracks2, hiddenSources = []) {
+      const hidden = new Set(hiddenSources);
+      const counts = /* @__PURE__ */ new Map();
+      for (const track of tracks2) {
+        const source = getTrackSource(track);
+        counts.set(source, (counts.get(source) ?? 0) + 1);
+      }
+      for (const source of hidden) {
+        if (!counts.has(source)) counts.set(source, 0);
+      }
+      return Array.from(counts.entries()).map(([source, count]) => ({ source, count, hidden: hidden.has(source) })).sort((left, right) => {
+        if (left.source === right.source) return 0;
+        if (left.source === "local") return -1;
+        if (right.source === "local") return 1;
+        return left.source.localeCompare(right.source, "en");
+      });
+    }
+    function resolveAggregateQueue(rows) {
+      return rows.filter((row) => !row.preferenceUnavailable).map((row) => row.selectedVariant.track);
+    }
+    function toggleHiddenSource(hiddenSources, source) {
+      return hiddenSources.includes(source) ? hiddenSources.filter((item) => item !== source) : [...hiddenSources, source];
+    }
+    function groupTracksByRecording(tracks2) {
+      const groups = [];
+      const groupsByKey = /* @__PURE__ */ new Map();
+      for (const track of tracks2) {
+        const variant = toSourceVariant({ track });
+        const key = getLogicalTrackKey2(track);
+        const candidates = groupsByKey.get(key);
+        const existing = candidates?.find(
+          (group) => group.every((member) => canShareTrackIdentity(member.track, track))
+        );
+        if (existing) {
+          existing.push(variant);
+          continue;
+        }
+        const nextGroup = [variant];
+        groups.push(nextGroup);
+        if (candidates) candidates.push(nextGroup);
+        else groupsByKey.set(key, [nextGroup]);
+      }
+      return groups;
+    }
+    return {
+      isAggregatePlaylist: isAggregatePlaylist2,
+      sortAggregatePlaylists,
+      buildAggregateRows,
+      collectAggregateSources,
+      resolveAggregateQueue,
+      toggleHiddenSource
+    };
+  }
+  const fields = [
+    "externalEntry",
+    "isrc",
+    "title",
+    "artist",
+    "artists",
+    "album",
+    "releaseDate",
+    "genre",
+    "albumArtist",
+    "albumId",
+    "discNumber",
+    "trackNumber",
+    "fileName",
+    "dir",
+    "subTrack",
+    "cueRange",
+    "cueSheetPath",
+    "cueEncoding",
+    "duration",
+    "size",
+    "cover",
+    "coverSmall",
+    "coverSmallSource",
+    "coverSource",
+    "source",
+    "sourceSelection",
+    "ncmSongId",
+    "networkSource",
+    "audioFingerprint",
+    "streamQuality",
+    "format",
+    "sampleRate",
+    "bitrate",
+    "bitDepth",
+    "bpm",
+    "addedAt",
+    "replayGainTrackGainDb",
+    "replayGainAlbumGainDb",
+    "replayGainTrackPeak",
+    "replayGainAlbumPeak",
+    "r128TrackGainDb",
+    "r128AlbumGainDb"
+  ];
+  function compactPlaylistRecord(track) {
+    const result = { id: track.id, filePath: track.filePath, lyrics: null };
+    for (const field of fields) if (track[field] !== void 0) result[field] = track[field];
+    result.source = getTrackSource({
+      id: track.id,
+      source: typeof track.source === "string" ? track.source : void 0
+    });
+    if (getTrackSource({
+      id: track.id,
+      source: typeof track.source === "string" ? track.source : void 0
+    }) === "local" && track.streamUrl !== void 0)
+      result.streamUrl = track.streamUrl;
+    return result;
+  }
+  function createLibraryPlaylistView(api, identity = () => crypto.randomUUID(), stateCell = (value) => ({ value })) {
+    const state = stateCell({
+      id: null,
+      pending: false,
+      error: "",
+      generation: 0
+    });
+    let definition = null;
+    let catalog = null;
+    let preferences = { revision: -1, versions: [] };
+    let leasedId = null;
+    let task = null;
+    let dirty = false;
+    let disposed = false;
+    function check(reply, id2, sequence, count, committed) {
+      if (reply.id !== id2 || reply.sequence !== sequence || reply.count !== count || reply.committed !== committed)
+        throw new Error("曲库返回了无效的歌单视图确认");
+    }
+    async function release() {
+      if (leasedId === null) return;
+      const id2 = leasedId;
+      const reply = await api.syncPlaylistView({ kind: "drop", id: id2 });
+      check(reply, id2, 0, 0, false);
+      leasedId = null;
+    }
+    function run() {
+      if (task) return task;
+      let attemptedGeneration = state.value.generation;
+      task = (async () => {
+        try {
+          while (dirty || disposed) {
+            attemptedGeneration = state.value.generation;
+            await release();
+            if (disposed) return;
+            dirty = false;
+            const current = catalog ?? (definition ? [definition] : null), isCatalog = catalog !== null, generation = state.value.generation;
+            attemptedGeneration = generation;
+            if (!current) return;
+            const versions = structuredClone(preferences.versions), id2 = identity();
+            leasedId = id2;
+            let sequence = 0;
+            check(
+              await api.syncPlaylistView({
+                kind: "begin",
+                id: id2,
+                versions,
+                ...preferences.preserveSources ? { preserveSources: true } : {},
+                ...isCatalog ? { catalog: true } : {}
+              }),
+              id2,
+              0,
+              0,
+              false
+            );
+            const stale2 = () => disposed || generation !== state.value.generation;
+            if (isCatalog) {
+              for (let offset = 0; offset < current.length && !stale2(); offset += LIBRARY_PAGE_SIZE) {
+                const groups = current.slice(offset, offset + LIBRARY_PAGE_SIZE).map(({ id: id22, name, cover, isDefault }) => ({ id: id22, name, cover, isDefault }));
+                check(
+                  await api.syncPlaylistView({ kind: "groups", id: id2, sequence: ++sequence, groups }),
+                  id2,
+                  sequence,
+                  0,
+                  false
+                );
+              }
+            }
+            let count = 0;
+            let entries = [];
+            const flush = async () => {
+              check(
+                await api.syncPlaylistView({
+                  kind: "append",
+                  id: id2,
+                  sequence: ++sequence,
+                  // Serialize only this compact window: nested routing may be a
+                  // Vue proxy even when the containing snapshot is plain data.
+                  entries: JSON.parse(JSON.stringify(entries))
+                }),
+                id2,
+                sequence,
+                count + entries.length,
+                false
+              );
+              count += entries.length;
+              entries = [];
+            };
+            for (const group of current) {
+              const memberCount = group.imported?.entries.length ?? group.trackIds.length;
+              for (let index = 0; index < memberCount; index++) {
+                if (stale2()) break;
+                const importedEntry = group.imported?.entries[index];
+                const trackId = importedEntry?.entryId ?? group.trackIds[index];
+                const snapshot = importedEntry ? importEntryViewRecord(importedEntry) : group.trackSnapshots?.[trackId];
+                entries.push({
+                  id: trackId,
+                  ...isCatalog ? { collectionId: group.id } : {},
+                  ...snapshot ? {
+                    snapshot: compactPlaylistRecord(snapshot)
+                  } : {}
+                });
+                if (entries.length === LIBRARY_PAGE_SIZE) await flush();
+              }
+              if (stale2()) break;
+            }
+            if (entries.length && !stale2()) await flush();
+            if (stale2()) continue;
+            check(
+              await api.syncPlaylistView({ kind: "commit", id: id2, sequence: ++sequence }),
+              id2,
+              sequence,
+              count,
+              true
+            );
+            if (!stale2()) state.value = { ...state.value, id: id2, pending: false };
+          }
+        } catch (error) {
+          if (!disposed && attemptedGeneration === state.value.generation)
+            state.value = {
+              ...state.value,
+              id: null,
+              pending: false,
+              error: error instanceof Error ? error.message : String(error)
+            };
+          try {
+            await release();
+          } catch {
+          }
+        }
+      })().finally(() => {
+        task = null;
+        if (!disposed && dirty && !state.value.error) void run();
+      });
+      return task;
+    }
+    function replace() {
+      dirty = true;
+      state.value = {
+        id: null,
+        pending: definition !== null || catalog !== null,
+        error: "",
+        generation: state.value.generation + 1
+      };
+      return run();
+    }
+    return {
+      state,
+      setPlaylist(value, next) {
+        if (disposed) return Promise.resolve();
+        if (catalog === null && value?.id === definition?.id && value?.trackIds === definition?.trackIds && value?.trackSnapshots === definition?.trackSnapshots && value?.imported?.membershipRevision === definition?.imported?.membershipRevision && next.revision === preferences.revision && next.preserveSources === preferences.preserveSources)
+          return task ?? Promise.resolve();
+        definition = value ? {
+          id: value.id,
+          trackIds: value.trackIds,
+          trackSnapshots: value.trackSnapshots,
+          imported: value.imported ? { ...value.imported } : void 0
+        } : null;
+        catalog = null;
+        preferences = next;
+        return replace();
+      },
+      setCatalog(value, next) {
+        if (disposed) return Promise.resolve();
+        const beforeById = new Map(catalog?.map((group) => [group.id, group]));
+        if (definition === null && next.revision === preferences.revision && next.preserveSources === preferences.preserveSources && (value === null ? catalog === null : catalog !== null && value.length === catalog.length && value.every((group) => {
+          const before = beforeById.get(group.id);
+          return before !== void 0 && group.id === before.id && group.name === before.name && group.cover === before.cover && group.isDefault === before.isDefault && group.trackIds === before.trackIds && group.trackSnapshots === before.trackSnapshots && group.imported?.membershipRevision === before.imported?.membershipRevision;
+        })))
+          return task ?? Promise.resolve();
+        definition = null;
+        catalog = value?.map(({ id: id2, name, cover, isDefault, trackIds, trackSnapshots, imported }) => ({
+          id: id2,
+          name,
+          cover,
+          isDefault,
+          trackIds,
+          trackSnapshots,
+          imported: imported ? { ...imported } : void 0
+        })) ?? null;
+        preferences = next;
+        return replace();
+      },
+      retry() {
+        return disposed ? Promise.resolve() : replace();
+      },
+      /** A lost worker or expired private view can be rebuilt from configuration.
+       * Content/history fences and genuine SQL errors must remain visible errors. */
+      recover(id2, error) {
+        if (disposed || id2 !== state.value.id || !/Playlist view expired|Music library database process (?:exited|is unavailable)/i.test(
+          String(error)
+        ))
+          return false;
+        void replace();
+        return true;
+      },
+      dispose() {
+        disposed = true;
+        state.value = { id: null, pending: false, error: "", generation: state.value.generation + 1 };
+        return run();
+      }
+    };
+  }
+  class CorePlaylistViews {
+    owners = /* @__PURE__ */ new Map();
+    options;
+    tail = Promise.resolve();
+    stopped = false;
+    constructor(options) {
+      this.options = options;
+    }
+    owner(id2) {
+      let owner = this.owners.get(id2);
+      if (!owner) {
+        owner = createLibraryPlaylistView(this.options.database, this.options.runtime.newId);
+        this.owners.set(id2, owner);
+      }
+      return owner;
+    }
+    query(query2, signal) {
+      return this.records(query2, signal).then((result) => ({
+        ...result,
+        page: {
+          ...result.page,
+          definitionIds: result.page.entryIds?.map((entryId) => {
+            const playlist = this.options.playlist(query2.id, query2.revision);
+            return playlist.imported ? entryId : playlist.trackIds[Number(entryId)];
+          }),
+          tracks: result.page.tracks.map((track) => projectCoreTrack(track))
+        }
+      }));
+    }
+    /** Core-only rows, for document export. Public clients always use query(). */
+    records(query2, signal) {
+      if (this.stopped) return Promise.reject(new Error("Playlist views are shutting down"));
+      const work = this.tail.catch(() => void 0).then(async () => {
+        signal?.throwIfAborted();
+        const playlist = this.options.playlist(query2.id, query2.revision);
+        const owner = this.owner(`${query2.id}:${!!query2.preserveSources}`);
+        const revision2 = this.options.versions.getRevision();
+        const fence = () => {
+          this.options.playlist(query2.id, query2.revision);
+          if (this.options.versions.getRevision() !== query2.versionsRevision)
+            throw Object.assign(new Error("录音版本偏好已变化，请重新读取"), {
+              code: "STALE_REVISION"
+            });
+          signal?.throwIfAborted();
+        };
+        fence();
+        let page2;
+        if (this.options.loadJsonLibrary) {
+          const library = await this.options.loadJsonLibrary();
+          if (query2.contentRevision !== void 0 && query2.contentRevision !== library.revision)
+            throw Object.assign(new Error("曲库已变化，请重新读取"), { code: "STALE_REVISION" });
+          page2 = this.jsonPage(playlist, query2, library);
+        } else {
+          await owner.setPlaylist(playlist, {
+            revision: revision2,
+            versions: this.options.versions.snapshot().tracks.versions,
+            preserveSources: playlist.kind === "aggregate" || query2.preserveSources
+          });
+          fence();
+          const state = owner.state.value;
+          if (state.error || !state.id) throw new Error(state.error || "歌单视图尚未就绪");
+          const request = {
+            ...query2.query,
+            playlistView: state.id,
+            sort: query2.query?.sort ?? "playlist",
+            contentRevision: query2.contentRevision ?? query2.query?.contentRevision,
+            offset: query2.offset ?? query2.query?.offset,
+            limit: query2.limit ?? query2.query?.limit ?? 200,
+            search: query2.search ?? query2.query?.search,
+            anchorId: query2.anchorId ?? query2.query?.anchorId,
+            ...playlist.kind === "aggregate" ? {
+              aggregate: {
+                hiddenSources: query2.includeHiddenSources ? [] : playlist.hiddenSources,
+                variantPreferences: playlist.variantPreferences,
+                variantRow: query2.variantRow,
+                sourceCounts: query2.sourceCounts
+              }
+            } : {}
+          };
+          try {
+            page2 = await this.options.database.queryTracks(request);
+          } catch (error) {
+            owner.recover(state.id, error);
+            throw error;
+          }
+        }
+        fence();
+        return {
+          viewId: owner.state.value.id ?? "",
+          revision: query2.revision,
+          versionsRevision: query2.versionsRevision,
+          page: page2
+        };
+      });
+      this.tail = work;
+      return work;
+    }
+    collection(playlists, query2, signal) {
+      const work = this.tail.catch(() => void 0).then(async () => {
+        signal?.throwIfAborted();
+        if (this.options.versions.getRevision() !== query2.versionsRevision)
+          throw Object.assign(new Error("录音版本偏好已变化，请重新读取"), { code: "STALE_REVISION" });
+        const owner = this.owner(`catalog:${!!query2.aggregate}`);
+        await owner.setCatalog(playlists, {
+          revision: query2.versionsRevision,
+          versions: this.options.versions.snapshot().tracks.versions,
+          preserveSources: query2.aggregate
+        });
+        const id2 = owner.state.value.id;
+        if (!id2 || owner.state.value.error) throw new Error(owner.state.value.error || "歌单目录尚未就绪");
+        if (!this.options.database.queryCollections) throw new Error("曲库目录查询不可用");
+        const page2 = await this.options.database.queryCollections("playlists", { ...query2.query, playlistView: id2 });
+        signal?.throwIfAborted();
+        return page2;
+      });
+      this.tail = work;
+      return work;
+    }
+    jsonPage(playlist, query2, library) {
+      const resolver = createPlaylistTrackResolver({
+        tracks: { value: library.tracks },
+        trackById: new Map(library.tracks.map((t) => [t.id, t])),
+        getTracksRevision: () => library.revision,
+        runtime: this.options.runtime
+      });
+      const aggregate = createAggregatePlaylistModel(this.options.runtime.identity);
+      const preserve = playlist.kind === "aggregate" || query2.preserveSources;
+      const members = playlist.imported ? resolver.resolvePlaylistTracks(playlist, preserve).map((track) => ({ track, entryId: track.queueEntryId })) : playlist.trackIds.flatMap(
+        (id2, index) => resolver.resolvePlaylistTracks({ ...playlist, trackIds: [id2] }, preserve).map((track) => ({ track, entryId: String(index) }))
+      );
+      const tracks2 = members.map((member) => member.track);
+      const search = query2.search?.trim().toLowerCase();
+      const matches = (track) => !search || `${track.title} ${track.artist} ${track.album}`.toLowerCase().includes(search);
+      let selected = tracks2, entryIds, metadata;
+      if (playlist.kind === "aggregate") {
+        const rows = aggregate.buildAggregateRows({
+          tracks: tracks2,
+          hiddenSources: playlist.hiddenSources,
+          variantPreferences: playlist.variantPreferences
+        });
+        const indexed = rows.map((row, index) => ({ row, id: String(index) }));
+        const filtered = indexed.filter(({ row }) => matches(row.selectedVariant.track));
+        metadata = { rowCount: rows.length, memberCount: tracks2.length, rows: [] };
+        if (query2.sourceCounts) {
+          const sources = aggregate.collectAggregateSources(tracks2, playlist.hiddenSources);
+          return {
+            tracks: [],
+            total: sources.length,
+            offset: query2.offset ?? 0,
+            revision: library.revision,
+            versions: {},
+            aggregate: {
+              ...metadata,
+              sources: sources.slice(query2.offset ?? 0, (query2.offset ?? 0) + (query2.limit ?? 200))
+            }
+          };
+        }
+        if (query2.variantRow !== void 0) {
+          const row = indexed.find((row2) => row2.id === query2.variantRow)?.row;
+          selected = row?.visibleVariants.map((v) => v.track) ?? [];
+          const available = /* @__PURE__ */ new Map();
+          for (const member of members) {
+            const bucket = available.get(member.track);
+            if (bucket) bucket.entries.push(member.entryId);
+            else available.set(member.track, { entries: [member.entryId], next: 0 });
+          }
+          entryIds = selected.map((track) => {
+            const bucket = available.get(track);
+            return bucket.entries[bucket.next++];
+          });
+        } else {
+          selected = filtered.map(({ row }) => row.selectedVariant.track);
+          entryIds = filtered.map(({ id: id2 }) => id2);
+          metadata.rows = filtered.map(({ row, id: id2 }) => ({
+            rowId: id2,
+            anchorTrackId: row.anchorTrackId,
+            variantCount: row.allVariants.length,
+            visibleVariantCount: row.visibleVariants.length,
+            variantPinned: row.variantPinned,
+            preferenceUnavailable: row.preferenceUnavailable
+          }));
+        }
+      } else {
+        const filtered = members.filter(({ track }) => matches(track));
+        selected = filtered.map(({ track }) => track);
+        entryIds = filtered.map(({ entryId }) => entryId);
+      }
+      let offset = query2.offset ?? 0;
+      const limit = query2.limit ?? 200;
+      const anchorIndex = query2.anchorId !== void 0 ? selected.findIndex((t) => t.id === query2.anchorId) : void 0;
+      if (anchorIndex !== void 0 && anchorIndex >= 0)
+        offset = Math.floor(anchorIndex / limit) * limit;
+      return {
+        tracks: selected.slice(offset, offset + limit).map((t) => ({ ...t })),
+        total: selected.length,
+        offset,
+        revision: library.revision,
+        versions: {},
+        totalDuration: selected.reduce((sum, t) => sum + t.duration, 0),
+        anchorIndex,
+        ...entryIds ? { entryIds: entryIds.slice(offset, offset + limit) } : {},
+        ...metadata ? { aggregate: { ...metadata, rows: metadata.rows.slice(offset, offset + limit) } } : {}
+      };
+    }
+    async shutdown() {
+      this.stopped = true;
+      await this.tail.catch(() => void 0);
+      await Promise.all([...this.owners.values()].map((owner) => owner.dispose()));
+      this.owners.clear();
+    }
+  }
+  class CorePlaylistService {
+    playlists = { value: [] };
+    tracks = { value: [] };
+    trackById = /* @__PURE__ */ new Map();
+    persistence = {
+      value: {
+        state: "idle",
+        dirty: false,
+        failureCount: 0,
+        lastError: null
+      }
+    };
+    notice = { value: null };
+    controller;
+    options;
+    views;
+    committed = [];
+    revision = 0;
+    tail = Promise.resolve();
+    stopped = false;
+    repairWork = null;
+    repairStatus = null;
+    constructor(options) {
+      this.options = options;
+      this.views = new CorePlaylistViews({
+        ...options,
+        playlist: (id2, revision2) => {
+          this.fence(revision2);
+          const playlist = this.committed.find((p) => p.id === id2);
+          if (!playlist) throw new Error("歌单已不存在");
+          return playlist;
+        }
+      });
+      this.controller = createPlaylistController({
+        runtime: {
+          ...options.runtime,
+          repository: {
+            load: () => options.runtime.repository.load(),
+            save: async (data, revision2) => {
+              const saved = await options.runtime.repository.save(data, revision2);
+              if (!isVersionedDataEnvelope(saved, (value) => Array.isArray(value)))
+                throw new Error("Playlist repository did not acknowledge its durable revision");
+              this.committed = structuredClone(saved.data);
+              this.revision = saved.revision;
+              options.changed();
+              return saved;
+            }
+          }
+        },
+        playlists: this.playlists,
+        tracks: this.tracks,
+        trackById: this.trackById,
+        getTracksRevision: () => 0,
+        playlistPersistenceStatus: this.persistence,
+        playlistPersistenceNotice: this.notice,
+        readTrackPresence: async (ids) => {
+          if (options.loadJsonLibrary) return null;
+          const present = /* @__PURE__ */ new Set();
+          for (let offset = 0; offset < ids.length; offset += 200) {
+            const page2 = await options.database.getTracksByIds(ids.slice(offset, offset + 200));
+            for (const track of page2.tracks) present.add(track.id);
+          }
+          return present;
+        },
+        findRelocationsInFolder: options.findRelocationsInFolder,
+        resolveImportPaths: (paths) => options.loadJsonLibrary ? Promise.resolve(null) : resolveLibraryPlaylistImportPaths(paths, options.database)
+      });
+    }
+    getRevision() {
+      return this.revision;
+    }
+    async favorites(revision2, tracks2) {
+      await this.tail.catch(() => void 0);
+      this.fence(revision2);
+      const states = await this.options.preferencesTrackStates?.(tracks2);
+      this.fence(revision2);
+      return { revision: revision2, contains: tracks2.map((track, index) => states?.[index] == null ? this.controller.isFavoriteTrack(track) : states[index] === "favorite") };
+    }
+    *sourceTracks() {
+      for (const playlist of this.committed) {
+        yield* Object.values(playlist.trackSnapshots ?? {});
+        for (const entry of playlist.imported?.entries ?? []) {
+          if (entry.manualBinding) yield entry.manualBinding;
+          if (entry.resolution.track) yield entry.resolution.track;
+        }
+      }
+    }
+    /** Membership differs from the version picker's complete cached source list. */
+    *librarySourceTracks() {
+      for (const playlist of this.committed) {
+        if (playlist.imported) {
+          for (const entry of playlist.imported.entries) {
+            const track = entry.manualBinding ?? entry.resolution.track;
+            if (track) yield track;
+          }
+        } else {
+          for (const id2 of playlist.trackIds) {
+            const track = playlist.trackSnapshots?.[id2];
+            if (track) yield track;
+          }
+        }
+      }
+    }
+    saveTrackPages(name, revision2, produce, signal) {
+      return this.enqueue(async () => {
+        signal?.throwIfAborted();
+        this.fence(revision2);
+        const id2 = await this.controller.createPlaylistWithTrackPages(name, produce, signal);
+        await this.flush();
+        return { id: id2, revision: this.getRevision() };
+      });
+    }
+    editPages(revision2, edit2, produce, signal) {
+      return this.enqueue(async () => {
+        signal?.throwIfAborted();
+        this.fence(revision2);
+        const c = this.controller;
+        const exactFavoriteIds = /* @__PURE__ */ new Set();
+        const tracks2 = async (append) => produce(async (items) => {
+          const resolved = items.map((item) => {
+            if (!item.track) throw new Error("歌单添加操作缺少曲目身份");
+            return item.track;
+          });
+          if (edit2.kind === "favorite" && edit2.favorite) {
+            const states = await this.options.preferencesTrackStates?.(resolved);
+            resolved.forEach((track, i) => {
+              if (states?.[i] === "ban" || states?.[i] === "none") exactFavoriteIds.add(track.id);
+            });
+          }
+          await append(resolved);
+        });
+        const ids = async (append) => produce(async (items) => append(items.map((item) => item.id)));
+        let result;
+        switch (edit2.kind) {
+          case "create":
+            result = await (edit2.aggregate ? c.createAggregatePlaylistWithTrackPages(edit2.name, tracks2, signal) : c.createPlaylistWithTrackPages(edit2.name, tracks2, signal));
+            break;
+          case "add":
+            result = await (edit2.external ? c.addTrackPagesToExternalPlaylistById(edit2.id, tracks2, signal) : c.addTrackPagesToPlaylistById(edit2.id, tracks2, signal));
+            break;
+          case "remove":
+            result = await c.removeTrackIdPagesFromPlaylistById(edit2.id, ids, signal);
+            break;
+          case "move":
+            result = await c.movePlaylistMemberPagesById(edit2.id, edit2.targetId, produce, signal);
+            break;
+          case "reorder":
+            result = await c.reorderPlaylistTrackIdPagesById(edit2.id, ids, edit2.target, signal);
+            break;
+          case "favorite":
+            result = await c.setFavoriteTrackPages(tracks2, edit2.favorite, signal, exactFavoriteIds);
+            break;
+        }
+        await this.flush();
+        return { revision: this.revision, result };
+      });
+    }
+    async isFavorite(track) {
+      await this.tail.catch(() => void 0);
+      const state = (await this.options.preferencesTrackStates?.([track]))?.[0];
+      return state == null ? this.controller.isFavoriteTrack(track) : state === "favorite";
+    }
+    toggleFavorite(track, assertCurrent) {
+      return this.enqueue(async () => {
+        assertCurrent();
+        const state = (await this.options.preferencesTrackStates?.([track]))?.[0];
+        assertCurrent();
+        const liked = !(state == null ? this.controller.isFavoriteTrack(track) : state === "favorite");
+        this.controller.setFavoriteTracks([track], liked, liked && state != null ? /* @__PURE__ */ new Set([track.id]) : void 0);
+        await this.flush();
+        return liked;
+      });
+    }
+    repairSnapshot() {
+      return this.repairStatus ? { ...this.repairStatus } : null;
+    }
+    startRepair(id2, revision2, folder, signal) {
+      return this.enqueue(async () => {
+        if (this.stopped) throw new Error("Playlists are shutting down");
+        signal?.throwIfAborted();
+        this.fence(revision2);
+        if (this.repairWork)
+          throw Object.assign(new Error("A playlist repair is already running"), { code: "BUSY" });
+        const status = {
+          id: this.options.runtime.newId(),
+          playlistId: id2,
+          state: "running",
+          relocated: 0,
+          unresolved: 0,
+          ambiguous: 0,
+          error: null
+        };
+        this.repairStatus = status;
+        this.repairWork = this.controller.repairPlaylistMissingTracksAsync(id2, folder).then(async (result) => {
+          await this.flush();
+          status.state = "completed";
+          status.relocated = result.relocations.length;
+          status.unresolved = result.unresolvedTrackIds.length;
+          status.ambiguous = result.ambiguousTrackIds.length;
+        }).catch((error) => {
+          status.state = "failed";
+          status.error = projectCoreError(error);
+        }).finally(() => {
+          this.repairWork = null;
+          this.options.changed();
+        });
+        this.options.changed();
+        return { ...status };
+      });
+    }
+    /** Internal source-repair commit; the playback owner supplies a resolved
+     * trusted identity. This is not a renderer-uploaded replacement command. */
+    replaceTrackReference(oldTrackId, replacement, revision2, signal) {
+      return this.enqueue(async () => {
+        signal?.throwIfAborted();
+        if (revision2 !== void 0) this.fence(revision2);
+        const count = this.controller.replacePlaylistTrackReference(oldTrackId, replacement);
+        if (count) await this.flush();
+        return { revision: this.getRevision(), count };
+      });
+    }
+    view(query2, signal) {
+      return this.views.query(query2, signal);
+    }
+    records(query2, signal) {
+      return this.views.records(query2, signal);
+    }
+    collection(query2, signal) {
+      this.fence(query2.revision);
+      return this.views.collection(
+        this.committed.filter((playlist) => playlist.kind === "aggregate" === !!query2.aggregate),
+        query2,
+        signal
+      );
+    }
+    externalIds() {
+      return this.committed.filter((p) => p.imported).map((p) => p.id);
+    }
+    readExternal(id2) {
+      return this.committed.find((p) => p.id === id2)?.imported;
+    }
+    applyImportResolutions(id2, generation, updates) {
+      return this.enqueue(async () => {
+        this.controller.applyExternalResolutions(id2, generation, updates);
+        await this.flush();
+      });
+    }
+    savePreview(preview, command, signal) {
+      return this.enqueue(async () => {
+        signal?.throwIfAborted();
+        this.fence(command.playlistsRevision);
+        const c = this.controller;
+        let id2;
+        if (command.target) {
+          const target = this.readExternal(command.target.id);
+          if (target?.generation !== command.target.generation)
+            throw Object.assign(new Error("歌单在预览期间被修改，请重新读取后更新"), {
+              code: "STALE_REVISION"
+            });
+          const imported = preview.imported;
+          id2 = c.refreshExternalPlaylist(
+            command.target.id,
+            {
+              name: preview.name,
+              source: imported.source,
+              songs: imported.entries.map((e) => e.original),
+              warnings: [],
+              complete: imported.complete,
+              total: imported.expectedTotal
+            },
+            command.target.overwrite
+          );
+          const saved = this.playlists.value.find((p) => p.id === id2).imported;
+          const buckets = /* @__PURE__ */ new Map();
+          for (const entry of imported.entries) {
+            const key = importSongKey(entry.original), bucket = buckets.get(key);
+            if (bucket) bucket.entries.push(entry);
+            else buckets.set(key, { entries: [entry], next: 0 });
+          }
+          for (const entry of saved.entries) {
+            const bucket = buckets.get(importSongKey(entry.original));
+            const matched = bucket && bucket.next < bucket.entries.length ? bucket.entries[bucket.next++] : void 0;
+            if (matched?.manualBinding) c.bindExternalEntry(id2, entry.entryId, matched.manualBinding);
+            if (matched && (matched.manualBinding || entry.resolution.state === "pending"))
+              c.applyExternalResolution(
+                id2,
+                saved.generation,
+                entry.entryId,
+                entry.revision + (matched.manualBinding ? 1 : 0),
+                matched.resolution
+              );
+          }
+        } else id2 = c.adoptExternalPlaylist(preview);
+        await this.flush();
+        return { id: id2, revision: this.getRevision() };
+      });
+    }
+    initialize() {
+      return this.enqueue(async () => {
+        await this.controller.loadPlaylists();
+        await this.flush();
+        this.committed = this.controller.clonePlaylistSnapshot();
+        this.revision = this.controller.getRevision();
+      });
+    }
+    /** Public read dispatch waits for a just-published preference refresh before using cached pages. */
+    async waitForPending() {
+      await this.tail;
+    }
+    /** A preference/identity transaction can change the default list outside a playlist gesture. */
+    refreshPreferences() {
+      return this.enqueue(async () => {
+        await this.flush();
+        await this.controller.loadPlaylists();
+        this.committed = this.controller.clonePlaylistSnapshot();
+        this.revision = this.controller.getRevision();
+        this.options.changed();
+      });
+    }
+    fence(revision2) {
+      if (revision2 !== this.getRevision())
+        throw Object.assign(new Error("Playlists changed; read a fresh page"), {
+          code: "STALE_REVISION"
+        });
+    }
+    enqueue(action) {
+      if (this.stopped) return Promise.reject(new Error("Playlists are shutting down"));
+      const work = this.tail.catch(() => void 0).then(action);
+      this.tail = work;
+      return work;
+    }
+    list(offset = 0, limit = 200, revision2) {
+      if (revision2 !== void 0) this.fence(revision2);
+      return {
+        revision: this.getRevision(),
+        total: this.committed.length,
+        offset,
+        items: this.committed.slice(offset, offset + limit).map(summary)
+      };
+    }
+    catalog(offset = 0, limit = 200, revision2) {
+      if (revision2 !== void 0) this.fence(revision2);
+      return {
+        revision: this.revision,
+        total: this.committed.length,
+        offset,
+        items: this.committed.slice(offset, offset + limit).map(descriptor)
+      };
+    }
+    state() {
+      return structuredClone({
+        revision: this.revision,
+        persistence: this.persistence.value,
+        notice: this.notice.value,
+        repair: this.repairSnapshot()
+      });
+    }
+    membership(id2, revision2, ids) {
+      this.fence(revision2);
+      const playlist = this.committed.find((playlist2) => playlist2.id === id2);
+      if (!playlist) throw new Error("歌单已不存在");
+      const members = new Set(
+        playlist.imported ? playlist.imported.entries.map((entry) => entry.entryId) : playlist.trackIds
+      );
+      return { revision: revision2, contains: ids.map((id22) => members.has(id22)) };
+    }
+    async members(query2) {
+      this.fence(query2.revision);
+      const playlist = this.committed.find((playlist2) => playlist2.id === query2.id);
+      if (!playlist) throw new Error("歌单已不存在");
+      const limit = query2.limit ?? 200;
+      let offset = query2.offset ?? 0;
+      if (!playlist.imported) {
+        const anchorIndex2 = query2.anchorId === void 0 ? void 0 : playlist.trackIds.indexOf(query2.anchorId);
+        if (anchorIndex2 !== void 0 && anchorIndex2 >= 0)
+          offset = Math.floor(anchorIndex2 / limit) * limit;
+        const page2 = await this.entries(query2.id, query2.revision, offset, limit);
+        return {
+          ...page2,
+          anchorIndex: anchorIndex2,
+          items: page2.items.map((entry, index) => ({ ...entry, position: offset + index }))
+        };
+      }
+      const search = query2.search?.trim().toLocaleLowerCase();
+      const entries = playlist.imported.entries.filter(
+        (entry) => !search || [entry.original.title, entry.original.artist, entry.original.album].some(
+          (value) => value?.toLocaleLowerCase().includes(search)
+        )
+      );
+      const sort = query2.sort ?? "playlist";
+      if (sort !== "playlist")
+        entries.sort(
+          (a, b) => sort === "duration" ? (a.original.duration ?? 0) - (b.original.duration ?? 0) : String(a.original[sort] ?? "").localeCompare(String(b.original[sort] ?? ""), "zh")
+        );
+      const anchorIndex = query2.anchorId === void 0 ? void 0 : entries.findIndex((entry) => entry.entryId === query2.anchorId);
+      if (anchorIndex !== void 0 && anchorIndex >= 0)
+        offset = Math.floor(anchorIndex / limit) * limit;
+      return {
+        revision: query2.revision,
+        offset,
+        total: entries.length,
+        anchorIndex,
+        items: entries.slice(offset, offset + limit).map((entry) => {
+          const { locations: _locations, ...original } = entry.original;
+          const track = entry.resolution.track ? projectCoreTrack(entry.resolution.track, entry.entryId) : void 0;
+          return {
+            id: entry.entryId,
+            position: entry.position,
+            track: track ?? null,
+            imported: {
+              entryId: entry.entryId,
+              position: entry.position,
+              revision: entry.revision,
+              original,
+              resolution: {
+                ...entry.resolution,
+                track,
+                message: entry.resolution.message ? projectCoreError(entry.resolution.message) : void 0
+              },
+              manual: !!entry.manualBinding
+            }
+          };
+        })
+      };
+    }
+    async exportDocument(id2, revision2, format, signal) {
+      this.fence(revision2);
+      const writer = createPlaylistDocumentWriter(format);
+      const versionsRevision = this.options.versions.getRevision();
+      let offset = 0, total = 1, contentRevision;
+      do {
+        const { page: page2 } = await this.views.records(
+          { id: id2, revision: revision2, versionsRevision, contentRevision, offset, limit: 200 },
+          signal
+        );
+        contentRevision = page2.revision;
+        for (const record2 of page2.tracks) writer.append(libraryTrack(record2));
+        offset += page2.tracks.length;
+        total = page2.total;
+      } while (offset < total);
+      this.fence(revision2);
+      if (this.options.versions.getRevision() !== versionsRevision)
+        throw Object.assign(new Error("录音版本偏好已变化，请重新导出"), { code: "STALE_REVISION" });
+      return { revision: revision2, contents: writer.finish() };
+    }
+    importDocument(id2, revision2, fileName, contents, signal) {
+      return this.enqueue(async () => {
+        signal?.throwIfAborted();
+        this.fence(revision2);
+        const playlist = this.committed.find((playlist2) => playlist2.id === id2);
+        if (!playlist) throw new Error("歌单已不存在");
+        const result = await this.controller.importPlaylistDocumentAsync(
+          playlist.name,
+          fileName,
+          contents
+        );
+        await this.flush();
+        return { revision: this.revision, result };
+      });
+    }
+    searchLocal(query2, limit, offset) {
+      const page2 = searchLocalStreamingPlaylists(
+        this.committed.filter((playlist) => playlist.kind !== "aggregate"),
+        query2,
+        limit,
+        offset
+      );
+      return { items: page2.playlists, total: page2.total, revision: this.getRevision() };
+    }
+    async entries(id2, revision2, offset = 0, limit = 200) {
+      this.fence(revision2);
+      const playlist = this.committed.find((item) => item.id === id2);
+      if (!playlist) throw new Error("歌单已不存在");
+      const configured = playlist.imported ? playlist.imported.entries.slice(offset, offset + limit).map((entry) => ({
+        id: entry.entryId,
+        track: entry.resolution.track ?? null
+      })) : playlist.trackIds.slice(offset, offset + limit).map((id22) => ({ id: id22, track: playlist.trackSnapshots?.[id22] ?? null }));
+      if (!playlist.imported) {
+        const ids = configured.map((item) => item.id);
+        const local = this.options.loadJsonLibrary ? new Map(
+          (await this.options.loadJsonLibrary()).tracks.map((track) => [track.id, track])
+        ) : new Map(
+          (ids.length ? await this.options.database.getTracksByIds(ids) : { tracks: [] }).tracks.map((record2) => [record2.id, libraryTrack(record2)])
+        );
+        for (const entry of configured) entry.track = local.get(entry.id) ?? entry.track;
+      }
+      this.fence(revision2);
+      return structuredClone({
+        revision: revision2,
+        offset,
+        total: playlist.imported?.entries.length ?? playlist.trackIds.length,
+        items: configured.map((entry) => ({
+          id: entry.id,
+          track: entry.track ? projectCoreTrack(entry.track, playlist.imported ? entry.id : void 0) : null
+        }))
+      });
+    }
+    edit(revision2, edit2, signal) {
+      return this.enqueue(async () => {
+        signal?.throwIfAborted();
+        this.fence(revision2);
+        const c = this.controller;
+        let result;
+        switch (edit2.kind) {
+          case "importCreate":
+            result = c.createExternalPlaylist(edit2.document);
+            break;
+          case "importRefresh":
+            result = c.refreshExternalPlaylist(edit2.id, edit2.document, edit2.overwrite);
+            break;
+          case "importBind":
+            result = c.bindExternalEntry(edit2.id, edit2.entryId, edit2.track);
+            break;
+          case "importRemove":
+            result = c.removeExternalEntries(edit2.id, edit2.entryIds);
+            break;
+          case "create":
+            result = edit2.aggregate ? c.createAggregatePlaylist(edit2.name) : c.createPlaylist(edit2.name);
+            break;
+          case "rename":
+            result = c.renamePlaylist(edit2.id, edit2.name);
+            break;
+          case "copy":
+            result = c.copyPlaylist(edit2.id, edit2.name);
+            break;
+          case "delete":
+            result = c.deletePlaylist(edit2.id);
+            break;
+          case "cover":
+            result = c.setPlaylistCover(edit2.id, edit2.cover);
+            break;
+          case "pin":
+            result = c.setPlaylistPinned(edit2.id, edit2.pinned);
+            break;
+          case "hiddenSources":
+            result = c.setPlaylistHiddenSources(edit2.id, edit2.sources);
+            break;
+          case "variant":
+            result = c.setPlaylistVariantPreference(edit2.id, edit2.anchorId, edit2.source);
+            break;
+          case "add":
+            result = c.addTracksToPlaylistById(edit2.id, edit2.tracks);
+            break;
+          case "remove":
+            result = await c.removeTrackIdPagesFromPlaylistById(
+              edit2.id,
+              async (append) => {
+                await append(edit2.ids);
+              },
+              signal
+            );
+            break;
+          case "reorder":
+            result = await c.reorderPlaylistTrackIdPagesById(
+              edit2.id,
+              async (append) => {
+                await append(edit2.ids);
+              },
+              edit2.target,
+              signal
+            );
+            break;
+          case "move":
+            result = await c.movePlaylistTrackIdPagesById(
+              edit2.id,
+              edit2.targetId,
+              async (append) => {
+                await append(edit2.ids);
+              },
+              signal
+            );
+            break;
+          case "favorite":
+            {
+              const states = await this.options.preferencesTrackStates?.(edit2.tracks);
+              const exact = states ? new Set(edit2.tracks.filter((_, i) => states[i] === "ban" || states[i] === "none").map((t) => t.id)) : void 0;
+              result = c.setFavoriteTracks(edit2.tracks, edit2.favorite, exact);
+            }
+            break;
+        }
+        await this.flush();
+        this.options.changed();
+        return { revision: this.getRevision(), result };
+      });
+    }
+    importFromPlugin(request) {
+      return this.enqueue(async () => {
+        if (this.options.loadJsonLibrary) {
+          this.tracks.value = (await this.options.loadJsonLibrary()).tracks;
+          this.trackById.clear();
+          for (const track of this.tracks.value) this.trackById.set(track.id, track);
+        }
+        try {
+          const result = await this.controller.importPlaylistPathBatchAsync(request.playlists);
+          await this.flush();
+          this.options.changed();
+          return result;
+        } finally {
+          this.tracks.value = [];
+          this.trackById.clear();
+        }
+      });
+    }
+    async flush() {
+      if (!await this.controller.flushPlaylists())
+        throw new Error(this.persistence.value.lastError ?? "Playlists could not be saved");
+    }
+    async shutdown() {
+      this.stopped = true;
+      await this.repairWork;
+      await this.views.shutdown();
+      await this.tail.catch(() => void 0);
+      try {
+        await this.flush();
+      } finally {
+        this.controller.dispose();
+      }
+    }
+  }
+  function summary(playlist) {
+    return {
+      id: playlist.id,
+      name: playlist.name,
+      kind: playlist.kind,
+      isDefault: playlist.isDefault,
+      createdAt: playlist.createdAt,
+      updatedAt: playlist.updatedAt,
+      pinnedAt: playlist.pinnedAt,
+      count: playlist.imported?.entries.length ?? playlist.trackIds.length,
+      imported: !!playlist.imported
+    };
+  }
+  function descriptor(playlist) {
+    const { imported: _imported, ...row } = summary(playlist);
+    const imported = playlist.imported;
+    if (!imported)
+      return { ...row, cover: playlist.cover, hiddenSources: playlist.hiddenSources?.slice() };
+    const { entries: _entries, ...metadata } = imported;
+    const counts = {};
+    for (const entry of imported.entries)
+      counts[entry.resolution.state] = (counts[entry.resolution.state] ?? 0) + 1;
+    return {
+      ...row,
+      cover: playlist.cover,
+      hiddenSources: playlist.hiddenSources?.slice(),
+      imported: structuredClone({ ...metadata, counts })
+    };
+  }
+  function createPlaylistInputResolver(resolve, database) {
+    return async (inputs, signal) => {
+      const seeds = await resolve(inputs, signal);
+      const ids = seeds.filter((seed) => !seed.snapshot && !seed.localSnapshot).map((seed) => seed.id);
+      const page2 = ids.length ? await database.getTracksByIds(ids) : null;
+      const local = new Map(page2?.tracks.map((record2) => [record2.id, libraryTrack(record2)]));
+      signal.throwIfAborted();
+      return seeds.map((seed) => {
+        const record2 = seed.localSnapshot ?? seed.snapshot;
+        const track = record2 ? libraryTrack({ ...record2, id: seed.id }) : local.get(seed.id);
+        if (!track) throw new Error("本地曲目已不存在，请刷新曲库");
+        return track;
+      });
+    };
+  }
+  class CorePlaylistSubmission {
+    stages = /* @__PURE__ */ new Map();
+    options;
+    constructor(options) {
+      this.options = options;
+    }
+    async submit(clientId, command) {
+      if (command.kind === "begin") return this.begin(clientId, command);
+      const stage = this.stages.get(command.id);
+      if (!stage || stage.clientId !== clientId) throw new Error("歌单提交已结束，请重新选择");
+      if (command.kind === "abort") {
+        if (stage.committing) throw new Error("歌单已经开始保存，请等待结果");
+        stage.controller.abort(new Error("歌单操作已取消"));
+        await stage.work.catch(() => {
+        });
+        return this.reply(stage, "aborted");
+      }
+      if (stage.busy || stage.committing) throw new Error("请等待上一批歌单提交完成");
+      if (command.sequence !== stage.sequence + 1) throw new Error("歌单批次已变化，不可重放旧批次");
+      stage.controller.signal.throwIfAborted();
+      stage.busy = true;
+      stage.cancelTimer();
+      try {
+        if (command.kind === "append") {
+          if (stage.total + command.items.length > LIBRARY_QUEUE_BUILD_MAX_ENTRIES)
+            throw new Error("歌单已达到容量上限");
+          const items = await this.resolve(command.items, stage.controller.signal);
+          stage.controller.signal.throwIfAborted();
+          await stage.append(items);
+          stage.sequence = command.sequence;
+          stage.total += items.length;
+          this.arm(stage);
+          return this.reply(stage, "building");
+        }
+        stage.committing = true;
+        stage.sequence = command.sequence;
+        stage.finish();
+        const saved = await stage.work;
+        return { ...this.reply(stage, "committed"), ...saved };
+      } catch (error) {
+        stage.controller.abort(error);
+        await stage.work.catch(() => {
+        });
+        throw error;
+      } finally {
+        stage.busy = false;
+      }
+    }
+    async resolve(items, signal) {
+      const inputs = items.flatMap((item) => item.input ? [item.input] : []);
+      const tracks2 = await this.options.resolve(inputs, signal);
+      let index = 0;
+      return items.map((item) => {
+        const track = item.input ? tracks2[index++] : void 0;
+        const id2 = item.id ?? track?.id;
+        if (!id2) throw new Error("歌单成员身份缺失");
+        return { id: id2, ...track ? { track } : {} };
+      });
+    }
+    async begin(clientId, command) {
+      await this.disconnect(clientId);
+      const controller = new AbortController();
+      let ready, finish;
+      const started = new Promise((resolve) => {
+        ready = resolve;
+      });
+      const complete = new Promise((resolve, reject) => {
+        finish = resolve;
+        controller.signal.addEventListener("abort", () => reject(controller.signal.reason), {
+          once: true
+        });
+      });
+      void complete.catch(() => {
+      });
+      const stage = {
+        id: this.options.newId(),
+        clientId,
+        sequence: 0,
+        total: 0,
+        controller,
+        append: null,
+        finish,
+        work: Promise.resolve({ revision: command.revision, result: void 0 }),
+        busy: false,
+        committing: false,
+        cancelTimer: () => {
+        }
+      };
+      this.stages.set(stage.id, stage);
+      stage.work = this.options.playlists.editPages(
+        command.revision,
+        command.edit,
+        async (append) => {
+          stage.append = append;
+          ready();
+          await complete;
+        },
+        controller.signal
+      ).finally(() => {
+        stage.cancelTimer();
+        this.stages.delete(stage.id);
+      });
+      await Promise.race([started, stage.work]);
+      if (!stage.append) throw new Error("无法准备歌单操作");
+      void stage.work.catch(() => {
+      });
+      this.arm(stage);
+      return this.reply(stage, "building");
+    }
+    reply(stage, state) {
+      return { id: stage.id, state, sequence: stage.sequence, total: stage.total };
+    }
+    arm(stage) {
+      stage.cancelTimer = this.options.schedule(
+        () => stage.controller.abort(new Error("歌单提交已超时")),
+        LIBRARY_QUEUE_BUILD_IDLE_MS
+      );
+    }
+    async disconnect(clientId) {
+      const work = [];
+      for (const stage of this.stages.values()) {
+        if (stage.clientId !== clientId || stage.committing) continue;
+        stage.controller.abort(new Error("歌单提交窗口已断开"));
+        work.push(stage.work);
+      }
+      await Promise.allSettled(work);
+    }
+    async shutdown() {
+      const stages = [...this.stages.values()];
+      for (const stage of stages)
+        if (!stage.committing) stage.controller.abort(new Error("Core is shutting down"));
+      await Promise.allSettled(stages.map((stage) => stage.work));
+    }
+  }
+  function extractTrackSearchSignals(track) {
+    const rec = track;
+    const fav = rec.favorite === true || rec.favorite === 1;
+    const banned = rec.banned === true || rec.banned === 1;
+    const playCount = typeof rec.playCount === "number" ? rec.playCount : void 0;
+    const lastPlayed = typeof rec.lastPlayed === "number" ? rec.lastPlayed : void 0;
+    if (!fav && !banned && playCount === void 0 && lastPlayed === void 0) return void 0;
+    return { favorite: fav, banned, playCount, lastPlayed };
+  }
+  function createUnifiedSearchSources(identity, preferenceRevision) {
+    const { compareSourceVariantPriority, preferredSourceKey, toSourceVariant } = identity;
+    const localIndexes = /* @__PURE__ */ new WeakMap();
+    function toSearchItem(track, options) {
+      return { kind: "track", ...toSourceVariant({ track, ...options }) };
+    }
+    function compareSearchItems(left, right) {
+      return compareSourceVariantPriority(left, right) || left.track.title.localeCompare(right.track.title, "zh") || left.track.artist.localeCompare(right.track.artist, "zh") || left.track.id.localeCompare(right.track.id);
+    }
+    function getEntryFields(entry) {
+      if (!entry.fields) {
+        entry.fields = prepareSearchFieldsFromBlob(
+          entry.blob,
+          "\0",
+          entry.item.track,
+          entry.normFileName
+        );
+      }
+      return entry.fields;
+    }
+    function getSymSpell(tracks2, cached) {
+      if (!cached.symSpell) {
+        const symSpell = new SymSpellIndex();
+        for (const track of tracks2) {
+          symSpell.addTrack({
+            title: (track.title ?? "").trim(),
+            artist: (track.artist ?? "").trim(),
+            album: (track.album ?? "").trim()
+          });
+        }
+        cached.symSpell = symSpell;
+      }
+      return cached.symSpell;
+    }
+    function searchUnifiedLocalPage(tracks2, query2, limit, offset) {
+      let preparedQuery = prepareSearchQuery(query2);
+      if (!preparedQuery.fullNormalized) return { items: [], total: 0 };
+      const revision2 = preferenceRevision();
+      let cached = localIndexes.get(tracks2);
+      if (!cached || cached.revision !== revision2) {
+        const index = tracks2.map((track) => {
+          const blob = getTrackSearchBlob(track);
+          const normFileName = normalizeSearchText(track.fileName);
+          return {
+            item: toSearchItem(track, { sourceName: "本地音乐", providerAvailable: true }),
+            blob,
+            normFileName,
+            text: `${blob}\0${normFileName}`,
+            fields: null
+          };
+        });
+        index.sort((left, right) => compareSearchItems(left.item, right.item));
+        cached = { revision: revision2, entries: index, symSpell: cached?.symSpell ?? null };
+        localIndexes.set(tracks2, cached);
+      }
+      const collectMatches = (pq) => {
+        const matched = [];
+        if (!pq.isMultiToken) {
+          const q = pq.fullNormalized;
+          for (const entry of cached.entries) {
+            if (entry.text.includes(q)) matched.push(entry);
+          }
+        } else {
+          const tokens = pq.tokens;
+          for (const entry of cached.entries) {
+            if (tokens.every((token2) => entry.text.includes(token2))) matched.push(entry);
+          }
+        }
+        return matched;
+      };
+      let matchedEntries = collectMatches(preparedQuery);
+      if (matchedEntries.length === 0 && preparedQuery.tokens.some((token2) => getMaxSymSpellTolerance(token2) > 0)) {
+        const suggestion = getSymSpell(tracks2, cached).suggestQuery(query2);
+        if (suggestion) {
+          preparedQuery = prepareSearchQuery(suggestion.correctedQuery, suggestion.penaltyFactor);
+          matchedEntries = collectMatches(preparedQuery);
+        }
+      }
+      const total = matchedEntries.length;
+      if (total === 0) return { items: [], total: 0 };
+      let firstPreferred;
+      let firstScore;
+      let allSameRank = true;
+      const scored = new Array(total);
+      for (let i = 0; i < total; i++) {
+        const entry = matchedEntries[i];
+        const track = entry.item.track;
+        const preferred = preferredSourceKey(track) === versionSourceKey(track);
+        const score = scorePreparedSearchRelevance(getEntryFields(entry), preparedQuery, {
+          searchFileName: true,
+          signals: extractTrackSearchSignals(track)
+        }).total;
+        if (i === 0) {
+          firstPreferred = preferred;
+          firstScore = score;
+        } else if (preferred !== firstPreferred || score !== firstScore) {
+          allSameRank = false;
+        }
+        scored[i] = { entry, preferred, score };
+      }
+      if (!allSameRank) {
+        scored.sort(
+          (left, right) => Number(right.preferred) - Number(left.preferred) || right.score - left.score
+        );
+      }
+      const end = Math.min(total, offset + limit);
+      const items = [];
+      for (let i = offset; i < end; i++) {
+        items.push(scored[i].entry.item);
+      }
+      return { items, total };
+    }
+    function searchUnifiedNetworkPage(entries, query2, limit, offset) {
+      let preparedQuery = prepareSearchQuery(query2);
+      const items = [];
+      if (!preparedQuery.fullNormalized || entries.length === 0) return { items, total: 0 };
+      const matchesNetworkEntry = (profileName, entry, pq) => {
+        const metadata = entry.metadata;
+        if (!pq.isMultiToken) {
+          const q = pq.fullNormalized;
+          return [metadata?.title, metadata?.artist, metadata?.album, entry.name].some(
+            (value) => value && normalizeSearchText(value).includes(q)
+          );
+        }
+        const fields2 = prepareSearchFields({
+          title: metadata?.title ?? entry.name.replace(/\.[^.]+$/, ""),
+          artist: metadata?.artist ?? profileName,
+          album: metadata?.album ?? profileName,
+          fileName: entry.name
+        });
+        return matchesPreparedSearch(fields2, pq, true);
+      };
+      let matchedIndices = [];
+      for (let i = 0; i < entries.length; i++) {
+        const { profileName, entry } = entries[i];
+        if (matchesNetworkEntry(profileName, entry, preparedQuery)) {
+          matchedIndices.push(i);
+        }
+      }
+      if (matchedIndices.length === 0 && preparedQuery.tokens.some((token2) => getMaxSymSpellTolerance(token2) > 0)) {
+        const symSpell = new SymSpellIndex();
+        for (const { profileName, entry } of entries) {
+          const metadata = entry.metadata;
+          symSpell.addTrack({
+            title: metadata?.title ?? entry.name.replace(/\.[^.]+$/, ""),
+            artist: metadata?.artist ?? profileName,
+            album: metadata?.album ?? profileName
+          });
+        }
+        const suggestion = symSpell.suggestQuery(query2);
+        if (suggestion) {
+          preparedQuery = prepareSearchQuery(suggestion.correctedQuery, suggestion.penaltyFactor);
+          matchedIndices = [];
+          for (let i = 0; i < entries.length; i++) {
+            const { profileName, entry } = entries[i];
+            if (matchesNetworkEntry(profileName, entry, preparedQuery)) {
+              matchedIndices.push(i);
+            }
+          }
+        }
+      }
+      const total = matchedIndices.length;
+      const end = Math.min(total, offset + limit);
+      for (let i = offset; i < end; i++) {
+        const { profileName, entry } = entries[matchedIndices[i]];
+        const metadata = entry.metadata;
+        items.push(
+          toSearchItem(
+            {
+              id: entry.id,
+              title: metadata?.title ?? entry.name.replace(/\.[^.]+$/, ""),
+              artist: metadata?.artist ?? profileName,
+              album: metadata?.album ?? profileName,
+              filePath: "",
+              fileName: entry.name,
+              duration: metadata?.duration ?? 0,
+              size: entry.sizeBytes ?? 0,
+              cover: null,
+              lyrics: null,
+              source: "network",
+              format: metadata?.format,
+              networkSource: { profileId: entry.profileId, entry }
+            },
+            { sourceName: "网络源", providerAvailable: true }
+          )
+        );
+      }
+      return { items, total };
+    }
+    return { toSearchItem, compareSearchItems, searchUnifiedLocalPage, searchUnifiedNetworkPage };
+  }
+  function createUnifiedMusicSearch(identity, sources) {
+    const { buildLogicalTracks, clampReliability, preferredSourceKey } = identity;
+    const { compareSearchItems, searchUnifiedLocalPage, searchUnifiedNetworkPage, toSearchItem } = sources;
+    async function unifiedSearchSongs(options) {
+      const query2 = options.query.trim();
+      const limit = Math.min(100, Math.max(1, Math.trunc(options.limit ?? 30) || 30));
+      const offset = Math.max(0, Math.trunc(options.offset ?? 0) || 0);
+      if (!query2) return { items: [], logicalItems: [], health: {}, total: 0, hasMore: false };
+      const local = options.localSource ? await options.localSource.search(query2, limit, offset, options.signal) : searchUnifiedLocalPage(options.localTracks, query2, limit, offset);
+      if (options.signal?.aborted) throw new DOMException("Search was cancelled", "AbortError");
+      const network = searchUnifiedNetworkPage(options.networkEntries ?? [], query2, limit, offset);
+      const health = {};
+      let total = local.total + network.total;
+      let hasMore = local.total > offset + limit || network.total > offset + limit;
+      const providerItems = (await Promise.all(
+        options.providers.map(async (provider) => {
+          const providerAvailable = provider.available !== false && provider.health?.available !== false;
+          const providerReliability = getProviderReliability(provider);
+          const searchable = provider.capabilities.includes("search");
+          const playbackUrlHealth = provider.health?.methodStats?.getPlaybackUrl;
+          const baseHealth = {
+            providerId: provider.id,
+            providerName: provider.name,
+            available: providerAvailable,
+            searchable,
+            resultCount: 0,
+            lastError: provider.health?.lastError ?? null,
+            pluginStatus: provider.health?.pluginStatus ?? null,
+            successRate: typeof provider.health?.successRate === "number" ? provider.health.successRate : null,
+            playbackUrlSuccessRate: typeof playbackUrlHealth?.successRate === "number" ? playbackUrlHealth.successRate : null,
+            playbackUrlLastError: playbackUrlHealth?.lastError ?? null,
+            lastCheckedAt: provider.health?.lastCheckedAt ?? null
+          };
+          health[provider.id] = baseHealth;
+          if (!query2 || !searchable || !providerAvailable) return [];
+          try {
+            const result = await options.searchProviderSongs(provider.id, query2, limit, offset);
+            baseHealth.resultCount = result.items.length;
+            total += result.total;
+            hasMore ||= result.total > offset + limit;
+            return result.items.slice(0, limit).map(
+              (track) => toSearchItem(track, {
+                sourceName: provider.name,
+                providerAvailable: true,
+                providerReliability,
+                source: provider.id
+              })
+            );
+          } catch (error) {
+            baseHealth.available = false;
+            baseHealth.lastError = error instanceof Error ? error.message : String(error);
+            return [];
+          }
+        })
+      )).flat();
+      await options.localSource?.confirm(local, options.signal);
+      if (options.signal?.aborted) throw new DOMException("Search was cancelled", "AbortError");
+      const rawItems = [...local.items, ...network.items, ...providerItems].sort(compareSearchItems);
+      const preparedQuery = prepareSearchQuery(query2);
+      const logicalItems = buildLogicalMusicItemsFromSearchItems(rawItems);
+      const isPreferred = (track) => preferredSourceKey(track) === versionSourceKey(track);
+      const scoreTrack = (track) => scoreTrackSearchRelevance(track, preparedQuery, {
+        searchFileName: true,
+        signals: options.getSearchSignals?.(track) ?? extractTrackSearchSignals(track)
+      }).total;
+      const groupMetaByTrack = /* @__PURE__ */ new Map();
+      const groupMeta = /* @__PURE__ */ new Map();
+      for (const group of logicalItems) {
+        let preferred = false;
+        let maxScore = -Infinity;
+        for (const variant of group.variants) {
+          if (isPreferred(variant.track)) preferred = true;
+          const s = scoreTrack(variant.track);
+          if (s > maxScore) maxScore = s;
+        }
+        const meta = { preferred, score: Number.isFinite(maxScore) ? maxScore : 0 };
+        groupMeta.set(group, meta);
+        for (const variant of group.variants) {
+          groupMetaByTrack.set(variant.track, meta);
+        }
+      }
+      logicalItems.sort((left, right) => {
+        const leftMeta = groupMeta.get(left);
+        const rightMeta = groupMeta.get(right);
+        return Number(rightMeta.preferred) - Number(leftMeta.preferred) || rightMeta.score - leftMeta.score || compareSearchItems(
+          { kind: "track", ...left.variants[0] },
+          { kind: "track", ...right.variants[0] }
+        );
+      });
+      const items = [...rawItems].sort((left, right) => {
+        const leftMeta = groupMetaByTrack.get(left.track);
+        const rightMeta = groupMetaByTrack.get(right.track);
+        const leftPref = leftMeta ? leftMeta.preferred : isPreferred(left.track);
+        const rightPref = rightMeta ? rightMeta.preferred : isPreferred(right.track);
+        const leftScore = leftMeta ? leftMeta.score : scoreTrack(left.track);
+        const rightScore = rightMeta ? rightMeta.score : scoreTrack(right.track);
+        return Number(rightPref) - Number(leftPref) || rightScore - leftScore || compareSearchItems(left, right);
+      });
+      return {
+        items,
+        logicalItems,
+        health,
+        total,
+        hasMore,
+        ..."libraryRevision" in local ? { libraryRevision: local.libraryRevision } : {}
+      };
+    }
+    function buildLogicalMusicItems(tracks2) {
+      return buildLogicalMusicItemsFromSearchItems(
+        tracks2.map(
+          (track) => toSearchItem(track, {
+            sourceName: getTrackSource(track) === "local" ? "本地音乐" : getTrackSource(track),
+            providerAvailable: true
+          })
+        )
+      );
+    }
+    function buildLogicalMusicItemsFromSearchItems(searchItems) {
+      return buildLogicalTracks(searchItems);
+    }
+    function getProviderReliability(provider) {
+      const playbackUrlSuccessRate = provider.health?.methodStats?.getPlaybackUrl?.successRate;
+      if (typeof playbackUrlSuccessRate === "number") return clampReliability(playbackUrlSuccessRate);
+      if (typeof provider.health?.successRate === "number")
+        return clampReliability(provider.health.successRate);
+      return provider.available === false || provider.health?.available === false ? 0 : 1;
+    }
+    return { unifiedSearchSongs, buildLogicalMusicItems };
+  }
+  async function searchUnifiedCollections(options) {
+    const assertActive = () => {
+      if (options.signal?.aborted) throw new DOMException("Search was cancelled", "AbortError");
+    };
+    assertActive();
+    const sources = [{ ...options.local, name: "本地音乐", search: options.searchLocal, local: true }];
+    let total = options.local.total;
+    const results = await Promise.allSettled(
+      options.providers.map((provider) => options.search(provider.id, options.limit, 0))
+    );
+    assertActive();
+    let successes = 0;
+    const errors = [];
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index];
+      if (result.status === "fulfilled") {
+        successes++;
+        const provider = options.providers[index];
+        sources.push({
+          ...result.value,
+          name: provider.name,
+          search: (limit, offset) => options.search(provider.id, limit, offset),
+          local: false
+        });
+        total += result.value.total;
+      } else {
+        errors.push(
+          `${options.providers[index].name}：${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
+        );
+      }
+    }
+    if (errors.length && successes === 0 && total === 0) throw new Error(errors.join("；"));
+    let skip = options.offset;
+    let remaining = options.limit;
+    const windows = [];
+    for (const source of sources) {
+      if (remaining === 0) break;
+      if (skip >= source.total) {
+        skip -= source.total;
+        continue;
+      }
+      const start = skip;
+      skip = 0;
+      const count = Math.min(remaining, source.total - start);
+      remaining -= count;
+      windows.push({
+        name: source.name,
+        local: source.local,
+        items: start + count <= source.items.length ? Promise.resolve(source.items.slice(start, start + count)) : source.search(count, start).then((result) => result.items.slice(0, count))
+      });
+    }
+    const pages = await Promise.allSettled(windows.map((window) => window.items));
+    assertActive();
+    const items = [];
+    for (let index = 0; index < pages.length; index++) {
+      const page2 = pages[index];
+      if (page2.status === "fulfilled") items.push(...page2.value);
+      else if (windows[index].local) throw page2.reason;
+      else
+        errors.push(
+          `${windows[index].name}：${page2.reason instanceof Error ? page2.reason.message : String(page2.reason)}`
+        );
+    }
+    await options.confirmLocal?.();
+    assertActive();
+    if (errors.length) {
+      const message = errors.join("；");
+      if (pages.length && pages.every((page2) => page2.status === "rejected")) throw new Error(message);
+      options.reportError(message);
+    }
+    return { items, total };
+  }
+  const DEFAULT_GENRE_SEPARATORS = ",，;；、/";
+  const MAX_GENRE_SEPARATOR_COUNT = 32;
+  function normalizeGenreSeparators(value, fallback = DEFAULT_GENRE_SEPARATORS) {
+    if (typeof value !== "string") return fallback;
+    const separators = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const separator of value) {
+      if (separator === "\r" || separator === "\n" || separator === "	") continue;
+      if (seen.has(separator)) continue;
+      seen.add(separator);
+      separators.push(separator);
+      if (separators.length >= MAX_GENRE_SEPARATOR_COUNT) break;
+    }
+    return separators.length > 0 ? separators.join("") : fallback;
+  }
+  function splitGenreValues(value, separators = DEFAULT_GENRE_SEPARATORS) {
+    const source = value?.trim();
+    if (!source) return [];
+    const separatorSet = new Set(normalizeGenreSeparators(separators));
+    const values = [];
+    const seen = /* @__PURE__ */ new Set();
+    let current = "";
+    function appendCurrent() {
+      const genre = current.trim();
+      current = "";
+      if (!genre) return;
+      const normalized = genre.toLocaleLowerCase();
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      values.push(genre);
+    }
+    for (const character of source) {
+      if (separatorSet.has(character)) {
+        appendCurrent();
+      } else {
+        current += character;
+      }
+    }
+    appendCurrent();
+    return values;
+  }
+  function normalizeReleaseDate(value) {
+    const text2 = typeof value === "number" && Number.isInteger(value) ? String(value) : typeof value === "string" ? value.trim() : "";
+    const match = /^(\d{4})(?:([-/])(\d{2})(?:\2(\d{2}))?)?(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):?(\d{2}))?)?$/.exec(
+      text2
+    );
+    if (!match) return void 0;
+    const year = Number(match[1]);
+    if (year < 1) return void 0;
+    const month = match[3] ? Number(match[3]) : void 0;
+    const day = match[4] ? Number(match[4]) : void 0;
+    if (match[5] !== void 0 && (day === void 0 || Number(match[5]) > 23 || Number(match[6]) > 59 || Number(match[7] ?? 0) > 59 || Number(match[8] ?? 0) > 23 || Number(match[9] ?? 0) > 59))
+      return void 0;
+    if (month !== void 0 && (month < 1 || month > 12)) return void 0;
+    if (day !== void 0) {
+      const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+      const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      if (day < 1 || day > days[month - 1]) return void 0;
+    }
+    return [match[1], match[3], match[4]].filter(Boolean).join("-");
+  }
+  function resolveAlbumReleaseDate(tracks2) {
+    const dates = tracks2.flatMap((track) => {
+      const date = normalizeReleaseDate(track.releaseDate);
+      return date ? [date] : [];
+    });
+    const years = /* @__PURE__ */ new Map();
+    for (const date of dates) years.set(date.slice(0, 4), (years.get(date.slice(0, 4)) ?? 0) + 1);
+    let selectedYear;
+    let yearCount = 0;
+    for (const [year, count] of years) {
+      if (count > yearCount) {
+        selectedYear = year;
+        yearCount = count;
+      }
+    }
+    if (!selectedYear) return void 0;
+    const counts = /* @__PURE__ */ new Map();
+    for (const date of dates) {
+      if (date.startsWith(selectedYear)) counts.set(date, (counts.get(date) ?? 0) + 1);
+    }
+    let selected;
+    let selectedCount = 0;
+    for (const [date, count] of counts) {
+      if (!selected || date.length > selected.length || date.length === selected.length && count > selectedCount) {
+        selected = date;
+        selectedCount = count;
+      }
+    }
+    return selected;
+  }
+  function buildDerivedCollections(tracks2, folderPaths, genreSeparators) {
+    const artistMap = /* @__PURE__ */ new Map();
+    const albumMap = /* @__PURE__ */ new Map();
+    const genreMap = /* @__PURE__ */ new Map();
+    function addToGroup(map, key, track, artist) {
+      let group = map.get(key);
+      if (!group) {
+        group = { tracks: [], cover: null, artist };
+        map.set(key, group);
+      }
+      group.tracks.push(track);
+      if (!group.cover && track.cover) group.cover = track.cover;
+      if (!group.coverSource && track.coverSource) group.coverSource = track.coverSource;
+    }
+    for (const track of tracks2) {
+      for (const artistName of libraryArtistNames(track)) addToGroup(artistMap, artistName, track);
+      addToGroup(albumMap, getAlbumIdentity(track), track, track.albumArtist || track.artist);
+      const genreNames = splitGenreValues(track.genre, genreSeparators);
+      if (genreNames.length === 0) {
+        addToGroup(genreMap, "未知流派", track);
+      } else {
+        for (const genreName of genreNames) addToGroup(genreMap, genreName, track);
+      }
+    }
+    function toNamedCollections(groups) {
+      return Array.from(groups.entries()).map(([name, group]) => ({
+        name,
+        trackCount: group.tracks.length,
+        tracks: group.tracks,
+        cover: group.cover,
+        ...group.coverSource !== void 0 ? { coverSource: group.coverSource } : {}
+      })).sort((a, b) => a.name.localeCompare(b.name, "zh"));
+    }
+    const artists = toNamedCollections(artistMap);
+    const mergedAlbumMap = mergeAlbumGroupsByReleaseEvidence(albumMap);
+    const albums = Array.from(mergedAlbumMap.entries()).map(([id2, group]) => {
+      const ordered = [...group.tracks].sort(compareAlbumTrackOrder);
+      const coverTrack = ordered.find((track) => track.cover) ?? ordered.find((track) => track.coverSource);
+      return {
+        id: id2,
+        name: ordered[0]?.album || "未知专辑",
+        trackCount: ordered.length,
+        tracks: ordered,
+        cover: coverTrack?.cover ?? null,
+        coverSource: coverTrack?.coverSource,
+        releaseDate: resolveAlbumReleaseDate(ordered),
+        artist: resolveAlbumArtist(ordered)
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name, "zh") || (a.id ?? "").localeCompare(b.id ?? ""));
+    const genres = toNamedCollections(genreMap);
+    const configuredFolderPaths = deduplicateLibraryPaths([...folderPaths]);
+    const folderGroups = /* @__PURE__ */ new Map();
+    const ensureFolderGroup = (folderPath) => {
+      const normalized = normalizeLibraryPath(folderPath);
+      if (!normalized || folderGroups.has(normalized)) return;
+      folderGroups.set(normalized, {
+        folderPath,
+        normalized,
+        tracks: [],
+        cover: null
+      });
+    };
+    const addTrackToFolderGroup = (group, track) => {
+      if (!group) return;
+      group.tracks.push(track);
+      if (!group.cover && track.cover) group.cover = track.cover;
+      if (!group.coverSource && track.coverSource) group.coverSource = track.coverSource;
+    };
+    for (const root of configuredFolderPaths) ensureFolderGroup(root);
+    for (const track of tracks2) {
+      const directory = getCollectionDirectory(track.filePath, track.dir, configuredFolderPaths);
+      for (const ancestor of getCollectionAncestors(directory, configuredFolderPaths)) {
+        ensureFolderGroup(ancestor);
+        addTrackToFolderGroup(folderGroups.get(normalizeLibraryPath(ancestor)), track);
+      }
+    }
+    const folders = [...folderGroups.values()].map(({ folderPath, normalized, tracks: folderTracks, cover, coverSource }) => {
+      const name = normalized.split(/[\\/]/).pop() || folderPath;
+      return {
+        name,
+        path: folderPath,
+        trackCount: folderTracks.length,
+        tracks: folderTracks,
+        cover,
+        ...coverSource !== void 0 ? { coverSource } : {}
+      };
+    }).filter((f) => f.trackCount > 0).sort(
+      (a, b) => a.name.localeCompare(b.name, "zh") || (a.path ?? "").localeCompare(b.path ?? "")
+    );
+    return { artists, albums, genres, folders };
+  }
+  async function searchMusicCollections(options, query2, signal) {
+    signal.throwIfAborted();
+    const text2 = query2.query.trim(), limit = query2.limit ?? 30, offset = query2.offset ?? 0;
+    const method = query2.kind === "albums" ? "searchAlbums" : query2.kind === "artists" ? "searchArtists" : "searchPlaylists";
+    const assertCurrent = async (revision22) => {
+      signal.throwIfAborted();
+      if (revision22 === void 0) return;
+      const current = query2.kind === "playlists" ? options.playlists.getRevision() : options.loadJsonLibrary ? (await options.loadJsonLibrary()).revision : (await options.database.getMetadata()).revision;
+      signal.throwIfAborted();
+      if (revision22 !== current) throw stale$1();
+    };
+    const tag = (item, id2, name) => ({
+      ..."cover" in item ? { cover: publicCover(item.cover) } : {},
+      ..."picUrl" in item ? { picUrl: publicCover(item.picUrl) } : {},
+      kind: query2.kind,
+      id: item.id,
+      name: item.name,
+      providerId: id2,
+      providerName: name,
+      ..."trackCount" in item ? { trackCount: item.trackCount } : {},
+      ..."artist" in item ? { artist: item.artist } : {},
+      ..."albumSize" in item ? { albumSize: item.albumSize } : {},
+      ..."musicSize" in item ? { musicSize: item.musicSize } : {},
+      ..."publishTime" in item ? { publishTime: item.publishTime } : {},
+      ..."releaseType" in item ? { releaseType: item.releaseType } : {},
+      ..."isExplicit" in item ? { isExplicit: item.isExplicit } : {},
+      ..."playCount" in item ? { playCount: item.playCount } : {},
+      ..."creatorName" in item ? { creatorName: item.creatorName } : {},
+      ..."owned" in item ? { owned: item.owned } : {}
+    });
+    const providerSearch = async (id2, pageLimit, pageOffset) => {
+      const provider = options.providers().find((item) => item.id === id2);
+      if (!provider || provider.available === false || provider.health?.available === false || !provider.supportedMethods?.includes(method) || query2.kind === "albums" && !provider.capabilities.includes("search"))
+        throw new Error(`${provider?.name ?? id2} 的搜索不可用`);
+      const page22 = await options.searchProvider(id2, method, text2, pageLimit, pageOffset, signal);
+      signal.throwIfAborted();
+      return {
+        items: page22.items.slice(0, pageLimit).map((item) => tag(item, id2, provider.name)),
+        total: page22.total
+      };
+    };
+    const localSearch = async (pageLimit, pageOffset) => {
+      signal.throwIfAborted();
+      let page22;
+      if (query2.kind === "playlists")
+        page22 = options.playlists.searchLocal(text2, pageLimit, pageOffset);
+      else if (options.loadJsonLibrary) {
+        const library = await options.loadJsonLibrary();
+        const catalog = buildDerivedCollections(library.tracks, [], "");
+        const result = query2.kind === "albums" ? searchLocalStreamingAlbums(catalog.albums, text2, pageLimit, pageOffset) : searchLocalStreamingArtists(catalog.artists, text2, pageLimit, pageOffset);
+        page22 = {
+          items: "albums" in result ? result.albums : result.artists,
+          total: result.total,
+          revision: library.revision
+        };
+      } else {
+        const result = await options.database.queryCollections(query2.kind, {
+          search: text2,
+          collectionSearchMode: query2.kind === "albums" ? "albumTerms" : "artistName",
+          limit: pageLimit,
+          offset: pageOffset,
+          contentRevision: query2.contentRevision
+        });
+        page22 = {
+          items: result.items.map(
+            (item) => query2.kind === "albums" ? {
+              id: item.id,
+              name: item.name,
+              artist: item.artist,
+              cover: item.cover,
+              trackCount: item.trackCount
+            } : { id: item.id, name: item.name, picUrl: item.cover, musicSize: item.trackCount }
+          ),
+          total: result.total,
+          revision: result.revision
+        };
+      }
+      const expected = query2.kind === "playlists" ? query2.playlistsRevision : query2.contentRevision;
+      if (expected !== void 0 && expected !== page22.revision) throw stale$1();
+      signal.throwIfAborted();
+      return {
+        items: page22.items.map((item) => tag(item, "local", "本地音乐")),
+        total: page22.total,
+        revision: page22.revision
+      };
+    };
+    let warning;
+    let page2, revision2;
+    if (!text2) page2 = { items: [], total: 0 };
+    else if (query2.providerId) page2 = await providerSearch(query2.providerId, limit, offset);
+    else if (query2.scope === "local") {
+      const local = await localSearch(limit, offset);
+      revision2 = local.revision;
+      await assertCurrent(revision2);
+      page2 = local;
+    } else {
+      const local = await localSearch(limit, 0);
+      revision2 = local.revision;
+      page2 = await searchUnifiedCollections({
+        local,
+        limit,
+        offset,
+        signal,
+        searchLocal: async (pageLimit, pageOffset) => {
+          const next = await localSearch(pageLimit, pageOffset);
+          if (next.revision !== revision2) throw stale$1();
+          return next;
+        },
+        providers: options.providers().filter(
+          (item) => item.available !== false && item.health?.available !== false && item.supportedMethods?.includes(method) && (query2.kind !== "albums" || item.capabilities.includes("search"))
+        ),
+        search: providerSearch,
+        confirmLocal: () => assertCurrent(revision2),
+        reportError: (message) => {
+          warning = projectCoreError(message);
+        }
+      });
+    }
+    signal.throwIfAborted();
+    return {
+      items: page2.items,
+      total: page2.total,
+      offset,
+      hasMore: page2.total > offset + limit,
+      ...revision2 === void 0 ? {} : query2.kind === "playlists" ? { playlistsRevision: revision2 } : { libraryRevision: revision2 },
+      ...warning ? { warning } : {}
+    };
+  }
+  function stale$1() {
+    return Object.assign(new Error("曲库或歌单在搜索期间发生变化，请重新搜索"), {
+      code: "STALE_REVISION"
+    });
+  }
+  function publicCover(value) {
+    return value && (value.startsWith("cover://") || value.startsWith("twilight-media://image/")) ? value : null;
+  }
+  class CoreMusicSearchService {
+    options;
+    sources;
+    search;
+    lifetime = new AbortController();
+    work = /* @__PURE__ */ new Set();
+    constructor(options) {
+      this.options = options;
+      this.sources = createUnifiedSearchSources(
+        options.versions.identity,
+        () => options.versions.getRevision()
+      );
+      this.search = createUnifiedMusicSearch(options.versions.identity, this.sources);
+    }
+    /** Raw identities stay in Core for matching/repair; public pages are projections. */
+    songs(query2, signal) {
+      return this.request((current) => this.run(query2, current), signal);
+    }
+    collections(query2, signal) {
+      return this.request(
+        (current) => searchMusicCollections(
+          {
+            ...this.options,
+            searchProvider: this.options.searchCollectionProvider
+          },
+          query2,
+          current
+        ),
+        signal
+      );
+    }
+    request(run, signal) {
+      const current = AbortSignal.any([this.lifetime.signal, ...signal ? [signal] : []]);
+      const work = run(current);
+      this.work.add(work);
+      void work.then(
+        () => this.work.delete(work),
+        () => this.work.delete(work)
+      );
+      return work;
+    }
+    async page(query2, signal) {
+      const result = await this.songs(query2, signal);
+      const variant = (item) => ({
+        ...item,
+        track: projectCoreTrack(item.track)
+      });
+      return {
+        ...result,
+        items: result.items.map((item) => ({ ...item, track: projectCoreTrack(item.track) })),
+        logicalItems: result.logicalItems.map((item) => ({
+          ...item,
+          preferredTrack: projectCoreTrack(item.preferredTrack),
+          variants: item.variants.map(variant)
+        })),
+        health: Object.fromEntries(
+          Object.entries(result.health).map(([id2, health]) => [
+            id2,
+            {
+              ...health,
+              lastError: health.lastError ? projectCoreError(health.lastError) : null,
+              playbackUrlLastError: health.playbackUrlLastError ? projectCoreError(health.playbackUrlLastError) : null
+            }
+          ])
+        )
+      };
+    }
+    async run(query2, signal) {
+      signal.throwIfAborted();
+      const versionsRevision = this.options.versions.getRevision();
+      const networkRevision = query2.scope === "local" ? void 0 : this.options.network.revision();
+      const fence = () => {
+        signal.throwIfAborted();
+        if (versionsRevision !== this.options.versions.getRevision() || query2.versionsRevision !== void 0 && query2.versionsRevision !== versionsRevision || networkRevision !== void 0 && (networkRevision !== this.options.network.revision() || query2.networkRevision !== void 0 && query2.networkRevision !== networkRevision))
+          throw stale("音源或版本偏好已变化，请重新搜索");
+      };
+      fence();
+      const localSource = {
+        search: async (text22, limit, offset) => {
+          if (!normalizeSearchText(text22)) return { items: [], total: 0 };
+          const unified = query2.scope !== "local";
+          let page2;
+          if (this.options.loadJsonLibrary) {
+            const library = await this.options.loadJsonLibrary();
+            if (unified)
+              page2 = this.sources.searchUnifiedLocalPage(library.tracks, text22, limit, offset);
+            else {
+              const q = normalizeSearchText(text22);
+              const items = [];
+              let total = 0;
+              for (const track of library.tracks) {
+                if (!getTrackSearchBlob(track).includes(q)) continue;
+                if (total >= offset && items.length < limit)
+                  items.push(
+                    this.sources.toSearchItem(track, {
+                      sourceName: "本地音乐",
+                      providerAvailable: true
+                    })
+                  );
+                total++;
+              }
+              page2 = { items, total };
+            }
+            page2.libraryRevision = library.revision;
+          } else {
+            const preferences = this.options.versions.snapshot().tracks.versions.flatMap(
+              (version) => version.preferredSource ? [version.preferredSource] : []
+            );
+            const found = await this.options.database.queryTracks({
+              search: text22,
+              ...unified ? {
+                searchFileName: true,
+                sort: "unifiedSearch",
+                preferredSources: preferences
+              } : { sort: "playlist" },
+              limit,
+              offset,
+              contentRevision: query2.contentRevision
+            });
+            page2 = {
+              items: found.tracks.map(
+                (track) => this.sources.toSearchItem(libraryTrack(track), {
+                  sourceName: "本地音乐",
+                  providerAvailable: true
+                })
+              ),
+              total: found.total,
+              libraryRevision: found.revision
+            };
+          }
+          if (query2.contentRevision !== void 0 && query2.contentRevision !== page2.libraryRevision)
+            throw stale("曲库在搜索期间发生变化，请重新搜索");
+          fence();
+          return { ...page2, preferenceRevision: versionsRevision };
+        },
+        confirm: async (page2) => {
+          fence();
+          if (page2.libraryRevision === void 0) return;
+          const revision2 = this.options.loadJsonLibrary ? (await this.options.loadJsonLibrary()).revision : (await this.options.database.getMetadata()).revision;
+          if (revision2 !== page2.libraryRevision) throw stale("曲库在搜索期间发生变化，请重新搜索");
+          fence();
+        }
+      };
+      const text2 = query2.query.trim();
+      if (query2.scope === "local") {
+        const page2 = await localSource.search(text2, query2.limit ?? 30, query2.offset ?? 0);
+        await localSource.confirm(page2);
+        return {
+          items: page2.items,
+          logicalItems: this.options.versions.identity.buildLogicalTracks(page2.items),
+          health: {},
+          total: page2.total,
+          hasMore: page2.total > (query2.offset ?? 0) + (query2.limit ?? 30),
+          libraryRevision: page2.libraryRevision,
+          versionsRevision,
+          ...!this.options.loadJsonLibrary && page2.libraryRevision !== void 0 ? {
+            playbackQuery: {
+              search: text2,
+              sort: "playlist",
+              contentRevision: page2.libraryRevision
+            }
+          } : {}
+        };
+      }
+      const networkEntries = text2 ? await this.options.network.search(text2, signal) : [];
+      fence();
+      const result = await this.search.unifiedSearchSongs({
+        query: text2,
+        limit: query2.limit,
+        offset: query2.offset,
+        localTracks: [],
+        localSource,
+        signal,
+        networkEntries,
+        providers: this.options.providers(),
+        searchProviderSongs: (id2, keywords, limit = 30, offset = 0) => this.options.searchProvider(id2, keywords, limit, offset, signal)
+      });
+      fence();
+      return {
+        ...result,
+        versionsRevision,
+        ...networkRevision !== void 0 ? { networkRevision } : {}
+      };
+    }
+    async shutdown() {
+      this.lifetime.abort(new Error("Core search shutting down"));
+      await Promise.allSettled([...this.work]);
+    }
+  }
+  function stale(message) {
+    return Object.assign(new Error(message), { code: "STALE_REVISION" });
   }
   function normalizeAutoMixStemDevice(value) {
     return value === "gpu" || value === "cpu" ? value : "auto";
@@ -15861,21 +23290,6 @@ var TwilightPortableCore = (function(exports) {
   function cloneLyricsPresetConfig(value) {
     return { activeId: value.activeId, custom: value.custom.map(cloneLyricsPreset) };
   }
-  const DEFAULT_GENRE_SEPARATORS = ",，;；、/";
-  const MAX_GENRE_SEPARATOR_COUNT = 32;
-  function normalizeGenreSeparators(value, fallback = DEFAULT_GENRE_SEPARATORS) {
-    if (typeof value !== "string") return fallback;
-    const separators = [];
-    const seen = /* @__PURE__ */ new Set();
-    for (const separator of value) {
-      if (separator === "\r" || separator === "\n" || separator === "	") continue;
-      if (seen.has(separator)) continue;
-      seen.add(separator);
-      separators.push(separator);
-      if (separators.length >= MAX_GENRE_SEPARATOR_COUNT) break;
-    }
-    return separators.length > 0 ? separators.join("") : fallback;
-  }
   function normalizeEqualizerAutoPreamp(value) {
     if (!value) return null;
     const enabled = value.enabled === true;
@@ -17069,6 +24483,151 @@ var TwilightPortableCore = (function(exports) {
         offset: 0
       };
     }
+    async queryCollections(kind, query2 = {}) {
+      const groups = /* @__PURE__ */ new Map();
+      for (const track of this.tracks.values()) {
+        if (kind === "albums") {
+          const albumName = String(track.album || "Unknown Album").trim() || "Unknown Album";
+          const key = `album:${albumName.toLowerCase()}`;
+          const existing = groups.get(key);
+          if (existing) {
+            existing.trackCount += 1;
+            existing.duration += Number(track.duration) || 0;
+          } else {
+            groups.set(key, {
+              id: key,
+              name: albumName,
+              artist: String(track.artist || "Unknown Artist"),
+              trackCount: 1,
+              duration: Number(track.duration) || 0,
+              cover: typeof track.cover === "string" ? track.cover : null
+            });
+          }
+        } else if (kind === "artists") {
+          const artistName = String(track.artist || "Unknown Artist").trim() || "Unknown Artist";
+          const key = `artist:${artistName.toLowerCase()}`;
+          const existing = groups.get(key);
+          if (existing) {
+            existing.trackCount += 1;
+            existing.duration += Number(track.duration) || 0;
+          } else {
+            groups.set(key, {
+              id: key,
+              name: artistName,
+              trackCount: 1,
+              duration: Number(track.duration) || 0,
+              cover: typeof track.cover === "string" ? track.cover : null
+            });
+          }
+        } else if (kind === "genres") {
+          const genreName = String(track.genre || "Unknown Genre").trim() || "Unknown Genre";
+          const key = `genre:${genreName.toLowerCase()}`;
+          const existing = groups.get(key);
+          if (existing) {
+            existing.trackCount += 1;
+            existing.duration += Number(track.duration) || 0;
+          } else {
+            groups.set(key, {
+              id: key,
+              name: genreName,
+              trackCount: 1,
+              duration: Number(track.duration) || 0,
+              cover: null
+            });
+          }
+        }
+      }
+      let items = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+      if (query2.search) {
+        const q = query2.search.toLowerCase();
+        items = items.filter(
+          (item) => item.name.toLowerCase().includes(q) || item.artist && item.artist.toLowerCase().includes(q)
+        );
+      }
+      const offset = Math.max(0, query2.offset ?? 0);
+      const limit = Math.max(1, query2.limit ?? LIBRARY_PAGE_SIZE);
+      return {
+        revision: this.libraryRevisionCounter,
+        total: items.length,
+        offset,
+        items: items.slice(offset, offset + limit),
+        letterOffsets: {}
+      };
+    }
+    playlistViews = /* @__PURE__ */ new Map();
+    async syncPlaylistView(sync) {
+      if (sync.kind === "drop") {
+        this.playlistViews.delete(sync.id);
+        return { id: sync.id, sequence: 0, count: 0, committed: false };
+      }
+      if (sync.kind === "begin") {
+        this.playlistViews.set(sync.id, { sequence: 0, committed: false, entries: [] });
+        return { id: sync.id, sequence: 0, count: 0, committed: false };
+      }
+      const current = this.playlistViews.get(sync.id) ?? {
+        sequence: 0,
+        committed: false,
+        entries: []
+      };
+      if (sync.kind === "groups") {
+        current.sequence = sync.sequence;
+        this.playlistViews.set(sync.id, current);
+        return {
+          id: sync.id,
+          sequence: sync.sequence,
+          count: sync.groups.length,
+          committed: false
+        };
+      }
+      if (sync.kind === "append") {
+        current.sequence = sync.sequence;
+        current.entries.push(...sync.entries);
+        this.playlistViews.set(sync.id, current);
+        return {
+          id: sync.id,
+          sequence: sync.sequence,
+          count: current.entries.length,
+          committed: false
+        };
+      }
+      current.sequence = sync.sequence;
+      current.committed = true;
+      this.playlistViews.set(sync.id, current);
+      return {
+        id: sync.id,
+        sequence: sync.sequence,
+        count: current.entries.length,
+        committed: true
+      };
+    }
+    async lookupTracksByPaths(paths) {
+      const byPath = /* @__PURE__ */ new Map();
+      for (const track of this.tracks.values()) {
+        if (track.filePath) {
+          byPath.set(track.filePath, track.id);
+        }
+      }
+      return {
+        revision: this.libraryRevisionCounter,
+        ids: paths.map((p) => byPath.get(p) ?? null)
+      };
+    }
+    async lookupPlaylistTracks(request) {
+      const byPath = /* @__PURE__ */ new Map();
+      for (const track of this.tracks.values()) {
+        if (track.filePath) {
+          byPath.set(track.filePath, track.id);
+        }
+      }
+      return {
+        revision: this.libraryRevisionCounter,
+        ids: request.entries.map((entry) => {
+          if (entry.id && this.tracks.has(entry.id)) return entry.id;
+          if (entry.filePath && byPath.has(entry.filePath)) return byPath.get(entry.filePath);
+          return null;
+        })
+      };
+    }
   }
   class PortablePlaybackEngineAdapter {
     port;
@@ -17281,10 +24840,23 @@ var TwilightPortableCore = (function(exports) {
     };
     const queueStore = new PortableQueueAndLibraryStore(options.initialTracks ?? []);
     const engineAdapter = new PortablePlaybackEngineAdapter(options.audioEngine);
-    let storeRevisionNum = 0;
     let storeRevisionToken = null;
     let currentSettings;
     let settingsRevision = 0;
+    let currentSessionData = null;
+    let sessionDataRevision = 0;
+    let bookmarksDoc = clonePlaybackBookmarksDocument(
+      DEFAULT_PLAYBACK_BOOKMARKS
+    );
+    let bookmarksRevision = 0;
+    let lyricsDoc = cloneLyricsManagementDocument(
+      DEFAULT_LYRICS_MANAGEMENT
+    );
+    let lyricsRevision = 0;
+    let playlistsState = [];
+    let playlistsRevision = 0;
+    let envelopeLoaded = false;
+    let envelopeLoadPromise = null;
     const settingsEnv = {
       platform,
       defaultCachePath: "/portable/cache",
@@ -17297,84 +24869,391 @@ var TwilightPortableCore = (function(exports) {
       },
       settingsEnv
     );
-    const sessionRepository = {
-      async load() {
+    const ensureEnvelopeLoaded = async () => {
+      if (envelopeLoaded) return;
+      if (envelopeLoadPromise) return envelopeLoadPromise;
+      envelopeLoadPromise = (async () => {
         const stored = await options.sessionStore.load();
         if (!stored) {
-          storeRevisionNum = 0;
           storeRevisionToken = null;
-          return null;
+          sessionDataRevision = 0;
+          envelopeLoaded = true;
+          return;
         }
         storeRevisionToken = stored.revision;
         const parsedNum = Number.parseInt(stored.revision, 10);
-        storeRevisionNum = Number.isFinite(parsedNum) && parsedNum > 0 ? parsedNum : 1;
+        const initialRev = Number.isFinite(parsedNum) && parsedNum > 0 ? parsedNum : 1;
         const parsed = JSON.parse(stored.payloadJson);
         queueStore.importState(parsed);
+        currentSessionData = parsed.session ?? null;
+        sessionDataRevision = currentSessionData ? initialRev : 0;
         if (parsed.settings) {
           currentSettings = normalizeAppSettings(
             { ...currentSettings, ...parsed.settings },
             settingsEnv
           );
         }
+        if (parsed.bookmarks) {
+          bookmarksDoc = clonePlaybackBookmarksDocument(parsed.bookmarks);
+          bookmarksRevision = initialRev;
+        }
+        if (parsed.lyricsManagement) {
+          lyricsDoc = cloneLyricsManagementDocument(parsed.lyricsManagement);
+          lyricsRevision = initialRev;
+        }
+        if (Array.isArray(parsed.playlists)) {
+          playlistsState = structuredClone(parsed.playlists);
+          playlistsRevision = initialRev;
+        }
+        envelopeLoaded = true;
+      })().finally(() => {
+        envelopeLoadPromise = null;
+      });
+      return envelopeLoadPromise;
+    };
+    let persistChain = Promise.resolve();
+    const persistEnvelope = async () => {
+      const work = persistChain.catch(() => void 0).then(async () => {
+        const exported = queueStore.exportState();
+        const envelope = {
+          session: currentSessionData,
+          queues: exported.queues,
+          tracks: exported.tracks,
+          settings: currentSettings,
+          bookmarks: bookmarksDoc,
+          lyricsManagement: lyricsDoc,
+          playlists: playlistsState
+        };
+        const res = await options.sessionStore.save(
+          JSON.stringify(envelope),
+          storeRevisionToken
+        );
+        if (!res.ok) {
+          throw Object.assign(new Error("Session store CAS conflict"), {
+            code: "STALE_REVISION"
+          });
+        }
+        storeRevisionToken = res.revision;
+      });
+      persistChain = work;
+      return work;
+    };
+    const sessionRepository = {
+      async load() {
+        await ensureEnvelopeLoaded();
+        if (sessionDataRevision === 0 && !currentSessionData) {
+          return null;
+        }
         return {
-          revision: storeRevisionNum,
-          data: parsed.session ?? null
+          revision: sessionDataRevision,
+          data: currentSessionData
         };
       },
       async save(sessionData, expectedRevision) {
-        if (expectedRevision !== storeRevisionNum) {
+        if (expectedRevision !== sessionDataRevision) {
           throw Object.assign(new Error("Session store revision conflict"), {
             code: "STALE_REVISION"
           });
         }
-        const exported = queueStore.exportState();
-        const envelope = {
-          session: sessionData,
-          queues: exported.queues,
-          tracks: exported.tracks,
-          settings: currentSettings
-        };
-        const res = await options.sessionStore.save(
-          JSON.stringify(envelope),
-          storeRevisionToken
-        );
-        if (!res.ok) {
-          throw Object.assign(new Error("Session store CAS conflict"), {
-            code: "STALE_REVISION"
-          });
-        }
-        storeRevisionToken = res.revision;
-        storeRevisionNum++;
-        return { revision: storeRevisionNum };
+        currentSessionData = sessionData;
+        sessionDataRevision++;
+        await persistEnvelope();
+        return { revision: sessionDataRevision };
       },
       async clear(expectedRevision) {
-        if (expectedRevision !== storeRevisionNum) {
+        if (expectedRevision !== sessionDataRevision) {
           throw Object.assign(new Error("Session store revision conflict"), {
             code: "STALE_REVISION"
           });
         }
-        const exported = queueStore.exportState();
-        const envelope = {
-          session: null,
-          queues: exported.queues,
-          tracks: exported.tracks,
-          settings: currentSettings
-        };
-        const res = await options.sessionStore.save(
-          JSON.stringify(envelope),
-          storeRevisionToken
-        );
-        if (!res.ok) {
-          throw Object.assign(new Error("Session store CAS conflict"), {
-            code: "STALE_REVISION"
-          });
-        }
-        storeRevisionToken = res.revision;
-        storeRevisionNum++;
-        return { revision: storeRevisionNum };
+        currentSessionData = null;
+        sessionDataRevision++;
+        await persistEnvelope();
+        return { revision: sessionDataRevision };
       }
     };
     let appInstance = null;
+    const stateApi = {
+      coreStateOpen: async () => {
+      },
+      coreStateStatus: async () => ({
+        complete: true,
+        id: null,
+        manifest: null,
+        nextBatch: 0,
+        counts: emptyCoreStateCounts()
+      }),
+      coreStateRead: async (domain) => ({
+        domain,
+        revision: 0,
+        rows: [],
+        next: null
+      }),
+      coreStateWrite: async () => 1,
+      coreMigrationBegin: async (id2, manifest) => ({
+        complete: false,
+        id: id2,
+        manifest,
+        nextBatch: 0,
+        counts: emptyCoreStateCounts()
+      }),
+      coreMigrationStage: async (id2, batch) => ({
+        complete: false,
+        id: id2,
+        manifest: null,
+        nextBatch: batch + 1,
+        counts: emptyCoreStateCounts()
+      }),
+      coreMigrationCommit: async (id2) => ({
+        complete: true,
+        id: id2,
+        manifest: null,
+        nextBatch: 0,
+        counts: emptyCoreStateCounts()
+      }),
+      coreMigrationAbort: async () => {
+      }
+    };
+    const recordingVersions = new CoreRecordingVersions(
+      {
+        coreStateRead: stateApi.coreStateRead,
+        coreVersionsReplace: async (_doc, expectedRevision) => expectedRevision + 1
+      },
+      () => appInstance?.changed(),
+      () => crypto.randomUUID()
+    );
+    const bookmarksService = new CoreBookmarksService({
+      repository: {
+        load: async () => {
+          await ensureEnvelopeLoaded();
+          return {
+            version: 2,
+            revision: bookmarksRevision,
+            savedAt: new Date(clock.nowUnixMs()).toISOString(),
+            data: clonePlaybackBookmarksDocument(bookmarksDoc)
+          };
+        },
+        save: async (document, expectedRevision) => {
+          if (expectedRevision !== bookmarksRevision) {
+            throw Object.assign(new Error("Bookmarks revision conflict"), {
+              code: "STALE_REVISION"
+            });
+          }
+          bookmarksDoc = clonePlaybackBookmarksDocument(document);
+          bookmarksRevision++;
+          await persistEnvelope();
+          return {
+            version: 2,
+            revision: bookmarksRevision,
+            savedAt: new Date(clock.nowUnixMs()).toISOString(),
+            data: clonePlaybackBookmarksDocument(bookmarksDoc)
+          };
+        }
+      },
+      now: () => clock.nowUnixMs(),
+      newId: () => crypto.randomUUID(),
+      changed: () => appInstance?.changed(),
+      failed: (error) => {
+        if (error instanceof Error) options.onFatalError?.(error);
+      }
+    });
+    const portableTimers = {
+      setTimeout(callback, delay) {
+        return scheduler.schedule(delay, callback);
+      },
+      clearTimeout(handle) {
+        if (handle && typeof handle.cancel === "function") {
+          handle.cancel();
+        }
+      }
+    };
+    const lyricsService = new CoreLyricsService({
+      repository: {
+        load: async () => {
+          await ensureEnvelopeLoaded();
+          return {
+            version: 2,
+            revision: lyricsRevision,
+            savedAt: new Date(clock.nowUnixMs()).toISOString(),
+            data: cloneLyricsManagementDocument(lyricsDoc)
+          };
+        },
+        save: async (document, expectedRevision) => {
+          if (expectedRevision !== lyricsRevision) {
+            throw Object.assign(new Error("Lyrics revision conflict"), {
+              code: "STALE_REVISION"
+            });
+          }
+          lyricsDoc = cloneLyricsManagementDocument(document);
+          lyricsRevision++;
+          await persistEnvelope();
+          return {
+            version: 2,
+            revision: lyricsRevision,
+            savedAt: new Date(clock.nowUnixMs()).toISOString(),
+            data: cloneLyricsManagementDocument(lyricsDoc)
+          };
+        }
+      },
+      now: () => clock.nowUnixMs(),
+      changed: () => appInstance?.changed(),
+      timers: portableTimers,
+      sources: {
+        loadLocalLyrics: async (track, kind, signal) => {
+          if (options.lyrics?.loadLocalLyrics) {
+            return options.lyrics.loadLocalLyrics(track, kind, signal);
+          }
+          if (kind === "original") return track.lyrics ?? null;
+          if (kind === "translated") return track.translatedLyrics ?? null;
+          if (kind === "romanized") return track.romanizedLyrics ?? null;
+          return null;
+        },
+        resolveProviderLyrics: async (_track, _signal) => ({
+          lyrics: null,
+          translatedLyrics: null
+        }),
+        loadAmlTtml: async (_id, _signal) => null,
+        loadOnlineLyrics: async (query2, signal) => {
+          if (options.lyrics?.loadOnlineLyrics) {
+            return options.lyrics.loadOnlineLyrics(query2, signal);
+          }
+          return null;
+        },
+        getAppSettings: () => ({ value: currentSettings })
+      },
+      search: async (track, signal) => {
+        if (options.lyrics?.searchOnlineLyrics) {
+          return options.lyrics.searchOnlineLyrics(track, signal);
+        }
+        return {
+          query: {
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            durationSeconds: track.duration
+          },
+          candidates: [],
+          best: null
+        };
+      },
+      importDraft: async () => null,
+      exportDraft: async () => null,
+      failed: (error) => {
+        if (error instanceof Error) options.onFatalError?.(error);
+      }
+    });
+    const playlistsService = new CorePlaylistService({
+      runtime: {
+        now: () => clock.nowUnixMs(),
+        newId: () => crypto.randomUUID(),
+        clone: (val) => structuredClone(val),
+        notify: () => appInstance?.changed(),
+        identity: recordingVersions.identity,
+        versions: {
+          ensure: () => {
+          },
+          revision: () => recordingVersions.getRevision()
+        },
+        repository: {
+          load: async () => {
+            await ensureEnvelopeLoaded();
+            return {
+              version: 2,
+              revision: playlistsRevision,
+              savedAt: new Date(clock.nowUnixMs()).toISOString(),
+              data: structuredClone(playlistsState)
+            };
+          },
+          save: async (data, expectedRevision) => {
+            if (expectedRevision !== playlistsRevision) {
+              throw Object.assign(new Error("Playlists revision conflict"), {
+                code: "STALE_REVISION"
+              });
+            }
+            playlistsState = structuredClone(data);
+            playlistsRevision++;
+            await persistEnvelope();
+            return {
+              version: 2,
+              revision: playlistsRevision,
+              savedAt: new Date(clock.nowUnixMs()).toISOString(),
+              data: structuredClone(playlistsState)
+            };
+          }
+        }
+      },
+      database: {
+        lookupTracksByPaths: (paths) => queueStore.lookupTracksByPaths(paths),
+        getTracksByIds: (ids) => queueStore.getTracksByIds(ids),
+        getMetadata: () => queueStore.getMetadata(),
+        queryTracks: (query2) => queueStore.queryTracks(query2),
+        queryCollections: (kind, query2) => queueStore.queryCollections(kind, query2),
+        syncPlaylistView: (sync) => queueStore.syncPlaylistView(sync)
+      },
+      versions: recordingVersions,
+      changed: () => appInstance?.changed()
+    });
+    const resolveSeedItems = async (items) => {
+      return items.map((item) => {
+        if ("track" in item && item.track) {
+          const record2 = toTrackRecord(item.track);
+          return {
+            id: record2.id,
+            snapshot: record2,
+            localSnapshot: record2
+          };
+        }
+        const id2 = String(item.id ?? "");
+        return { id: id2 };
+      });
+    };
+    const resolvePlaylistInputs = createPlaylistInputResolver(
+      (inputs) => resolveSeedItems(inputs),
+      {
+        getTracksByIds: (ids) => queueStore.getTracksByIds(ids)
+      }
+    );
+    const playlistSubmission = new CorePlaylistSubmission({
+      playlists: playlistsService,
+      resolve: resolvePlaylistInputs,
+      newId: () => `pl-sub-${crypto.randomUUID().slice(0, 8)}`,
+      schedule: (callback, delayMs) => {
+        const handle = scheduler.schedule(delayMs, callback);
+        return () => handle.cancel();
+      }
+    });
+    const presentationService = new CorePlayerPresentationService({
+      artwork: async (track) => ({
+        cover: track.cover ?? null,
+        coverSource: track.coverSource ?? null
+      }),
+      playlists: {
+        isFavorite: (track) => playlistsService.isFavorite(track),
+        toggleFavorite: (track, assertCurrent) => playlistsService.toggleFavorite(track, assertCurrent)
+      },
+      supportedMethods: () => [],
+      callProvider: async () => null,
+      changed: () => appInstance?.changed(),
+      failed: (error) => {
+        if (error instanceof Error) options.onFatalError?.(error);
+      }
+    });
+    const searchService = new CoreMusicSearchService({
+      database: {
+        queryTracks: (query2) => queueStore.queryTracks(query2),
+        getMetadata: () => queueStore.getMetadata(),
+        queryCollections: (kind, query2) => queueStore.queryCollections(kind, query2)
+      },
+      versions: recordingVersions,
+      providers: () => [],
+      playlists: playlistsService,
+      searchCollectionProvider: async () => ({ items: [], total: 0 }),
+      searchProvider: async () => ({ items: [], total: 0 }),
+      network: {
+        revision: () => 0,
+        search: async () => []
+      }
+    });
     const settingsRepository = {
       issue: null,
       read: () => structuredClone(currentSettings),
@@ -17463,6 +25342,11 @@ var TwilightPortableCore = (function(exports) {
         const handle = scheduler.schedule(delayMs, callback);
         return () => handle.cancel();
       },
+      observePlayback: (track, info) => {
+        bookmarksService.observe(track, info);
+        lyricsService.observe(track);
+        presentationService.observe(track);
+      },
       changed: () => {
         appInstance?.changed();
       },
@@ -17472,93 +25356,35 @@ var TwilightPortableCore = (function(exports) {
     });
     const queueSubmission = new CoreQueueSubmission({
       playback: playbackSession,
-      resolve: async (items) => {
-        return items.map((item) => {
-          if ("track" in item && item.track) {
-            const record2 = toTrackRecord(item.track);
-            return {
-              id: record2.id,
-              snapshot: record2,
-              localSnapshot: record2
-            };
-          }
-          const id2 = String(item.id ?? "");
-          return { id: id2 };
-        });
-      },
+      resolve: (items) => resolveSeedItems(items),
       newId: () => `sub-${crypto.randomUUID().slice(0, 8)}`,
       schedule: (callback, delayMs) => {
         const handle = scheduler.schedule(delayMs, callback);
         return () => handle.cancel();
       }
     });
-    const stateApi = {
-      coreStateOpen: async () => {
-      },
-      coreStateStatus: async () => ({
-        complete: true,
-        id: null,
-        manifest: null,
-        nextBatch: 0,
-        counts: emptyCoreStateCounts()
-      }),
-      coreStateRead: async (domain) => ({
-        domain,
-        revision: 0,
-        rows: [],
-        next: null
-      }),
-      coreStateWrite: async () => 1,
-      coreMigrationBegin: async (id2, manifest) => ({
-        complete: false,
-        id: id2,
-        manifest,
-        nextBatch: 0,
-        counts: emptyCoreStateCounts()
-      }),
-      coreMigrationStage: async (id2, batch) => ({
-        complete: false,
-        id: id2,
-        manifest: null,
-        nextBatch: batch + 1,
-        counts: emptyCoreStateCounts()
-      }),
-      coreMigrationCommit: async (id2) => ({
-        complete: true,
-        id: id2,
-        manifest: null,
-        nextBatch: 0,
-        counts: emptyCoreStateCounts()
-      }),
-      coreMigrationAbort: async () => {
-      }
-    };
     const application = new CoreApplication({
       epoch,
       playback: playbackSession,
       queueSubmission,
+      playlistSubmission,
+      resolvePlaylistInputs,
+      presentation: presentationService,
       settings: settingsService,
+      bookmarks: bookmarksService,
+      lyrics: lyricsService,
+      recordingVersions,
+      playlists: playlistsService,
+      search: searchService,
       libraryRevision: () => queueStore.getLibraryRevision(),
       library: {
         getMetadata: () => queueStore.getMetadata(),
         queryTracks: (query2) => queueStore.queryTracks(query2),
         readLibraryQueue: (id2, offset, limit, opts) => queueStore.readQueue(id2, offset, limit, opts),
-        queryCollections: async () => ({
-          revision: queueStore.getLibraryRevision(),
-          total: 0,
-          offset: 0,
-          items: [],
-          letterOffsets: {}
-        }),
+        queryCollections: (kind, query2) => queueStore.queryCollections(kind, query2),
         getTracksByIds: (ids) => queueStore.getTracksByIds(ids),
-        lookupTracksByPaths: async (paths) => ({
-          revision: queueStore.getLibraryRevision(),
-          ids: paths.map(() => null)
-        }),
-        lookupPlaylistTracks: async ({ entries }) => ({
-          revision: queueStore.getLibraryRevision(),
-          ids: entries.map(() => null)
-        })
+        lookupTracksByPaths: (paths) => queueStore.lookupTracksByPaths(paths),
+        lookupPlaylistTracks: (req) => queueStore.lookupPlaylistTracks(req)
       },
       state: stateApi,
       scan: {
