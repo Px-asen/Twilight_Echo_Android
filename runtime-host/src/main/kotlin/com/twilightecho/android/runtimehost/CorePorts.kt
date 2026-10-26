@@ -185,6 +185,70 @@ interface AudioEnginePort : Closeable {
 }
 
 /**
+ * NetworkClientPort (Section 8.1 & 14.5):
+ * Host-controlled HTTP execution for metadata, lyrics, and provider API queries.
+ */
+@Serializable
+data class NetworkRequestSpec(
+    val url: String,
+    val method: String = "GET",
+    val headers: Map<String, String> = emptyMap(),
+    val bodyUtf8: String? = null,
+    val contentType: String = "application/json; charset=utf-8"
+)
+
+@Serializable
+data class NetworkResponsePayload(
+    val statusCode: Int,
+    val headers: Map<String, String> = emptyMap(),
+    val bodyUtf8: String = ""
+)
+
+interface NetworkClientPort {
+    suspend fun execute(spec: NetworkRequestSpec): ResourceAccessResult<NetworkResponsePayload>
+
+    companion object {
+        val NoOp: NetworkClientPort = object : NetworkClientPort {
+            override suspend fun execute(spec: NetworkRequestSpec): ResourceAccessResult<NetworkResponsePayload> =
+                ResourceAccessResult.Error(
+                    code = CoreErrorCode.UNSUPPORTED_CAPABILITY,
+                    message = "NetworkClientPort is not configured on this host"
+                )
+        }
+    }
+}
+
+/**
+ * AudioDevicePort (Sections 11.7 & 13.6):
+ * Reports real hardware output route (speaker, wired headset, Bluetooth, USB DAC) and
+ * actual supported sample rates / bit depth so Music Core never fabricates Hi-Fi labels.
+ */
+@Serializable
+data class AudioDeviceRouteInfo(
+    val deviceId: Int = 0,
+    val deviceName: String = "Android Speaker",
+    val routeType: String = "speaker", // "speaker" | "wired_headset" | "bluetooth" | "usb_dac"
+    val outputBackend: String = "oboe",
+    val supportedSampleRates: List<Int> = listOf(48000),
+    val activeSampleRate: Int = 48000,
+    val maxBitDepth: Int = 16,
+    val isUsbHiResCapable: Boolean = false
+)
+
+interface AudioDevicePort : Closeable {
+    fun getActiveRoute(): AudioDeviceRouteInfo
+    fun listOutputDevices(): List<AudioDeviceRouteInfo> = listOf(getActiveRoute())
+    fun subscribeRouteChanges(listener: (AudioDeviceRouteInfo) -> Unit): CancelHandle = CancelHandle {}
+    override fun close() {}
+
+    companion object {
+        val Default: AudioDevicePort = object : AudioDevicePort {
+            override fun getActiveRoute(): AudioDeviceRouteInfo = AudioDeviceRouteInfo()
+        }
+    }
+}
+
+/**
  * Aggregated Ports bundle injected into `QuickJsRuntimeHost`.
  */
 data class CoreHostPorts(
@@ -192,5 +256,7 @@ data class CoreHostPorts(
     val scheduler: SchedulerPort,
     val sessionStore: SessionStorePort,
     val resourceAccess: ResourceAccessPort,
-    val audioEngine: AudioEnginePort
+    val audioEngine: AudioEnginePort,
+    val networkClient: NetworkClientPort = NetworkClientPort.NoOp,
+    val audioDevice: AudioDevicePort = AudioDevicePort.Default
 )

@@ -43,6 +43,8 @@ class CorePortBridge(
                 "sessionStore" -> handleSessionStorePort(methodName, args)
                 "resourceAccess" -> handleResourceAccessPort(methodName, args)
                 "audioEngine" -> handleAudioEnginePort(methodName, args)
+                "network" -> handleNetworkPort(methodName, args)
+                "audioDevice" -> handleAudioDevicePort(methodName)
                 else -> encodeError(
                     CoreErrorCode.UNSUPPORTED_CAPABILITY,
                     "Unknown host port: $portName.$methodName"
@@ -215,6 +217,51 @@ class CorePortBridge(
             }
             else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown audioEngine method: $methodName")
         }
+    }
+
+    private fun handleNetworkPort(methodName: String, args: JsonObject): String = runBlocking {
+        when (methodName) {
+            "request", "execute" -> {
+                val url = args["url"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (url.isBlank()) {
+                    return@runBlocking encodeError(CoreErrorCode.INVALID_REQUEST, "Network request url is required")
+                }
+                val method = args["method"]?.jsonPrimitive?.contentOrNull ?: "GET"
+                val bodyUtf8 = args["bodyUtf8"]?.jsonPrimitive?.contentOrNull
+                val contentType = args["contentType"]?.jsonPrimitive?.contentOrNull
+                    ?: "application/json; charset=utf-8"
+                val headersObj = args["headers"] as? JsonObject
+                val headers = headersObj?.entries?.associate { (k, v) ->
+                    k to (v.jsonPrimitive.contentOrNull ?: "")
+                }.orEmpty()
+                val spec = NetworkRequestSpec(
+                    url = url,
+                    method = method,
+                    headers = headers,
+                    bodyUtf8 = bodyUtf8,
+                    contentType = contentType
+                )
+                when (val res = ports.networkClient.execute(spec)) {
+                    is ResourceAccessResult.Ok -> encodeOk(
+                        json.parseToJsonElement(json.encodeToString(res.value))
+                    )
+                    is ResourceAccessResult.Error -> encodeError(res.code, res.message, res.retryable)
+                }
+            }
+            else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown network method: $methodName")
+        }
+    }
+
+    private fun handleAudioDevicePort(methodName: String): String = when (methodName) {
+        "getActiveRoute" -> {
+            val route = ports.audioDevice.getActiveRoute()
+            encodeOk(json.parseToJsonElement(json.encodeToString(route)))
+        }
+        "listOutputDevices" -> {
+            val devices = ports.audioDevice.listOutputDevices()
+            encodeOk(json.parseToJsonElement(json.encodeToString(devices)))
+        }
+        else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown audioDevice method: $methodName")
     }
 
     fun dispatchAudioEventToCore(event: AudioEvent, notifyJs: (String) -> Unit) {

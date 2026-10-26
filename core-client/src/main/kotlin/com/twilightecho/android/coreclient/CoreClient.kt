@@ -61,6 +61,8 @@ interface CoreClient {
     suspend fun removeTrackFromPlaylist(playlistId: String, trackId: String): Result<CoreResponseEnvelope>
     suspend fun setEqConfig(config: CoreEqConfigView): Result<CoreResponseEnvelope>
     suspend fun getEqConfig(): Result<CoreEqConfigView>
+    suspend fun fetchOnlineLyrics(trackId: String? = null, customUrl: String? = null): Result<CoreLyricsView>
+    suspend fun importLrcLyrics(trackId: String, lrcText: String): Result<CoreResponseEnvelope>
 }
 
 class DefaultCoreClient(
@@ -493,6 +495,52 @@ class DefaultCoreClient(
         return runCatching {
             json.decodeFromJsonElement<CoreEqConfigView>(response.value)
         }
+    }
+
+    override suspend fun fetchOnlineLyrics(
+        trackId: String?,
+        customUrl: String?
+    ): Result<CoreLyricsView> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            trackId?.let { put("trackId", JsonPrimitive(it)) }
+            customUrl?.let { put("url", JsonPrimitive(it)) }
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            epoch = currentEpoch,
+            kind = "query",
+            name = "lyrics.fetchOnline",
+            payload = payload
+        )
+        val response = transport.sendRequest(envelope)
+        if (!response.ok || response.value == null) {
+            val msg = response.error?.message ?: "Failed to execute lyrics.fetchOnline"
+            return Result.failure(IllegalStateException(msg))
+        }
+        return runCatching {
+            json.decodeFromJsonElement<CoreLyricsView>(response.value)
+        }
+    }
+
+    override suspend fun importLrcLyrics(
+        trackId: String,
+        lrcText: String
+    ): Result<CoreResponseEnvelope> {
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            put("trackId", JsonPrimitive(trackId))
+            put("lrcText", JsonPrimitive(lrcText))
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            commandId = "cmd-${UUID.randomUUID()}",
+            epoch = currentEpoch,
+            kind = "command",
+            name = "lyrics.importLrc",
+            payload = payload
+        )
+        return sendEnvelopeAndExtractResponse(envelope)
     }
 
     private suspend fun sendEnvelopeAndExtractResponse(

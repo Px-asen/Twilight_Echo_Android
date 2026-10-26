@@ -184,4 +184,72 @@ class QuickJsRuntimeHostPhase3Test {
         host2.close()
         scope2.cancel()
     }
+
+    @Test
+    fun `QuickJsRuntimeHost integrates AudioDevicePort USB DAC route and NetworkClientPort online LRC lyrics`() = runBlocking {
+        val fakeAudio = FakeAudioEngine()
+        val fakeNetwork = object : NetworkClientPort {
+            override suspend fun execute(spec: NetworkRequestSpec): ResourceAccessResult<NetworkResponsePayload> {
+                return ResourceAccessResult.Ok(
+                    NetworkResponsePayload(
+                        statusCode = 200,
+                        bodyUtf8 = """{"syncedLyrics":"[00:02.00]Crystal USB DAC stream\n[00:02.00]纯净 USB 解码输出\n[00:09.50]Bit-perfect horizon"}"""
+                    )
+                )
+            }
+        }
+        val fakeAudioDevice = object : AudioDevicePort {
+            override fun getActiveRoute(): AudioDeviceRouteInfo = AudioDeviceRouteInfo(
+                deviceId = 42,
+                deviceName = "Topping G5 USB DAC",
+                routeType = "usb_dac",
+                outputBackend = "oboe",
+                supportedSampleRates = listOf(44100, 48000, 96000, 192000),
+                activeSampleRate = 192000,
+                maxBitDepth = 32,
+                isUsbHiResCapable = true
+            )
+        }
+        val hostPorts = CoreHostPorts(
+            clock = FakeClock(),
+            scheduler = FakeScheduler(),
+            sessionStore = FakeSessionStore(),
+            resourceAccess = FakeResourceAccess(),
+            audioEngine = fakeAudio,
+            networkClient = fakeNetwork,
+            audioDevice = fakeAudioDevice
+        )
+
+        val host = QuickJsRuntimeHost(appContext = null, ports = hostPorts)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val client = DefaultCoreClient(
+            identity = CoreClientIdentity.androidPrimaryClient(),
+            transport = host,
+            scope = scope
+        )
+
+        host.start()
+        val snapRes = client.reconcileState()
+        assertTrue(snapRes.isSuccess)
+        val playback = client.snapshot.value?.playback
+        assertNotNull(playback)
+        assertEquals("oboe:usb_dac", playback!!.outputBackend)
+        assertEquals(192000, playback.actualSampleRate)
+        assertEquals(32, playback.actualBitDepth)
+        assertTrue(playback.outputPerfect)
+
+        // Fetch online LRC lyrics via NetworkClientPort
+        val onlineLyricsRes = client.fetchOnlineLyrics(trackId = "track-twilight-overture")
+        assertTrue(onlineLyricsRes.isSuccess)
+        val lyrics = onlineLyricsRes.getOrThrow()
+        assertEquals("online", lyrics.source)
+        assertTrue(lyrics.synced)
+        assertEquals(2, lyrics.lines.size)
+        assertEquals(2000L, lyrics.lines[0].timeMs)
+        assertEquals("Crystal USB DAC stream", lyrics.lines[0].text)
+        assertEquals("纯净 USB 解码输出", lyrics.lines[0].translation)
+
+        host.close()
+        scope.cancel()
+    }
 }

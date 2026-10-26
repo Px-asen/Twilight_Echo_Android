@@ -26101,6 +26101,45 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       { timeMs: 5800, text: "Warm analog waves meet the winter solstice wind", translation: "温暖的模拟声浪邂逅冬至的微风" }
     ]
   };
+  function parseEmbeddedLrcLines(rawText) {
+    const rawLines = String(rawText || "").replace(/\r\n/g, "\n").split("\n");
+    const timedMap = /* @__PURE__ */ new Map();
+    const untimed = [];
+    const timeRegex = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
+    for (const rawLine of rawLines) {
+      const trimmed = rawLine.trim();
+      if (!trimmed) continue;
+      const matches = [...trimmed.matchAll(timeRegex)];
+      if (matches.length === 0) {
+        if (!/^\[(ti|ar|al|by|offset):/i.test(trimmed)) {
+          untimed.push({ timeMs: untimed.length * 4e3, text: trimmed, translation: null });
+        }
+        continue;
+      }
+      const textContent = trimmed.replace(timeRegex, "").trim();
+      if (!textContent) continue;
+      for (const match of matches) {
+        const minutes = Number(match[1] || 0);
+        const seconds = Number(match[2] || 0);
+        const fracRaw = match[3] || "0";
+        const millis = fracRaw.length === 1 ? Number(fracRaw) * 100 : fracRaw.length === 2 ? Number(fracRaw) * 10 : Number(fracRaw.slice(0, 3));
+        const timeMs = minutes * 6e4 + seconds * 1e3 + millis;
+        const existing = timedMap.get(timeMs);
+        if (existing) {
+          if (!existing.translation) {
+            existing.translation = textContent;
+          }
+        } else {
+          timedMap.set(timeMs, { timeMs, text: textContent, translation: null });
+        }
+      }
+    }
+    if (timedMap.size > 0) {
+      const sorted = [...timedMap.values()].sort((a, b) => a.timeMs - b.timeMs);
+      return { synced: true, lines: sorted };
+    }
+    return { synced: false, lines: untimed };
+  }
   function createInitialEmbeddedBridgeState() {
     return {
       epoch: "epoch-js-default",
@@ -26120,6 +26159,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       bookmarks: [],
       playlists: [],
       eqConfig: createDefaultEqConfig(),
+      customLyrics: {},
       latestAudioSnapshot: {
         engineSessionId: "tae-embedded-session",
         state: "paused",
@@ -26169,6 +26209,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return Date.now();
   }
   function buildEmbeddedLyricsForTrack(track) {
+    const custom = activeEmbeddedHostState.customLyrics[track.id];
+    if (custom && Array.isArray(custom.lines) && custom.lines.length > 0) {
+      return {
+        trackId: track.id,
+        source: custom.source || "online",
+        synced: custom.synced !== false,
+        lines: [...custom.lines]
+      };
+    }
     const demoLines = EMBEDDED_DEMO_LYRICS[track.id];
     if (demoLines) {
       return {
@@ -26191,6 +26240,44 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ]
     };
   }
+  function fetchEmbeddedOnlineLyrics(trackId, title, artist, album, customUrl) {
+    const st = activeEmbeddedHostState;
+    const targetUrl = customUrl && customUrl.trim().length > 0 ? customUrl.trim() : `https://lrclib.net/api/get?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}&album_name=${encodeURIComponent(album)}`;
+    const netRes = invokeHostBridgePort("network", "request", {
+      url: targetUrl,
+      method: "GET",
+      timeoutMs: 8e3,
+      headers: { Accept: "application/json, text/plain;q=0.9" }
+    });
+    const rawBody = netRes && netRes.ok && netRes.value ? typeof netRes.value.bodyUtf8 === "string" ? netRes.value.bodyUtf8 : typeof netRes.value.bodyText === "string" ? netRes.value.bodyText : null : null;
+    if (rawBody !== null) {
+      const status = Number(netRes?.value?.statusCode ?? 200);
+      const bodyText = rawBody.trim();
+      if (status >= 200 && status < 300 && bodyText.length > 0) {
+        let rawLrc = bodyText;
+        try {
+          const parsedJson = JSON.parse(bodyText);
+          if (parsedJson && typeof parsedJson === "object") {
+            rawLrc = String(parsedJson.syncedLyrics || parsedJson.plainLyrics || parsedJson.lrc || "");
+          }
+        } catch {
+        }
+        const parsedLrc = parseEmbeddedLrcLines(rawLrc);
+        if (parsedLrc.lines.length > 0) {
+          const record2 = {
+            trackId,
+            source: "online",
+            synced: parsedLrc.synced,
+            lines: parsedLrc.lines
+          };
+          st.customLyrics[trackId] = record2;
+          st.lyricsRevision += 1;
+          return record2;
+        }
+      }
+    }
+    return null;
+  }
   function buildEmbeddedSnapshot(errorMessage = null) {
     const st = activeEmbeddedHostState;
     const currentTrack = st.queueTracks[st.currentQueueIndex] ?? null;
@@ -26206,6 +26293,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     } : null;
     const audio = st.latestAudioSnapshot;
     const mappedState = audio.state === "playing" || audio.state === "paused" || audio.state === "loading" || audio.state === "error" ? audio.state : "stopped";
+    const routeRes = invokeHostBridgePort("audioDevice", "getActiveRoute", {});
+    const activeRoute = routeRes && routeRes.ok && routeRes.value ? routeRes.value : null;
+    const resolvedOutputBackend = activeRoute && typeof activeRoute.routeType === "string" && activeRoute.routeType !== "speaker" ? `${audio.outputBackend || "oboe"}:${activeRoute.routeType}` : audio.outputBackend || "oboe";
+    const routeSampleRate = activeRoute && typeof activeRoute.activeSampleRate === "number" && activeRoute.activeSampleRate > 0 ? activeRoute.activeSampleRate : activeRoute && typeof activeRoute.sampleRateHz === "number" && activeRoute.sampleRateHz > 0 ? activeRoute.sampleRateHz : null;
+    const resolvedActualSampleRate = routeSampleRate || audio.actualSampleRate || 96e3;
+    const routeBitDepth = activeRoute && typeof activeRoute.maxBitDepth === "number" && activeRoute.maxBitDepth > 0 ? activeRoute.maxBitDepth : activeRoute && typeof activeRoute.bitDepth === "number" && activeRoute.bitDepth > 0 ? activeRoute.bitDepth : null;
+    const resolvedActualBitDepth = routeBitDepth || audio.actualBitDepth || 24;
+    const routeBitPerfectCapable = activeRoute && typeof activeRoute.isUsbHiResCapable === "boolean" ? activeRoute.isUsbHiResCapable : activeRoute && typeof activeRoute.isBitPerfectCapable === "boolean" ? activeRoute.isBitPerfectCapable : true;
     const collections = aggregateLibraryCollections(st.libraryTracks);
     return {
       protocolVersion: st.protocolVersion,
@@ -26228,11 +26323,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         sourceSampleRate: audio.sampleRate || currentTrack?.sampleRate || 96e3,
         sourceBitDepth: audio.bitDepth || currentTrack?.bitDepth || 24,
         sourceChannels: audio.channels || 2,
-        outputBackend: audio.outputBackend || "oboe",
-        actualSampleRate: audio.actualSampleRate || 96e3,
-        actualBitDepth: audio.actualBitDepth || 24,
+        outputBackend: resolvedOutputBackend,
+        actualSampleRate: resolvedActualSampleRate,
+        actualBitDepth: resolvedActualBitDepth,
         actualChannels: 2,
-        outputPerfect: st.eqConfig.bitPerfect && !st.eqConfig.enabled,
+        outputPerfect: Boolean(st.eqConfig.bitPerfect && !st.eqConfig.enabled && routeBitPerfectCapable),
         gaplessActive: st.eqConfig.gapless,
         preloadReady: upcomingTrack !== null,
         upcomingTrack
@@ -26310,6 +26405,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ensurePortableRuntimeGlobals,
     aggregateLibraryCollections,
     applyEqConfigPatch,
+    parseEmbeddedLrcLines,
     bootHost(rawConfig) {
       const cfg = typeof rawConfig === "string" && rawConfig.trim().length > 0 ? JSON.parse(rawConfig) : typeof rawConfig === "object" && rawConfig !== null ? rawConfig : {};
       activeEmbeddedHostState = createInitialEmbeddedBridgeState();
@@ -26332,6 +26428,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         } catch {
         }
       }
+      if (activeEmbeddedHostState.queueTracks.length > 0) {
+        invokeHostBridgePort("audioEngine", "loadQueue", {
+          tracks: activeEmbeddedHostState.queueTracks,
+          startIndex: activeEmbeddedHostState.currentQueueIndex
+        });
+      }
+      const snapRes = invokeHostBridgePort("audioEngine", "getSnapshot", {});
+      if (snapRes && snapRes.ok && snapRes.value && typeof snapRes.value === "object") {
+        activeEmbeddedHostState.latestAudioSnapshot = {
+          ...activeEmbeddedHostState.latestAudioSnapshot,
+          ...snapRes.value
+        };
+      }
+      publishEmbeddedEvent();
       return JSON.stringify({
         ok: true,
         epoch: activeEmbeddedHostState.epoch,
@@ -26431,6 +26541,51 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             epoch: st.epoch,
             ok: true,
             value: structuredClone(st.eqConfig)
+          });
+        }
+        if (name === "audioDevice.getRoute") {
+          const routeRes = invokeHostBridgePort("audioDevice", "getActiveRoute", {});
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: routeRes && routeRes.ok && routeRes.value ? routeRes.value : {
+              routeId: "route-speaker-default",
+              routeType: "speaker",
+              productName: "Built-in Speaker",
+              sampleRateHz: 48e3,
+              bitDepth: 16,
+              channels: 2,
+              isBitPerfectCapable: false
+            }
+          });
+        }
+        if (name === "audioDevice.listDevices") {
+          const listRes = invokeHostBridgePort("audioDevice", "listOutputDevices", {});
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: listRes && listRes.ok && Array.isArray(listRes.value) ? listRes.value : []
+          });
+        }
+        if (name === "lyrics.fetchOnline") {
+          const targetId = payload.trackId ? String(payload.trackId) : null;
+          const targetTrack = targetId ? st.libraryTracks.find((t) => t.id === targetId) || st.queueTracks.find((t) => t.id === targetId) : st.queueTracks[st.currentQueueIndex];
+          const resolvedTrackId = targetTrack?.id || targetId || "unknown";
+          const fetched = fetchEmbeddedOnlineLyrics(
+            resolvedTrackId,
+            String(payload.title || targetTrack?.title || ""),
+            String(payload.artist || targetTrack?.artist || ""),
+            String(payload.album || targetTrack?.album || ""),
+            typeof payload.url === "string" ? payload.url : void 0
+          );
+          const fallbackView = targetTrack ? buildEmbeddedLyricsForTrack(targetTrack) : { trackId: resolvedTrackId, source: "none", synced: false, lines: [] };
+          return JSON.stringify({
+            requestId,
+            epoch: st.epoch,
+            ok: true,
+            value: fetched || fallbackView
           });
         }
         return JSON.stringify({
@@ -26708,6 +26863,37 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             configJson: JSON.stringify(st.eqConfig)
           });
           persistEmbeddedSession();
+          break;
+        }
+        case "lyrics.fetchOnline": {
+          const targetId = payload.trackId ? String(payload.trackId) : null;
+          const targetTrack = targetId ? st.libraryTracks.find((t) => t.id === targetId) || st.queueTracks.find((t) => t.id === targetId) : st.queueTracks[st.currentQueueIndex];
+          const resolvedTrackId = targetTrack?.id || targetId || "unknown";
+          fetchEmbeddedOnlineLyrics(
+            resolvedTrackId,
+            String(payload.title || targetTrack?.title || ""),
+            String(payload.artist || targetTrack?.artist || ""),
+            String(payload.album || targetTrack?.album || ""),
+            typeof payload.url === "string" ? payload.url : void 0
+          );
+          break;
+        }
+        case "lyrics.importLrc": {
+          const activeTrack = st.queueTracks[st.currentQueueIndex];
+          const trackId = String(payload.trackId || activeTrack?.id || "").trim();
+          const rawLrc = String(payload.lrcText || payload.content || "").trim();
+          if (trackId && rawLrc) {
+            const parsedLrc = parseEmbeddedLrcLines(rawLrc);
+            if (parsedLrc.lines.length > 0) {
+              st.customLyrics[trackId] = {
+                trackId,
+                source: "imported",
+                synced: parsedLrc.synced,
+                lines: parsedLrc.lines
+              };
+              st.lyricsRevision += 1;
+            }
+          }
           break;
         }
         case "playback.platformInterruption": {

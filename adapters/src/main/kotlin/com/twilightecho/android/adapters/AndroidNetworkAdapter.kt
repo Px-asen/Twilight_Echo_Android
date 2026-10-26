@@ -1,11 +1,13 @@
 package com.twilightecho.android.adapters
 
 import com.twilightecho.android.coreclient.CoreErrorCode
+import com.twilightecho.android.runtimehost.NetworkClientPort
+import com.twilightecho.android.runtimehost.NetworkRequestSpec
+import com.twilightecho.android.runtimehost.NetworkResponsePayload
 import com.twilightecho.android.runtimehost.ResourceAccessResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Headers.Companion.toHeaders
@@ -18,22 +20,6 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
-@Serializable
-data class NetworkRequestSpec(
-    val url: String,
-    val method: String = "GET",
-    val headers: Map<String, String> = emptyMap(),
-    val bodyUtf8: String? = null,
-    val contentType: String = "application/json; charset=utf-8"
-)
-
-@Serializable
-data class NetworkResponsePayload(
-    val statusCode: Int,
-    val headers: Map<String, String>,
-    val bodyUtf8: String
-)
-
 /**
  * Android network adapter backed by OkHttp (Section 14.5).
  * Supports coroutine cancellation, bounded timeouts, and structured error mapping.
@@ -41,10 +27,10 @@ data class NetworkResponsePayload(
  */
 class AndroidNetworkAdapter internal constructor(
     private val httpClient: OkHttpClient
-) {
+) : NetworkClientPort {
     constructor() : this(defaultOkHttpClient())
 
-    suspend fun execute(spec: NetworkRequestSpec): ResourceAccessResult<NetworkResponsePayload> =
+    override suspend fun execute(spec: NetworkRequestSpec): ResourceAccessResult<NetworkResponsePayload> =
         withContext(Dispatchers.IO) {
             val requestBuilder = Request.Builder()
                 .url(spec.url)

@@ -1,6 +1,7 @@
 package com.twilightecho.android.playbackhost
 
 import android.content.Context
+import com.twilightecho.android.adapters.AndroidAudioDeviceAdapter
 import com.twilightecho.android.adapters.AndroidClockAdapter
 import com.twilightecho.android.adapters.AndroidMediaStoreScannerAdapter
 import com.twilightecho.android.adapters.AndroidNetworkAdapter
@@ -14,6 +15,7 @@ import com.twilightecho.android.nativeintegration.NativeAudioEngineAdapter
 import com.twilightecho.android.runtimehost.CoreHostPorts
 import com.twilightecho.android.runtimehost.CoreRuntimeThreadDispatcher
 import com.twilightecho.android.runtimehost.QuickJsRuntimeHost
+import com.twilightecho.android.runtimehost.ResourceAccessResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -57,14 +59,25 @@ class AndroidPlaybackHost private constructor(
     val resourceAccessAdapter = AndroidResourceAccessAdapter(appContext)
     val mediaStoreScanner = AndroidMediaStoreScannerAdapter(appContext)
     val networkAdapter = AndroidNetworkAdapter()
-    val nativeAudioEngine = NativeAudioEngineAdapter(resourceAccess = resourceAccessAdapter)
+    val audioDeviceAdapter = AndroidAudioDeviceAdapter(
+        context = appContext,
+        onPhysicalDisconnectBrake = {
+            handlePlatformInterruption(PlatformInterruptionReason.AUDIO_BECOMING_NOISY)
+        }
+    )
+    val nativeAudioEngine = NativeAudioEngineAdapter(
+        resourceAccess = resourceAccessAdapter,
+        appContext = appContext
+    )
 
     private val hostPorts = CoreHostPorts(
         clock = clockAdapter,
         scheduler = clockAdapter,
         sessionStore = sessionStoreAdapter,
         resourceAccess = resourceAccessAdapter,
-        audioEngine = nativeAudioEngine
+        audioEngine = nativeAudioEngine,
+        networkClient = networkAdapter,
+        audioDevice = audioDeviceAdapter
     )
 
     val runtimeHost = QuickJsRuntimeHost(
@@ -125,6 +138,23 @@ class AndroidPlaybackHost private constructor(
     }
 
     /**
+     * Scans an authorized SAF directory tree (`content://...`) and synchronizes discovered audio tracks
+     * into Music Core, propagating `PERMISSION_EXPIRED` if the folder grant was revoked (Section 8.3).
+     */
+    suspend fun scanSafDirectoryAndSync(treeUriString: String): Result<Int> {
+        ensureStarted()
+        return when (val res = resourceAccessAdapter.scanSafDirectoryTree(treeUriString)) {
+            is ResourceAccessResult.Ok -> runCatching {
+                primaryCoreClient.syncLocalTracks(res.value).getOrThrow()
+                res.value.size
+            }
+            is ResourceAccessResult.Error -> Result.failure(
+                IllegalStateException("${res.code.name}: ${res.message}")
+            )
+        }
+    }
+
+    /**
      * Requests Android AudioFocus prior to user-initiated playback and forwards `Play` to Music Core.
      */
     suspend fun requestFocusAndPlay(positionSeconds: Double? = null) {
@@ -175,6 +205,7 @@ class AndroidPlaybackHost private constructor(
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             audioFocusCoordinator.close()
+            audioDeviceAdapter.close()
             runtimeHost.close()
             nativeAudioEngine.close()
             resourceAccessAdapter.close()

@@ -76,6 +76,7 @@ class QuickJsRuntimeHost(
     private var jsEngine: JsRuntimeEngine? = null
     private var portBridge: CorePortBridge? = null
     private var audioSubscription: CancelHandle? = null
+    private var routeSubscription: CancelHandle? = null
 
     // Authoritative core state mirror on the serial runtime thread
     private val epoch: String = "epoch-android-${UUID.randomUUID().toString().take(8)}"
@@ -91,6 +92,7 @@ class QuickJsRuntimeHost(
     private var favoriteTrackIds: LinkedHashSet<String> = linkedSetOf()
     private var bookmarks: MutableList<CoreBookmarkView> = mutableListOf()
     private var playlists: MutableList<CorePlaylistView> = mutableListOf()
+    private var customLyrics: MutableMap<String, CoreLyricsView> = linkedMapOf()
     private var eqConfig: CoreEqConfigView = CoreEqConfigView()
     private var currentQueueIndex: Int = 0
     private var currentPlayMode: PlayMode = PlayMode.SEQUENCE
@@ -143,6 +145,13 @@ class QuickJsRuntimeHost(
             audioSubscription = ports.audioEngine.subscribe { audioEvent ->
                 runtimeScope.launch {
                     handleNativeAudioEvent(audioEvent)
+                }
+            }
+
+            // Subscribe to hardware AudioDevicePort route changes and serialize onto runtime thread
+            routeSubscription = ports.audioDevice.subscribeRouteChanges {
+                runtimeScope.launch {
+                    handleNativeAudioEvent(AudioEvent.SnapshotUpdated(ports.audioEngine.getSnapshot()))
                 }
             }
 
@@ -304,6 +313,49 @@ class QuickJsRuntimeHost(
                     epoch = epoch,
                     ok = true,
                     value = json.encodeToJsonElement(eqConfig)
+                )
+            }
+            "audioDevice.getRoute" -> {
+                val route = ports.audioDevice.getActiveRoute()
+                CoreResponseEnvelope(
+                    requestId = envelope.requestId,
+                    epoch = epoch,
+                    ok = true,
+                    value = json.encodeToJsonElement(route)
+                )
+            }
+            "audioDevice.listDevices" -> {
+                val list = ports.audioDevice.listOutputDevices()
+                CoreResponseEnvelope(
+                    requestId = envelope.requestId,
+                    epoch = epoch,
+                    ok = true,
+                    value = json.encodeToJsonElement(list)
+                )
+            }
+            "lyrics.fetchOnline" -> {
+                val targetTrackId = envelope.payload["trackId"]?.jsonPrimitive?.contentOrNull
+                val targetTrack = if (targetTrackId != null) {
+                    libraryTracks.firstOrNull { it.id == targetTrackId }
+                        ?: queueTracks.firstOrNull { it.id == targetTrackId }
+                } else {
+                    queueTracks.getOrNull(currentQueueIndex)
+                }
+                val resolvedId = targetTrack?.id ?: targetTrackId ?: "unknown"
+                val fetched = fetchOnlineLyricsViaPort(
+                    trackId = resolvedId,
+                    title = envelope.payload["title"]?.jsonPrimitive?.contentOrNull ?: targetTrack?.title.orEmpty(),
+                    artist = envelope.payload["artist"]?.jsonPrimitive?.contentOrNull ?: targetTrack?.artist.orEmpty(),
+                    album = envelope.payload["album"]?.jsonPrimitive?.contentOrNull ?: targetTrack?.album.orEmpty(),
+                    customUrl = envelope.payload["url"]?.jsonPrimitive?.contentOrNull
+                )
+                val resultView = fetched ?: targetTrack?.let { buildLyricsForTrack(it) }
+                    ?: CoreLyricsView(trackId = resolvedId, lines = emptyList())
+                CoreResponseEnvelope(
+                    requestId = envelope.requestId,
+                    epoch = epoch,
+                    ok = true,
+                    value = json.encodeToJsonElement(resultView)
                 )
             }
             else -> CoreResponseEnvelope(
@@ -620,6 +672,43 @@ class QuickJsRuntimeHost(
                     ports.audioEngine.pause()
                 }
             }
+            "lyrics.fetchOnline" -> {
+                val targetTrackId = envelope.payload["trackId"]?.jsonPrimitive?.contentOrNull
+                val targetTrack = if (targetTrackId != null) {
+                    libraryTracks.firstOrNull { it.id == targetTrackId }
+                        ?: queueTracks.firstOrNull { it.id == targetTrackId }
+                } else {
+                    queueTracks.getOrNull(currentQueueIndex)
+                }
+                val resolvedId = targetTrack?.id ?: targetTrackId ?: "unknown"
+                fetchOnlineLyricsViaPort(
+                    trackId = resolvedId,
+                    title = envelope.payload["title"]?.jsonPrimitive?.contentOrNull ?: targetTrack?.title.orEmpty(),
+                    artist = envelope.payload["artist"]?.jsonPrimitive?.contentOrNull ?: targetTrack?.artist.orEmpty(),
+                    album = envelope.payload["album"]?.jsonPrimitive?.contentOrNull ?: targetTrack?.album.orEmpty(),
+                    customUrl = envelope.payload["url"]?.jsonPrimitive?.contentOrNull
+                )
+            }
+            "lyrics.importLrc" -> {
+                val trackId = envelope.payload["trackId"]?.jsonPrimitive?.contentOrNull
+                    ?: queueTracks.getOrNull(currentQueueIndex)?.id
+                    ?: ""
+                val rawLrc = envelope.payload["lrcText"]?.jsonPrimitive?.contentOrNull
+                    ?: envelope.payload["content"]?.jsonPrimitive?.contentOrNull
+                    ?: ""
+                if (trackId.isNotEmpty() && rawLrc.isNotBlank()) {
+                    val parsed = parseLrcLines(rawLrc)
+                    if (parsed.second.isNotEmpty()) {
+                        customLyrics[trackId] = CoreLyricsView(
+                            trackId = trackId,
+                            source = "imported",
+                            synced = parsed.first,
+                            lines = parsed.second
+                        )
+                        lyricsRevision += 1L
+                    }
+                }
+            }
             "settings.edit" -> {
                 persistSessionSnapshot()
             }
@@ -733,6 +822,20 @@ class QuickJsRuntimeHost(
             else -> "stopped"
         }
 
+        val activeRoute = runCatching { ports.audioDevice.getActiveRoute() }.getOrNull()
+        val resolvedOutputBackend = if (activeRoute != null && activeRoute.routeType != "speaker") {
+            "${latestAudioSnapshot.outputBackend ?: "oboe"}:${activeRoute.routeType}"
+        } else {
+            latestAudioSnapshot.outputBackend ?: "oboe"
+        }
+        val resolvedActualSampleRate = activeRoute?.activeSampleRate?.takeIf { it > 0 }
+            ?: latestAudioSnapshot.actualSampleRate
+            ?: 96000
+        val resolvedActualBitDepth = activeRoute?.maxBitDepth?.takeIf { it > 0 }
+            ?: latestAudioSnapshot.actualBitDepth
+            ?: 24
+        val routeBitPerfectCapable = activeRoute?.isUsbHiResCapable ?: true
+
         val playbackView = CorePlaybackView(
             state = mappedState,
             position = latestAudioSnapshot.positionMs / 1000.0,
@@ -751,11 +854,11 @@ class QuickJsRuntimeHost(
             sourceSampleRate = latestAudioSnapshot.sampleRate ?: currentTrack?.sampleRate ?: 96000,
             sourceBitDepth = latestAudioSnapshot.bitDepth ?: currentTrack?.bitDepth ?: 24,
             sourceChannels = latestAudioSnapshot.channels ?: 2,
-            outputBackend = latestAudioSnapshot.outputBackend ?: "oboe",
-            actualSampleRate = latestAudioSnapshot.actualSampleRate ?: 96000,
-            actualBitDepth = latestAudioSnapshot.actualBitDepth ?: 24,
+            outputBackend = resolvedOutputBackend,
+            actualSampleRate = resolvedActualSampleRate,
+            actualBitDepth = resolvedActualBitDepth,
             actualChannels = 2,
-            outputPerfect = eqConfig.bitPerfect && !eqConfig.enabled,
+            outputPerfect = eqConfig.bitPerfect && !eqConfig.enabled && routeBitPerfectCapable,
             gaplessActive = eqConfig.gapless,
             preloadReady = upcomingTrack != null,
             upcomingTrack = upcomingTrack
@@ -849,6 +952,10 @@ class QuickJsRuntimeHost(
     }
 
     private fun buildLyricsForTrack(track: CoreTrackView): CoreLyricsView {
+        val custom = customLyrics[track.id]
+        if (custom != null && custom.lines.isNotEmpty()) {
+            return custom
+        }
         val demoLines = DEMO_LYRICS[track.id]
         if (demoLines != null) {
             return CoreLyricsView(
@@ -873,6 +980,94 @@ class QuickJsRuntimeHost(
                 CoreLyricLine(stepMs * 5, "Resonance lingering in the twilight", "暮色中回响的余韵")
             )
         )
+    }
+
+    private suspend fun fetchOnlineLyricsViaPort(
+        trackId: String,
+        title: String,
+        artist: String,
+        album: String,
+        customUrl: String?
+    ): CoreLyricsView? {
+        val targetUrl = customUrl?.trim()?.takeIf { it.isNotEmpty() }
+            ?: "https://lrclib.net/api/get?track_name=${java.net.URLEncoder.encode(title, "UTF-8")}&artist_name=${java.net.URLEncoder.encode(artist, "UTF-8")}&album_name=${java.net.URLEncoder.encode(album, "UTF-8")}"
+        val netResult = runCatching {
+            ports.networkClient.execute(
+                NetworkRequestSpec(
+                    url = targetUrl,
+                    method = "GET",
+                    headers = mapOf("Accept" to "application/json, text/plain;q=0.9")
+                )
+            )
+        }.getOrNull() ?: return null
+
+        val response = (netResult as? ResourceAccessResult.Ok)?.value ?: return null
+        if (response.statusCode !in 200..299 || response.bodyUtf8.isBlank()) return null
+
+        val rawLrc = runCatching {
+            val obj = json.parseToJsonElement(response.bodyUtf8) as? JsonObject
+            obj?.get("syncedLyrics")?.jsonPrimitive?.contentOrNull
+                ?: obj?.get("plainLyrics")?.jsonPrimitive?.contentOrNull
+                ?: obj?.get("lrc")?.jsonPrimitive?.contentOrNull
+        }.getOrNull() ?: response.bodyUtf8
+
+        val (synced, lines) = parseLrcLines(rawLrc)
+        if (lines.isEmpty()) return null
+        val view = CoreLyricsView(
+            trackId = trackId,
+            source = "online",
+            synced = synced,
+            lines = lines
+        )
+        customLyrics[trackId] = view
+        lyricsRevision += 1L
+        return view
+    }
+
+    private fun parseLrcLines(rawText: String): Pair<Boolean, List<CoreLyricLine>> {
+        val timedMap = sortedMapOf<Long, CoreLyricLine>()
+        val untimed = mutableListOf<CoreLyricLine>()
+        val timeRegex = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]""")
+
+        rawText.replace("\r\n", "\n").lines().forEach { rawLine ->
+            val trimmed = rawLine.trim()
+            if (trimmed.isEmpty()) return@forEach
+            val matches = timeRegex.findAll(trimmed).toList()
+            if (matches.isEmpty()) {
+                if (!trimmed.matches(Regex("""^\[(ti|ar|al|by|offset):.*""", RegexOption.IGNORE_CASE))) {
+                    untimed.add(CoreLyricLine(timeMs = untimed.size * 4000L, text = trimmed))
+                }
+                return@forEach
+            }
+            val textContent = trimmed.replace(timeRegex, "").trim()
+            if (textContent.isEmpty()) return@forEach
+            matches.forEach { match ->
+                val minutes = match.groupValues[1].toLongOrNull() ?: 0L
+                val seconds = match.groupValues[2].toLongOrNull() ?: 0L
+                val fracRaw = match.groupValues.getOrNull(3).orEmpty()
+                val millis = when (fracRaw.length) {
+                    0 -> 0L
+                    1 -> (fracRaw.toLongOrNull() ?: 0L) * 100L
+                    2 -> (fracRaw.toLongOrNull() ?: 0L) * 10L
+                    else -> fracRaw.take(3).toLongOrNull() ?: 0L
+                }
+                val timeMs = minutes * 60_000L + seconds * 1_000L + millis
+                val existing = timedMap[timeMs]
+                if (existing != null) {
+                    if (existing.translation == null) {
+                        timedMap[timeMs] = existing.copy(translation = textContent)
+                    }
+                } else {
+                    timedMap[timeMs] = CoreLyricLine(timeMs = timeMs, text = textContent)
+                }
+            }
+        }
+
+        return if (timedMap.isNotEmpty()) {
+            true to timedMap.values.toList()
+        } else {
+            false to untimed.toList()
+        }
     }
 
     private suspend fun persistSessionSnapshot() {
@@ -962,6 +1157,8 @@ class QuickJsRuntimeHost(
     override fun close() {
         audioSubscription?.cancel()
         audioSubscription = null
+        routeSubscription?.cancel()
+        routeSubscription = null
         runtimeScope.cancel()
         runCatching {
             jsEngine?.close()

@@ -1,5 +1,11 @@
 package com.twilightecho.android.nativeintegration
 
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.audiofx.Equalizer
+import android.net.Uri
+import com.twilightecho.android.coreclient.CoreErrorCode
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.DefaultCoreClient
 import com.twilightecho.android.coreclient.PlayMode
@@ -11,10 +17,13 @@ import com.twilightecho.android.runtimehost.CancelHandle
 import com.twilightecho.android.runtimehost.ResourceAccessPort
 import com.twilightecho.android.runtimehost.ResourceAccessResult
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -26,25 +35,28 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 
 /**
- * Implements `AudioEnginePort` over `TwilightAudioEngineJni` (`twilight_audio_engine.h`).
+ * Implements `AudioEnginePort` over `TwilightAudioEngineJni` (`twilight_audio_engine.h`) with a
+ * hardware-backed Android `MediaPlayer` + `Equalizer` execution fallback when C++ FFmpeg decoders
+ * are not linked or when playing synthesized demo tracks on device.
  *
  * Non-RT Event Dispatch (Section 13.5):
- * `TAE_SetEventCallback` notifications arrive on native worker/clock threads and are immediately
+ * `TAE_SetEventCallback` and hardware completion notifications arrive on worker threads and are
  * offered into a lock-free bounded `Channel` (`nonRtEventQueue`) drained by a dedicated non-RT
  * control dispatcher before notifying `runtime-host` subscribers.
- *
- * Also maintains an in-memory simulation fallback when `libtwilight_audio_jni.so` is not loaded
- * (e.g., on JVM unit test hosts or before NDK build).
  */
 class NativeAudioEngineAdapter(
     private val jni: TwilightAudioEngineJni = TwilightAudioEngineJni(),
     private val resourceAccess: ResourceAccessPort? = null,
+    private val appContext: Context? = null,
     private val json: Json = DefaultCoreClient.DefaultJson
 ) : AudioEnginePort {
 
@@ -66,7 +78,13 @@ class NativeAudioEngineAdapter(
     @Volatile
     private var engineHandle: Long = 0L
 
-    // Fallback/cached state when running without native .so or between native polls
+    // Android hardware MediaPlayer + Equalizer fallback when C++ FFmpeg is not linked
+    private var platformMediaPlayer: MediaPlayer? = null
+    private var platformEqualizer: Equalizer? = null
+    private var loadedMediaSourceKey: String? = null
+    private var progressTickerJob: Job? = null
+
+    // Cached state updated by C++ engine or Android hardware MediaPlayer
     @Volatile
     private var cachedSnapshot = AudioSnapshot(
         engineSessionId = "tae-android-session",
@@ -105,7 +123,7 @@ class NativeAudioEngineAdapter(
         return when (val res = access.acquirePlayableResource(rawSource)) {
             is ResourceAccessResult.Ok -> res.value.nativePath.also { lastResolvedNativePath = it }
             is ResourceAccessResult.Error -> {
-                if (res.code == com.twilightecho.android.coreclient.CoreErrorCode.PERMISSION_EXPIRED) {
+                if (res.code == CoreErrorCode.PERMISSION_EXPIRED) {
                     broadcastEvent(
                         AudioEvent.EngineError(
                             code = res.code.name,
@@ -128,7 +146,6 @@ class NativeAudioEngineAdapter(
     }
 
     private val jniEventListener = TwilightAudioEventListener { eventType, payloadJson ->
-        // Non-blocking enqueue from native callback thread
         nonRtEventQueue.trySend(RawNativeEvent(eventType, payloadJson))
     }
 
@@ -150,12 +167,17 @@ class NativeAudioEngineAdapter(
 
     /**
      * Immediate synchronous safety brake entrypoint callable by `AndroidPlaybackHost` when
-     * `AUDIOFOCUS_LOSS` or `ACTION_AUDIO_BECOMING_NOISY` occurs (Section 5.4).
+     * `AUDIOFOCUS_LOSS`, `ACTION_AUDIO_BECOMING_NOISY`, or physical headset disconnect occurs (Section 5.4).
      */
     fun emergencyBrakePause() {
         val handle = engineHandle
         if (jni.isNativeLibraryLoaded && handle != 0L) {
             runCatching { jni.nativePause(handle) }
+        }
+        runCatching {
+            platformMediaPlayer?.let { mp ->
+                if (mp.isPlaying) mp.pause()
+            }
         }
         cachedSnapshot = cachedSnapshot.copy(state = "paused")
         nonRtEventQueue.trySend(
@@ -185,14 +207,40 @@ class NativeAudioEngineAdapter(
         val currentTrack = queuedTracks.getOrNull(cachedSnapshot.queueIndex.coerceAtLeast(0))
         val rawUri = currentTrack?.source ?: currentTrack?.id ?: activeResourceId ?: ""
         val playablePath = if (rawUri.isNotBlank()) resolveAndLeasePlayablePath(rawUri) else ""
+
+        var nativeHandled = false
         if (jni.isNativeLibraryLoaded && handle != 0L && playablePath.isNotBlank()) {
-            jni.nativePlay(handle, playablePath, startTimeSeconds ?: (cachedSnapshot.positionMs / 1000.0))
+            val rc = runCatching {
+                jni.nativePlay(handle, playablePath, startTimeSeconds ?: (cachedSnapshot.positionMs / 1000.0))
+            }.getOrDefault(-1)
+            nativeHandled = (rc == 0)
         }
+
+        var actualDurationMs = currentTrack?.let { (it.duration * 1000.0).toLong() } ?: cachedSnapshot.durationMs
+        var actualPositionMs = startTimeSeconds?.let { (it * 1000.0).toLong() } ?: cachedSnapshot.positionMs
+
+        if (!nativeHandled && appContext != null) {
+            val mpResult = startOrResumePlatformMediaPlayer(
+                context = appContext,
+                track = currentTrack,
+                rawUri = rawUri,
+                playablePath = playablePath,
+                startTimeSeconds = startTimeSeconds
+            )
+            if (mpResult != null) {
+                actualPositionMs = mpResult.first
+                if (mpResult.second > 0L) {
+                    actualDurationMs = mpResult.second
+                }
+            }
+        }
+
         cachedSnapshot = cachedSnapshot.copy(
             state = "playing",
-            positionMs = startTimeSeconds?.let { (it * 1000.0).toLong() } ?: cachedSnapshot.positionMs,
-            durationMs = currentTrack?.let { (it.duration * 1000.0).toLong() } ?: cachedSnapshot.durationMs
+            positionMs = actualPositionMs,
+            durationMs = actualDurationMs
         )
+        ensureProgressTickerRunning()
         broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
     }
 
@@ -201,6 +249,15 @@ class NativeAudioEngineAdapter(
         if (jni.isNativeLibraryLoaded && handle != 0L) {
             jni.nativePause(handle)
         }
+        runCatching {
+            platformMediaPlayer?.let { mp ->
+                if (mp.isPlaying) {
+                    cachedSnapshot = cachedSnapshot.copy(positionMs = mp.currentPosition.toLong())
+                    mp.pause()
+                }
+            }
+        }
+        stopProgressTicker()
         cachedSnapshot = cachedSnapshot.copy(state = "paused")
         broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
     }
@@ -210,6 +267,8 @@ class NativeAudioEngineAdapter(
         if (jni.isNativeLibraryLoaded && handle != 0L) {
             jni.nativeStop(handle)
         }
+        stopProgressTicker()
+        releasePlatformMediaPlayer()
         releaseActivePlayableLease()
         cachedSnapshot = cachedSnapshot.copy(state = "idle", positionMs = 0L)
         broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
@@ -221,6 +280,9 @@ class NativeAudioEngineAdapter(
         if (jni.isNativeLibraryLoaded && handle != 0L) {
             jni.nativeSeek(handle, clampedMs / 1000.0)
         }
+        runCatching {
+            platformMediaPlayer?.seekTo(clampedMs.toInt())
+        }
         cachedSnapshot = cachedSnapshot.copy(positionMs = clampedMs)
         broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
     }
@@ -230,6 +292,10 @@ class NativeAudioEngineAdapter(
         val handle = engineHandle
         if (jni.isNativeLibraryLoaded && handle != 0L) {
             jni.nativeSetVolume(handle, clamped)
+        }
+        runCatching {
+            val v = clamped.toFloat()
+            platformMediaPlayer?.setVolume(v, v)
         }
         cachedSnapshot = cachedSnapshot.copy(volume = clamped)
         broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
@@ -247,6 +313,7 @@ class NativeAudioEngineAdapter(
 
     override suspend fun loadQueue(tracks: List<CoreTrackView>, startIndex: Int) =
         withContext(controlDispatcher) {
+            val prevTrackId = queuedTracks.getOrNull(cachedSnapshot.queueIndex)?.id
             queuedTracks = tracks
             val safeIndex = if (tracks.isEmpty()) -1 else startIndex.coerceIn(0, tracks.lastIndex)
             val handle = engineHandle
@@ -269,9 +336,12 @@ class NativeAudioEngineAdapter(
                 jni.nativeLoadQueue(handle, queueJson, safeIndex.coerceAtLeast(0))
             }
             val selected = tracks.getOrNull(safeIndex)
+            if (selected?.id != prevTrackId) {
+                loadedMediaSourceKey = null
+            }
             cachedSnapshot = cachedSnapshot.copy(
                 queueIndex = safeIndex,
-                positionMs = 0L,
+                positionMs = if (selected?.id == prevTrackId) cachedSnapshot.positionMs else 0L,
                 durationMs = selected?.let { (it.duration * 1000.0).toLong() } ?: cachedSnapshot.durationMs,
                 codec = selected?.format ?: "FLAC",
                 sampleRate = selected?.sampleRate ?: 96000,
@@ -282,13 +352,17 @@ class NativeAudioEngineAdapter(
 
     override suspend fun selectQueueIndex(index: Int) = withContext(controlDispatcher) {
         if (index !in queuedTracks.indices) return@withContext
+        val wasPlaying = cachedSnapshot.state == "playing"
         val selected = queuedTracks[index]
         val rawUri = selected.source ?: selected.id
-        resolveAndLeasePlayablePath(rawUri)
+        val playablePath = resolveAndLeasePlayablePath(rawUri)
         val handle = engineHandle
+        var nativeHandled = false
         if (jni.isNativeLibraryLoaded && handle != 0L) {
-            jni.nativeSelectQueueIndex(handle, index)
+            val rc = runCatching { jni.nativeSelectQueueIndex(handle, index) }.getOrDefault(-1)
+            nativeHandled = (rc == 0)
         }
+        loadedMediaSourceKey = null
         cachedSnapshot = cachedSnapshot.copy(
             queueIndex = index,
             positionMs = 0L,
@@ -297,6 +371,21 @@ class NativeAudioEngineAdapter(
             sampleRate = selected.sampleRate ?: 96000,
             bitDepth = selected.bitDepth ?: 24
         )
+        if (wasPlaying && !nativeHandled && appContext != null) {
+            val mpResult = startOrResumePlatformMediaPlayer(
+                context = appContext,
+                track = selected,
+                rawUri = rawUri,
+                playablePath = playablePath,
+                startTimeSeconds = 0.0
+            )
+            if (mpResult != null && mpResult.second > 0L) {
+                cachedSnapshot = cachedSnapshot.copy(
+                    positionMs = mpResult.first,
+                    durationMs = mpResult.second
+                )
+            }
+        }
         broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
     }
 
@@ -309,6 +398,7 @@ class NativeAudioEngineAdapter(
         val obj = runCatching { json.parseToJsonElement(configJson) as? JsonObject }.getOrNull()
         val eqEnabled = obj?.get("enabled")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
         val bitPerfect = obj?.get("bitPerfect")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
+        applyDspConfigToPlatformEqualizer(obj)
         cachedSnapshot = cachedSnapshot.copy(
             outputPerfect = bitPerfect && !eqEnabled
         )
@@ -349,6 +439,15 @@ class NativeAudioEngineAdapter(
                 }
             }
         }
+        runCatching {
+            platformMediaPlayer?.let { mp ->
+                if (mp.isPlaying) {
+                    cachedSnapshot = cachedSnapshot.copy(
+                        positionMs = mp.currentPosition.toLong().coerceAtLeast(0L)
+                    )
+                }
+            }
+        }
         cachedSnapshot
     }
 
@@ -357,6 +456,183 @@ class NativeAudioEngineAdapter(
         return CancelHandle {
             listeners.remove(listener)
         }
+    }
+
+    private fun startOrResumePlatformMediaPlayer(
+        context: Context,
+        track: CoreTrackView?,
+        rawUri: String,
+        playablePath: String,
+        startTimeSeconds: Double?
+    ): Pair<Long, Long>? = runCatching {
+        val sourceKey = "${track?.id ?: rawUri}|$playablePath"
+        val existing = platformMediaPlayer
+        if (existing != null && loadedMediaSourceKey == sourceKey) {
+            if (startTimeSeconds != null) {
+                existing.seekTo((startTimeSeconds * 1000.0).toInt().coerceAtLeast(0))
+            }
+            val vol = cachedSnapshot.volume.toFloat()
+            existing.setVolume(vol, vol)
+            if (!existing.isPlaying) {
+                existing.start()
+            }
+            return@runCatching Pair(
+                existing.currentPosition.toLong().coerceAtLeast(0L),
+                existing.duration.toLong().coerceAtLeast(0L)
+            )
+        }
+
+        releasePlatformMediaPlayer()
+
+        val mp = MediaPlayer()
+        mp.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+        )
+
+        val configured = configureMediaPlayerDataSource(context, mp, track, rawUri, playablePath)
+        if (!configured) {
+            mp.release()
+            return@runCatching null
+        }
+
+        mp.prepare()
+        val startMs = startTimeSeconds?.let { (it * 1000.0).toInt().coerceAtLeast(0) }
+            ?: cachedSnapshot.positionMs.toInt().coerceAtLeast(0)
+        if (startMs > 0 && startMs < mp.duration) {
+            mp.seekTo(startMs)
+        }
+        val vol = cachedSnapshot.volume.toFloat()
+        mp.setVolume(vol, vol)
+
+        mp.setOnCompletionListener {
+            nonRtEventQueue.trySend(RawNativeEvent("end-file", """{"reason":"eof"}"""))
+        }
+
+        platformMediaPlayer = mp
+        loadedMediaSourceKey = sourceKey
+
+        // Bind hardware Equalizer to MediaPlayer's audioSessionId
+        runCatching {
+            val eq = Equalizer(0, mp.audioSessionId)
+            platformEqualizer = eq
+            val dspObj = runCatching { json.parseToJsonElement(lastDspConfigJson) as? JsonObject }.getOrNull()
+            applyDspConfigToPlatformEqualizer(dspObj)
+        }
+
+        mp.start()
+        Pair(mp.currentPosition.toLong().coerceAtLeast(0L), mp.duration.toLong().coerceAtLeast(0L))
+    }.getOrNull()
+
+    private fun configureMediaPlayerDataSource(
+        context: Context,
+        mp: MediaPlayer,
+        track: CoreTrackView?,
+        rawUri: String,
+        playablePath: String
+    ): Boolean {
+        // 1. Try resolved local or /proc/self/fd/<fd> path
+        if (playablePath.startsWith("/")) {
+            val f = File(playablePath)
+            if (f.exists() && f.canRead()) {
+                val ok = runCatching {
+                    mp.setDataSource(playablePath)
+                    true
+                }.getOrDefault(false)
+                if (ok) return true
+            }
+        }
+
+        // 2. Try Android content:// URI directly via ContentResolver
+        if (rawUri.startsWith("content://", ignoreCase = true)) {
+            val ok = runCatching {
+                mp.setDataSource(context, Uri.parse(rawUri))
+                true
+            }.getOrDefault(false)
+            if (ok) return true
+        }
+
+        // 3. Fallback to synthesized real harmonic stereo WAV for built-in demo tracks
+        val demoId = track?.id?.ifBlank { "track-twilight-overture" } ?: "track-twilight-overture"
+        return runCatching {
+            val wavFile = DemoAudioSynthesizer.ensureDemoWavFile(context, demoId)
+            mp.setDataSource(wavFile.absolutePath)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun applyDspConfigToPlatformEqualizer(dspObj: JsonObject?) {
+        val eq = platformEqualizer ?: return
+        if (dspObj == null) {
+            runCatching { eq.enabled = false }
+            return
+        }
+        runCatching {
+            val enabled = dspObj["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+            val preampDb = dspObj["preampDb"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+            val bandsDb = dspObj["bandsDb"]?.jsonArray?.mapNotNull { it.jsonPrimitive.doubleOrNull }.orEmpty()
+            eq.enabled = enabled
+            if (enabled && bandsDb.isNotEmpty()) {
+                val numBands = eq.numberOfBands.toInt()
+                val range = eq.bandLevelRange
+                val minMb = range.getOrElse(0) { -1200 }.toInt()
+                val maxMb = range.getOrElse(1) { 1200 }.toInt()
+                for (bandIdx in 0 until numBands) {
+                    val mappedIdx = ((bandIdx.toDouble() / numBands.coerceAtLeast(1)) * bandsDb.size)
+                        .toInt()
+                        .coerceIn(0, bandsDb.lastIndex)
+                    val totalDb = (bandsDb[mappedIdx] + preampDb).coerceIn(-12.0, 12.0)
+                    val targetMb = (totalDb * 100.0).roundToInt().coerceIn(minMb, maxMb).toShort()
+                    eq.setBandLevel(bandIdx.toShort(), targetMb)
+                }
+            }
+        }
+    }
+
+    private fun ensureProgressTickerRunning() {
+        if (appContext == null) return
+        if (progressTickerJob?.isActive == true) return
+        progressTickerJob = controlScope.launch {
+            while (isActive && cachedSnapshot.state == "playing") {
+                delay(250L)
+                if (cachedSnapshot.state != "playing") break
+                val mp = platformMediaPlayer
+                if (mp != null) {
+                    val isPlaying = runCatching { mp.isPlaying }.getOrDefault(false)
+                    if (isPlaying) {
+                        val posMs = runCatching { mp.currentPosition.toLong() }.getOrDefault(cachedSnapshot.positionMs)
+                        val durMs = runCatching { mp.duration.toLong() }.getOrDefault(cachedSnapshot.durationMs ?: 0L)
+                        cachedSnapshot = cachedSnapshot.copy(
+                            positionMs = posMs.coerceAtLeast(0L),
+                            durationMs = if (durMs > 0L) durMs else cachedSnapshot.durationMs
+                        )
+                        broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stopProgressTicker() {
+        progressTickerJob?.cancel()
+        progressTickerJob = null
+    }
+
+    private fun releasePlatformMediaPlayer() {
+        loadedMediaSourceKey = null
+        runCatching {
+            platformEqualizer?.release()
+        }
+        platformEqualizer = null
+        runCatching {
+            platformMediaPlayer?.stop()
+        }
+        runCatching {
+            platformMediaPlayer?.release()
+        }
+        platformMediaPlayer = null
     }
 
     private fun processNativeEventOnControlThread(raw: RawNativeEvent) {
@@ -430,6 +706,8 @@ class NativeAudioEngineAdapter(
 
     override fun close() {
         if (closed.compareAndSet(false, true)) {
+            stopProgressTicker()
+            releasePlatformMediaPlayer()
             listeners.clear()
             nonRtEventQueue.close()
             controlScope.cancel()
