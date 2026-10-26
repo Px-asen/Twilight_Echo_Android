@@ -105,13 +105,15 @@ class NativeAudioEngineAdapter(
         return when (val res = access.acquirePlayableResource(rawSource)) {
             is ResourceAccessResult.Ok -> res.value.nativePath.also { lastResolvedNativePath = it }
             is ResourceAccessResult.Error -> {
-                broadcastEvent(
-                    AudioEvent.EngineError(
-                        code = res.code.name,
-                        message = res.message,
-                        recoverable = res.retryable
+                if (res.code == com.twilightecho.android.coreclient.CoreErrorCode.PERMISSION_EXPIRED) {
+                    broadcastEvent(
+                        AudioEvent.EngineError(
+                            code = res.code.name,
+                            message = res.message,
+                            recoverable = res.retryable
+                        )
                     )
-                )
+                }
                 rawSource.also { lastResolvedNativePath = it }
             }
         }

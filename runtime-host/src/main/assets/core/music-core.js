@@ -1,5 +1,229 @@
 var TwilightPortableCore = (function(exports) {
-  "use strict";
+  "use strict";var __defProp = Object.defineProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
+  (function(g) {
+    var uuidSeq = 0;
+    function genUuid() {
+      uuidSeq = uuidSeq + 1 >>> 0;
+      function hex2(len) {
+        var s = "";
+        for (var i = 0; i < len; i++) s += Math.floor(Math.random() * 16).toString(16);
+        return s;
+      }
+      var p = (Date.now() & 4294967295).toString(16).padStart(8, "0");
+      var q = (uuidSeq & 65535).toString(16).padStart(4, "0");
+      return p + "-" + q + "-4" + hex2(3) + "-8" + hex2(3) + "-" + hex2(12);
+    }
+    if (!g.crypto || typeof g.crypto.randomUUID !== "function") {
+      var c = g.crypto && typeof g.crypto === "object" ? g.crypto : {};
+      try {
+        c.randomUUID = genUuid;
+        g.crypto = c;
+      } catch (_) {
+      }
+    }
+    if (typeof g.structuredClone !== "function") {
+      g.structuredClone = function clone2(v) {
+        if (v === void 0 || v === null || typeof v !== "object") return v;
+        if (v instanceof Date) return new Date(v.getTime());
+        if (v instanceof Uint8Array) return new Uint8Array(v);
+        if (Array.isArray(v)) return v.map(clone2);
+        if (v instanceof Map) {
+          var m = /* @__PURE__ */ new Map();
+          v.forEach(function(val, k2) {
+            m.set(clone2(k2), clone2(val));
+          });
+          return m;
+        }
+        if (v instanceof Set) {
+          var st = /* @__PURE__ */ new Set();
+          v.forEach(function(val) {
+            st.add(clone2(val));
+          });
+          return st;
+        }
+        var out = {};
+        var keys2 = Object.keys(v);
+        for (var i = 0; i < keys2.length; i++) {
+          var k = keys2[i];
+          out[k] = clone2(v[k]);
+        }
+        return out;
+      };
+    }
+    if (typeof g.Intl !== "object" || g.Intl === null) {
+      g.Intl = {};
+    }
+    if (typeof g.Intl.Collator !== "function") {
+      g.Intl.Collator = function PortableCollator(locales, options) {
+        this._locale = Array.isArray(locales) ? String(locales[0] || "en") : String(locales || "en");
+        this._options = options || {};
+        this.compare = function(a, b) {
+          var sa = String(a === void 0 || a === null ? "" : a);
+          var sb = String(b === void 0 || b === null ? "" : b);
+          if (sa === sb) return 0;
+          return sa < sb ? -1 : 1;
+        };
+        this.resolvedOptions = function() {
+          return { locale: this._locale };
+        };
+      };
+    }
+    if (typeof g.TextEncoder !== "function") {
+      g.TextEncoder = function PortableTextEncoder() {
+        this.encoding = "utf-8";
+        this.encode = function(input) {
+          var str = String(input === void 0 ? "" : input);
+          var bytes = [];
+          for (var i = 0; i < str.length; i++) {
+            var cp = str.charCodeAt(i);
+            if (cp >= 55296 && cp <= 56319 && i + 1 < str.length) {
+              var next = str.charCodeAt(i + 1);
+              if (next >= 56320 && next <= 57343) {
+                cp = (cp - 55296 << 10) + (next - 56320) + 65536;
+                i++;
+              }
+            }
+            if (cp <= 127) bytes.push(cp);
+            else if (cp <= 2047) bytes.push(192 | cp >> 6, 128 | cp & 63);
+            else if (cp <= 65535) bytes.push(224 | cp >> 12, 128 | cp >> 6 & 63, 128 | cp & 63);
+            else bytes.push(240 | cp >> 18, 128 | cp >> 12 & 63, 128 | cp >> 6 & 63, 128 | cp & 63);
+          }
+          return new Uint8Array(bytes);
+        };
+      };
+    }
+    if (typeof g.TextDecoder !== "function") {
+      g.TextDecoder = function PortableTextDecoder() {
+        this.encoding = "utf-8";
+        this.decode = function(input) {
+          if (!input) return "";
+          var bytes = input instanceof Uint8Array ? input : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input);
+          var out = "";
+          for (var i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+          try {
+            return decodeURIComponent(escape(out));
+          } catch (_) {
+            return out;
+          }
+        };
+      };
+    }
+    if (typeof g.AbortController !== "function") {
+      let PortableAbortSignal = function() {
+        this.aborted = false;
+        this.reason = void 0;
+        this._listeners = [];
+      };
+      PortableAbortSignal.prototype.addEventListener = function(_t, fn) {
+        if (this.aborted) {
+          fn();
+          return;
+        }
+        this._listeners.push(fn);
+      };
+      PortableAbortSignal.prototype.removeEventListener = function(_t, fn) {
+        var idx = this._listeners.indexOf(fn);
+        if (idx >= 0) this._listeners.splice(idx, 1);
+      };
+      PortableAbortSignal.prototype.throwIfAborted = function() {
+        if (this.aborted) throw this.reason || new Error("Aborted");
+      };
+      PortableAbortSignal.prototype._trigger = function(reason) {
+        if (this.aborted) return;
+        this.aborted = true;
+        this.reason = reason || new Error("Aborted");
+        var list = this._listeners.slice();
+        this._listeners.length = 0;
+        for (var i = 0; i < list.length; i++) {
+          try {
+            list[i]();
+          } catch (_) {
+          }
+        }
+      };
+      PortableAbortSignal.abort = function(r) {
+        var s = new PortableAbortSignal();
+        s._trigger(r);
+        return s;
+      };
+      PortableAbortSignal.any = function(sigs) {
+        var c2 = new PortableAbortSignal();
+        if (sigs && typeof sigs[Symbol.iterator] === "function") {
+          for (var s of sigs) {
+            if (!s) continue;
+            if (s.aborted) {
+              c2._trigger(s.reason);
+              return c2;
+            }
+            s.addEventListener("abort", function() {
+              c2._trigger(s.reason);
+            });
+          }
+        }
+        return c2;
+      };
+      g.AbortSignal = PortableAbortSignal;
+      g.AbortController = function PortableAbortController() {
+        this.signal = new PortableAbortSignal();
+        var self = this;
+        this.abort = function(reason) {
+          self.signal._trigger(reason);
+        };
+      };
+    }
+    if (typeof g.URL !== "function") {
+      g.URL = function PortableURL(url) {
+        var raw = String(url === void 0 ? "" : url).trim();
+        var m = /^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\/(?:([^:@/]+)(?::([^@/]*))?@)?([^/:?#]+)(?::([0-9]+))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/.exec(raw);
+        if (!m) throw new TypeError("Invalid URL: " + raw);
+        this.href = raw;
+        this.protocol = m[1].toLowerCase();
+        this.username = m[2] || "";
+        this.password = m[3] || "";
+        this.hostname = m[4];
+        this.port = m[5] || "";
+        this.host = this.port ? this.hostname + ":" + this.port : this.hostname;
+        this.pathname = m[6] || "/";
+        this.search = m[7] || "";
+        this.hash = m[8] || "";
+        this.toString = function() {
+          return this.href;
+        };
+      };
+    }
+    if (typeof g.console !== "object" || g.console === null) {
+      var noop = function() {
+      };
+      g.console = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
+    }
+    if (typeof g.performance !== "object" || g.performance === null) {
+      g.performance = { now: function() {
+        return Date.now();
+      } };
+    }
+    if (typeof g.queueMicrotask !== "function") {
+      g.queueMicrotask = function(cb) {
+        Promise.resolve().then(cb);
+      };
+    }
+    if (typeof g.setTimeout !== "function") {
+      var nextTimerId = 1;
+      g.setTimeout = function(cb, delay) {
+        var id2 = nextTimerId++;
+        if (!delay || delay <= 0) {
+          Promise.resolve().then(function() {
+            if (typeof cb === "function") cb();
+          });
+        }
+        return id2;
+      };
+      g.clearTimeout = function() {
+      };
+    }
+  })(typeof globalThis !== "undefined" ? globalThis : this);
   function getTrackSource(track, fallback) {
     if (track.source || fallback) return (track.source || fallback).trim().toLowerCase();
     if (/^[a-zA-Z]:[\\/]/.test(track.id) || /^[\\/]/.test(track.id)) return "local";
@@ -3871,40 +4095,40 @@ var TwilightPortableCore = (function(exports) {
     ) && typeof r.requestId === "string" && r.requestId.length > 0 && r.requestId.length <= 128 && typeof r.epoch === "string" && r.epoch.length > 0 && r.epoch.length <= 128 && validCorePayload(r.name, r.payload);
   }
   class CoreApplication {
-    clients = /* @__PURE__ */ new Map();
-    phase = "starting";
-    sequence = 0;
-    pluginsRevision = 0;
-    pluginsChanged = () => {
-      this.pluginsRevision++;
-      this.changed();
-    };
-    pluginNotice = (notice) => {
-      for (const client of this.clients.values()) {
-        if (client.identity.permissions.includes("plugins:read"))
-          client.send({ kind: "plugin-notice", epoch: this.dependencies.epoch, notice });
-      }
-    };
-    pluginExperienceEvent = (event) => {
-      for (const client of this.clients.values()) {
-        if (client.identity.permissions.includes("extensions:execute"))
-          client.send({
-            kind: "plugin-experience",
-            epoch: this.dependencies.epoch,
-            pluginId: event.pluginId,
-            event: event.event,
-            value: event.value
-          });
-      }
-    };
-    migrationRequired = true;
-    active = 0;
-    initialized = false;
-    readiness = null;
-    shuttingDown = false;
-    work = /* @__PURE__ */ new Set();
-    dependencies;
     constructor(dependencies) {
+      __publicField(this, "clients", /* @__PURE__ */ new Map());
+      __publicField(this, "phase", "starting");
+      __publicField(this, "sequence", 0);
+      __publicField(this, "pluginsRevision", 0);
+      __publicField(this, "pluginsChanged", () => {
+        this.pluginsRevision++;
+        this.changed();
+      });
+      __publicField(this, "pluginNotice", (notice) => {
+        for (const client of this.clients.values()) {
+          if (client.identity.permissions.includes("plugins:read"))
+            client.send({ kind: "plugin-notice", epoch: this.dependencies.epoch, notice });
+        }
+      });
+      __publicField(this, "pluginExperienceEvent", (event) => {
+        for (const client of this.clients.values()) {
+          if (client.identity.permissions.includes("extensions:execute"))
+            client.send({
+              kind: "plugin-experience",
+              epoch: this.dependencies.epoch,
+              pluginId: event.pluginId,
+              event: event.event,
+              value: event.value
+            });
+        }
+      });
+      __publicField(this, "migrationRequired", true);
+      __publicField(this, "active", 0);
+      __publicField(this, "initialized", false);
+      __publicField(this, "readiness", null);
+      __publicField(this, "shuttingDown", false);
+      __publicField(this, "work", /* @__PURE__ */ new Set());
+      __publicField(this, "dependencies");
       this.dependencies = dependencies;
       dependencies.plugins?.on("changed", this.pluginsChanged);
       dependencies.plugins?.on("notice", this.pluginNotice);
@@ -3927,7 +4151,7 @@ var TwilightPortableCore = (function(exports) {
     }
     async checkReady() {
       if (!this.initialized || this.migrationRequired || this.phase === "ready") return;
-      return this.readiness ??= (async () => {
+      return this.readiness ?? (this.readiness = (async () => {
         await this.dependencies.personalBackup?.initialize();
         await this.dependencies.statistics.initialize();
         if (this.shuttingDown) return;
@@ -3956,7 +4180,7 @@ var TwilightPortableCore = (function(exports) {
         await this.dependencies.plugins?.broadcastEvent("app:ready", {});
       })().finally(() => {
         this.readiness = null;
-      });
+      }));
     }
     snapshot(identity) {
       const catalogRevisions = [
@@ -4489,7 +4713,7 @@ var TwilightPortableCore = (function(exports) {
               expectedRevision: queue.revision,
               occurrenceId
             });
-            libraryRevision ??= page2.libraryRevision;
+            libraryRevision ?? (libraryRevision = page2.libraryRevision);
             if (page2.libraryRevision !== libraryRevision)
               throw failure("STALE_REVISION", "Library changed while reading the queue");
             const item = page2.items[0];
@@ -4514,7 +4738,7 @@ var TwilightPortableCore = (function(exports) {
                 const page2 = await this.dependencies.library.readLibraryQueue(queue.id, offset, 200, {
                   expectedRevision: queue.revision
                 });
-                libraryRevision ??= page2.libraryRevision;
+                libraryRevision ?? (libraryRevision = page2.libraryRevision);
                 if (libraryRevision !== page2.libraryRevision)
                   throw failure("STALE_REVISION", "Library changed while saving the queue");
                 const tracks2 = page2.items.flatMap(
@@ -5970,16 +6194,16 @@ var TwilightPortableCore = (function(exports) {
     };
   }
   class CoreBookmarksService {
-    options;
-    controller;
-    document = { value: clonePlaybackBookmarksDocument(DEFAULT_PLAYBACK_BOOKMARKS) };
-    tail = Promise.resolve();
-    previous = null;
-    offer = null;
-    error = null;
-    lastResume = "";
-    stopped = false;
     constructor(options) {
+      __publicField(this, "options");
+      __publicField(this, "controller");
+      __publicField(this, "document", { value: clonePlaybackBookmarksDocument(DEFAULT_PLAYBACK_BOOKMARKS) });
+      __publicField(this, "tail", Promise.resolve());
+      __publicField(this, "previous", null);
+      __publicField(this, "offer", null);
+      __publicField(this, "error", null);
+      __publicField(this, "lastResume", "");
+      __publicField(this, "stopped", false);
       this.options = options;
       this.controller = createPlaybackBookmarks({ ...options, document: this.document });
     }
@@ -6785,18 +7009,18 @@ var TwilightPortableCore = (function(exports) {
     };
   }
   class CoreLyricsService {
-    document = { value: cloneLyricsManagementDocument(DEFAULT_LYRICS_MANAGEMENT) };
-    currentTrack = { value: null };
-    management;
-    loader;
-    loadState = { trackId: "", status: "idle" };
-    contentRevision = 0;
-    error = null;
-    tail = Promise.resolve();
-    active = false;
-    stopped = false;
-    options;
     constructor(options) {
+      __publicField(this, "document", { value: cloneLyricsManagementDocument(DEFAULT_LYRICS_MANAGEMENT) });
+      __publicField(this, "currentTrack", { value: null });
+      __publicField(this, "management");
+      __publicField(this, "loader");
+      __publicField(this, "loadState", { trackId: "", status: "idle" });
+      __publicField(this, "contentRevision", 0);
+      __publicField(this, "error", null);
+      __publicField(this, "tail", Promise.resolve());
+      __publicField(this, "active", false);
+      __publicField(this, "stopped", false);
+      __publicField(this, "options");
       this.options = options;
       this.management = createLyricsManagement({ ...options, document: this.document });
       const readLoadState = () => this.loadState;
@@ -6982,22 +7206,22 @@ var TwilightPortableCore = (function(exports) {
     };
   }
   class CorePlayerPresentationService {
-    track = null;
-    state = {
-      current: null,
-      cover: null,
-      coverSource: null,
-      favorite: { available: false, liked: false, loading: false }
-    };
-    revision = 0;
-    currentRequest = null;
-    readWork = Promise.resolve();
-    favoriteRead = Promise.resolve();
-    writes = Promise.resolve();
-    writing = false;
-    stopped = false;
-    options;
     constructor(options) {
+      __publicField(this, "track", null);
+      __publicField(this, "state", {
+        current: null,
+        cover: null,
+        coverSource: null,
+        favorite: { available: false, liked: false, loading: false }
+      });
+      __publicField(this, "revision", 0);
+      __publicField(this, "currentRequest", null);
+      __publicField(this, "readWork", Promise.resolve());
+      __publicField(this, "favoriteRead", Promise.resolve());
+      __publicField(this, "writes", Promise.resolve());
+      __publicField(this, "writing", false);
+      __publicField(this, "stopped", false);
+      __publicField(this, "options");
       this.options = options;
     }
     getRevision() {
@@ -7124,24 +7348,24 @@ var TwilightPortableCore = (function(exports) {
     }
   }
   class LibraryQueueSource {
-    api;
-    referenceOwner = `playback:${crypto.randomUUID()}`;
-    referenceTail = Promise.resolve();
-    queue = null;
-    attachment = 0;
-    epoch = 0;
-    disposed = false;
-    requiresRefresh = false;
-    minimumLibraryRevision = 0;
-    libraryRevision = null;
-    pages = /* @__PURE__ */ new Map();
-    reads = /* @__PURE__ */ new Map();
-    waiting = [];
-    activeReads = 0;
-    pendingControls = 0;
-    tail = Promise.resolve();
-    undoStack = [];
     constructor(api) {
+      __publicField(this, "api");
+      __publicField(this, "referenceOwner", `playback:${crypto.randomUUID()}`);
+      __publicField(this, "referenceTail", Promise.resolve());
+      __publicField(this, "queue", null);
+      __publicField(this, "attachment", 0);
+      __publicField(this, "epoch", 0);
+      __publicField(this, "disposed", false);
+      __publicField(this, "requiresRefresh", false);
+      __publicField(this, "minimumLibraryRevision", 0);
+      __publicField(this, "libraryRevision", null);
+      __publicField(this, "pages", /* @__PURE__ */ new Map());
+      __publicField(this, "reads", /* @__PURE__ */ new Map());
+      __publicField(this, "waiting", []);
+      __publicField(this, "activeReads", 0);
+      __publicField(this, "pendingControls", 0);
+      __publicField(this, "tail", Promise.resolve());
+      __publicField(this, "undoStack", []);
       this.api = api;
     }
     syncReference(ids) {
@@ -8188,7 +8412,10 @@ var TwilightPortableCore = (function(exports) {
     return trimmed.startsWith("/");
   };
   class SourceAuthorizationError extends Error {
-    code = "SOURCE_ACCESS_DENIED";
+    constructor() {
+      super(...arguments);
+      __publicField(this, "code", "SOURCE_ACCESS_DENIED");
+    }
   }
   async function authorizeNativeSource(source, authorize) {
     return await prepareNativeSource(source, authorize);
@@ -8253,21 +8480,21 @@ var TwilightPortableCore = (function(exports) {
   };
   const END_RECOVERY_BUDGET_MS = 3e4;
   class LibraryNativeQueueMaintainer {
-    options;
-    mapping;
-    active = false;
-    generation = 0;
-    pending = null;
-    requested = false;
-    engineDrain = Promise.resolve();
-    // One successor cache and one retry slot, independent of traversal length.
-    source = null;
-    retry = null;
-    rejected = null;
-    hasEndTarget = false;
-    endRecovery = null;
-    sourceReads = new AbortController();
     constructor(options) {
+      __publicField(this, "options");
+      __publicField(this, "mapping");
+      __publicField(this, "active", false);
+      __publicField(this, "generation", 0);
+      __publicField(this, "pending", null);
+      __publicField(this, "requested", false);
+      __publicField(this, "engineDrain", Promise.resolve());
+      // One successor cache and one retry slot, independent of traversal length.
+      __publicField(this, "source", null);
+      __publicField(this, "retry", null);
+      __publicField(this, "rejected", null);
+      __publicField(this, "hasEndTarget", false);
+      __publicField(this, "endRecovery", null);
+      __publicField(this, "sourceReads", new AbortController());
       this.options = options;
       this.mapping = [...options.nativeQueueIndices];
     }
@@ -8793,15 +9020,15 @@ var TwilightPortableCore = (function(exports) {
   const RETRY_MS = 15e3;
   const REFILL_THRESHOLD = 3;
   class PersonalizedQueue {
-    context = null;
-    controller = new AbortController();
-    pending = null;
-    retryAfter = 0;
-    failedWrite = false;
-    error = null;
-    closed = false;
-    options;
     constructor(options) {
+      __publicField(this, "context", null);
+      __publicField(this, "controller", new AbortController());
+      __publicField(this, "pending", null);
+      __publicField(this, "retryAfter", 0);
+      __publicField(this, "failedWrite", false);
+      __publicField(this, "error", null);
+      __publicField(this, "closed", false);
+      __publicField(this, "options");
       this.options = options;
     }
     attach(context) {
@@ -8930,15 +9157,15 @@ var TwilightPortableCore = (function(exports) {
     });
   }
   class HeartQueue {
-    context = null;
-    controller = new AbortController();
-    pending = null;
-    failedWrite = false;
-    retryAfter = 0;
-    error = null;
-    closed = false;
-    options;
     constructor(options) {
+      __publicField(this, "context", null);
+      __publicField(this, "controller", new AbortController());
+      __publicField(this, "pending", null);
+      __publicField(this, "failedWrite", false);
+      __publicField(this, "retryAfter", 0);
+      __publicField(this, "error", null);
+      __publicField(this, "closed", false);
+      __publicField(this, "options");
       this.options = options;
     }
     attach(context) {
@@ -9085,71 +9312,71 @@ var TwilightPortableCore = (function(exports) {
     }
   }
   class CorePlaybackSession {
-    controller;
-    maintainer = null;
-    mapping = [];
-    info = null;
-    currentTrack = null;
-    mode = "sequential";
-    error = null;
-    intent = 0;
-    preview = new AbortController();
-    mutation = Promise.resolve();
-    observed = null;
-    observing = null;
-    initialized = false;
-    restored = false;
-    uncertain = false;
-    revision = 0;
-    lastSavedAt = 0;
-    persistence = Promise.resolve();
-    scheduledSave = null;
-    stopped = false;
-    committing = false;
-    sourceBarrier = null;
-    castBoundaryRevision = null;
-    sleepReset = Promise.resolve();
-    castSleepVolume = null;
-    abLoop = {
-      revision: 0,
-      occurrenceId: null,
-      a: null,
-      b: null,
-      mode: "off"
-    };
-    muted = false;
-    lastAudibleVolume = DEFAULT_SOFTWARE_VOLUME;
-    loadingIntent = null;
-    requestedState = null;
-    modeControls = Promise.resolve();
-    streamBuffering = false;
-    streamUnderruns = 0;
-    stopBufferingTimer = null;
-    personalized;
-    heart;
-    heartBase = null;
-    detachedHeartTrack = false;
-    heartTransition = false;
-    automaticEnd = null;
-    listen = (info) => {
-      if (this.options.cast?.active()) return;
-      this.observed = { info, token: info.queueToken ?? this.options.engine.getQueueToken() };
-      this.drainObservation();
-    };
-    crash = (event) => {
-      this.revoke();
-      this.resetAbLoopState();
-      this.uncertain = true;
-      this.error = event?.reason ?? "Audio service exited; playback remains stopped";
-      if (this.options.cast?.active()) {
-        void this.commit(() => this.failStopped(new Error(this.error))).catch(() => {
-        });
-      }
-      if (this.info) this.info = { ...this.info, state: "stopped" };
-      this.publish();
-    };
-    options;
     constructor(options) {
+      __publicField(this, "controller");
+      __publicField(this, "maintainer", null);
+      __publicField(this, "mapping", []);
+      __publicField(this, "info", null);
+      __publicField(this, "currentTrack", null);
+      __publicField(this, "mode", "sequential");
+      __publicField(this, "error", null);
+      __publicField(this, "intent", 0);
+      __publicField(this, "preview", new AbortController());
+      __publicField(this, "mutation", Promise.resolve());
+      __publicField(this, "observed", null);
+      __publicField(this, "observing", null);
+      __publicField(this, "initialized", false);
+      __publicField(this, "restored", false);
+      __publicField(this, "uncertain", false);
+      __publicField(this, "revision", 0);
+      __publicField(this, "lastSavedAt", 0);
+      __publicField(this, "persistence", Promise.resolve());
+      __publicField(this, "scheduledSave", null);
+      __publicField(this, "stopped", false);
+      __publicField(this, "committing", false);
+      __publicField(this, "sourceBarrier", null);
+      __publicField(this, "castBoundaryRevision", null);
+      __publicField(this, "sleepReset", Promise.resolve());
+      __publicField(this, "castSleepVolume", null);
+      __publicField(this, "abLoop", {
+        revision: 0,
+        occurrenceId: null,
+        a: null,
+        b: null,
+        mode: "off"
+      });
+      __publicField(this, "muted", false);
+      __publicField(this, "lastAudibleVolume", DEFAULT_SOFTWARE_VOLUME);
+      __publicField(this, "loadingIntent", null);
+      __publicField(this, "requestedState", null);
+      __publicField(this, "modeControls", Promise.resolve());
+      __publicField(this, "streamBuffering", false);
+      __publicField(this, "streamUnderruns", 0);
+      __publicField(this, "stopBufferingTimer", null);
+      __publicField(this, "personalized");
+      __publicField(this, "heart");
+      __publicField(this, "heartBase", null);
+      __publicField(this, "detachedHeartTrack", false);
+      __publicField(this, "heartTransition", false);
+      __publicField(this, "automaticEnd", null);
+      __publicField(this, "listen", (info) => {
+        if (this.options.cast?.active()) return;
+        this.observed = { info, token: info.queueToken ?? this.options.engine.getQueueToken() };
+        this.drainObservation();
+      });
+      __publicField(this, "crash", (event) => {
+        this.revoke();
+        this.resetAbLoopState();
+        this.uncertain = true;
+        this.error = event?.reason ?? "Audio service exited; playback remains stopped";
+        if (this.options.cast?.active()) {
+          void this.commit(() => this.failStopped(new Error(this.error))).catch(() => {
+          });
+        }
+        if (this.info) this.info = { ...this.info, state: "stopped" };
+        this.publish();
+      });
+      __publicField(this, "options");
       this.options = options;
       this.controller = createLibraryPlaybackController(options.queues);
       this.personalized = options.personalized ? new PersonalizedQueue({
@@ -10444,7 +10671,7 @@ var TwilightPortableCore = (function(exports) {
           a = position;
           if (b !== null && b <= a) b = null;
         } else {
-          a ??= 0;
+          a ?? (a = 0);
           if (position > a) b = position;
         }
         if (a === this.abLoop.a && b === this.abLoop.b) return { ...this.abLoop };
@@ -10630,7 +10857,7 @@ var TwilightPortableCore = (function(exports) {
     async setSleepTimerGain(gain) {
       if (this.options.cast?.active()) {
         if (this.options.cast.state().phase === "ready") {
-          this.castSleepVolume ??= this.info?.volume ?? 1;
+          this.castSleepVolume ?? (this.castSleepVolume = this.info?.volume ?? 1);
           await this.options.cast.control("volume", this.castSleepVolume * gain);
         }
         if (gain === 1) this.castSleepVolume = null;
@@ -11525,9 +11752,9 @@ var TwilightPortableCore = (function(exports) {
   const LIBRARY_QUEUE_BUILD_IDLE_MS = 12e4;
   const LIBRARY_QUEUE_BUILD_MAX_ENTRIES = 1e6;
   class CoreQueueSubmission {
-    submissions = /* @__PURE__ */ new Map();
-    options;
     constructor(options) {
+      __publicField(this, "submissions", /* @__PURE__ */ new Map());
+      __publicField(this, "options");
       this.options = options;
     }
     async insert(command, signal) {
@@ -11964,17 +12191,17 @@ var TwilightPortableCore = (function(exports) {
     return parseMusicVersions(JSON.stringify(next));
   }
   class CoreRecordingVersions {
-    revision = 0;
-    document = emptyMusicVersions();
-    tracks = /* @__PURE__ */ new Map();
-    identity = createLogicalTrackModel((key) => this.tracks.get(key));
-    tail = Promise.resolve();
-    uncertain = false;
-    database;
-    changed;
-    newId;
     constructor(database, changed = () => {
     }, newId = () => crypto.randomUUID()) {
+      __publicField(this, "revision", 0);
+      __publicField(this, "document", emptyMusicVersions());
+      __publicField(this, "tracks", /* @__PURE__ */ new Map());
+      __publicField(this, "identity", createLogicalTrackModel((key) => this.tracks.get(key)));
+      __publicField(this, "tail", Promise.resolve());
+      __publicField(this, "uncertain", false);
+      __publicField(this, "database");
+      __publicField(this, "changed");
+      __publicField(this, "newId");
       this.database = database;
       this.changed = changed;
       this.newId = newId;
@@ -12233,19 +12460,19 @@ var TwilightPortableCore = (function(exports) {
     return error instanceof Error && error.message ? error.message : String(error || "Unknown persistence error");
   }
   class PlaylistPersistence {
-    options;
-    setTimer;
-    clearTimer;
-    pendingSnapshot = null;
-    pendingBase = null;
-    timer = null;
-    writeChain = Promise.resolve();
-    writing = false;
-    dirty = false;
-    failureCount = 0;
-    lastError = null;
-    retryable = true;
     constructor(options) {
+      __publicField(this, "options");
+      __publicField(this, "setTimer");
+      __publicField(this, "clearTimer");
+      __publicField(this, "pendingSnapshot", null);
+      __publicField(this, "pendingBase", null);
+      __publicField(this, "timer", null);
+      __publicField(this, "writeChain", Promise.resolve());
+      __publicField(this, "writing", false);
+      __publicField(this, "dirty", false);
+      __publicField(this, "failureCount", 0);
+      __publicField(this, "lastError", null);
+      __publicField(this, "retryable", true);
       this.options = options;
       this.setTimer = options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
       this.clearTimer = options.clearTimeout ?? globalThis.clearTimeout.bind(globalThis);
@@ -12491,7 +12718,7 @@ var TwilightPortableCore = (function(exports) {
         continue;
       }
       target.tracks.push(...group.tracks);
-      target.cover ||= group.cover;
+      target.cover || (target.cover = group.cover);
     }
     return result;
   }
@@ -13208,7 +13435,7 @@ var TwilightPortableCore = (function(exports) {
         if (!snapshot) return void 0;
         const local = getTrackSource(snapshot) === "local";
         if (preserveSources && !local) return snapshot;
-        localLogicalTracks ??= getLocalLogicalTrackMap();
+        localLogicalTracks ?? (localLogicalTracks = getLocalLogicalTrackMap());
         const source = preferredSourceKey(snapshot);
         const replacement = localLogicalTracks.get(getLogicalTrackKey2(snapshot))?.variants.find(
           (variant) => canShareTrackIdentity(snapshot, variant.track) && (!source || versionSourceKey(variant.track) === source)
@@ -14892,13 +15119,15 @@ var TwilightPortableCore = (function(exports) {
     return results;
   }
   class SymSpellIndex {
-    maxDictionaryEditDistance = 2;
-    prefixLength = 7;
-    maxUnigrams = 5e4;
-    maxBigrams = 5e4;
-    unigrams = /* @__PURE__ */ new Map();
-    deletes = /* @__PURE__ */ new Map();
-    bigrams = /* @__PURE__ */ new Map();
+    constructor() {
+      __publicField(this, "maxDictionaryEditDistance", 2);
+      __publicField(this, "prefixLength", 7);
+      __publicField(this, "maxUnigrams", 5e4);
+      __publicField(this, "maxBigrams", 5e4);
+      __publicField(this, "unigrams", /* @__PURE__ */ new Map());
+      __publicField(this, "deletes", /* @__PURE__ */ new Map());
+      __publicField(this, "bigrams", /* @__PURE__ */ new Map());
+    }
     get unigramCount() {
       return this.unigrams.size;
     }
@@ -15594,11 +15823,11 @@ var TwilightPortableCore = (function(exports) {
     };
   }
   class CorePlaylistViews {
-    owners = /* @__PURE__ */ new Map();
-    options;
-    tail = Promise.resolve();
-    stopped = false;
     constructor(options) {
+      __publicField(this, "owners", /* @__PURE__ */ new Map());
+      __publicField(this, "options");
+      __publicField(this, "tail", Promise.resolve());
+      __publicField(this, "stopped", false);
       this.options = options;
     }
     owner(id2) {
@@ -15805,28 +16034,28 @@ var TwilightPortableCore = (function(exports) {
     }
   }
   class CorePlaylistService {
-    playlists = { value: [] };
-    tracks = { value: [] };
-    trackById = /* @__PURE__ */ new Map();
-    persistence = {
-      value: {
-        state: "idle",
-        dirty: false,
-        failureCount: 0,
-        lastError: null
-      }
-    };
-    notice = { value: null };
-    controller;
-    options;
-    views;
-    committed = [];
-    revision = 0;
-    tail = Promise.resolve();
-    stopped = false;
-    repairWork = null;
-    repairStatus = null;
     constructor(options) {
+      __publicField(this, "playlists", { value: [] });
+      __publicField(this, "tracks", { value: [] });
+      __publicField(this, "trackById", /* @__PURE__ */ new Map());
+      __publicField(this, "persistence", {
+        value: {
+          state: "idle",
+          dirty: false,
+          failureCount: 0,
+          lastError: null
+        }
+      });
+      __publicField(this, "notice", { value: null });
+      __publicField(this, "controller");
+      __publicField(this, "options");
+      __publicField(this, "views");
+      __publicField(this, "committed", []);
+      __publicField(this, "revision", 0);
+      __publicField(this, "tail", Promise.resolve());
+      __publicField(this, "stopped", false);
+      __publicField(this, "repairWork", null);
+      __publicField(this, "repairStatus", null);
       this.options = options;
       this.views = new CorePlaylistViews({
         ...options,
@@ -16468,9 +16697,9 @@ var TwilightPortableCore = (function(exports) {
     };
   }
   class CorePlaylistSubmission {
-    stages = /* @__PURE__ */ new Map();
-    options;
     constructor(options) {
+      __publicField(this, "stages", /* @__PURE__ */ new Map());
+      __publicField(this, "options");
       this.options = options;
     }
     async submit(clientId, command) {
@@ -16840,7 +17069,7 @@ var TwilightPortableCore = (function(exports) {
             const result = await options.searchProviderSongs(provider.id, query2, limit, offset);
             baseHealth.resultCount = result.items.length;
             total += result.total;
-            hasMore ||= result.total > offset + limit;
+            hasMore || (hasMore = result.total > offset + limit);
             return result.items.slice(0, limit).map(
               (track) => toSearchItem(track, {
                 sourceName: provider.name,
@@ -17321,12 +17550,12 @@ var TwilightPortableCore = (function(exports) {
     return value && (value.startsWith("cover://") || value.startsWith("twilight-media://image/")) ? value : null;
   }
   class CoreMusicSearchService {
-    options;
-    sources;
-    search;
-    lifetime = new AbortController();
-    work = /* @__PURE__ */ new Set();
     constructor(options) {
+      __publicField(this, "options");
+      __publicField(this, "sources");
+      __publicField(this, "search");
+      __publicField(this, "lifetime", new AbortController());
+      __publicField(this, "work", /* @__PURE__ */ new Set());
       this.options = options;
       this.sources = createUnifiedSearchSources(
         options.versions.identity,
@@ -17529,11 +17758,11 @@ var TwilightPortableCore = (function(exports) {
     return normalizeAutoMixMode(value);
   }
   class CoreSettingsService {
-    pending = Promise.resolve();
-    pendingVolume = null;
-    cancelVolumeTimer = null;
-    options;
     constructor(options) {
+      __publicField(this, "pending", Promise.resolve());
+      __publicField(this, "pendingVolume", null);
+      __publicField(this, "cancelVolumeTimer", null);
+      __publicField(this, "options");
       this.options = options;
     }
     getRevision() {
@@ -23882,9 +24111,11 @@ var TwilightPortableCore = (function(exports) {
     }
     if (typeof g.AbortController !== "function") {
       class PortableAbortSignal {
-        aborted = false;
-        reason = void 0;
-        listeners = /* @__PURE__ */ new Set();
+        constructor() {
+          __publicField(this, "aborted", false);
+          __publicField(this, "reason");
+          __publicField(this, "listeners", /* @__PURE__ */ new Set());
+        }
         addEventListener(_type, listener) {
           if (this.aborted) {
             listener();
@@ -23933,7 +24164,9 @@ var TwilightPortableCore = (function(exports) {
         }
       }
       class PortableAbortController {
-        signal = new PortableAbortSignal();
+        constructor() {
+          __publicField(this, "signal", new PortableAbortSignal());
+        }
         abort(reason) {
           this.signal._trigger(reason);
         }
@@ -23943,7 +24176,9 @@ var TwilightPortableCore = (function(exports) {
     }
     if (typeof g.TextEncoder !== "function") {
       class PortableTextEncoder {
-        encoding = "utf-8";
+        constructor() {
+          __publicField(this, "encoding", "utf-8");
+        }
         encode(input = "") {
           const str = String(input);
           const bytes = [];
@@ -23982,7 +24217,9 @@ var TwilightPortableCore = (function(exports) {
     }
     if (typeof g.TextDecoder !== "function") {
       class PortableTextDecoder {
-        encoding = "utf-8";
+        constructor() {
+          __publicField(this, "encoding", "utf-8");
+        }
         decode(input) {
           if (!input) return "";
           const bytes = input instanceof Uint8Array ? input : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input);
@@ -23998,6 +24235,72 @@ var TwilightPortableCore = (function(exports) {
         }
       }
       g.TextDecoder = PortableTextDecoder;
+    }
+    if (typeof g.Intl !== "object" || g.Intl === null) {
+      g.Intl = {};
+    }
+    if (typeof g.Intl.Collator !== "function") {
+      class PortableCollator {
+        constructor(locales, options) {
+          __publicField(this, "locale");
+          __publicField(this, "options");
+          __publicField(this, "compare");
+          this.locale = Array.isArray(locales) ? String(locales[0] ?? "en") : String(locales ?? "en");
+          this.options = options ?? {};
+          this.compare = (a, b) => {
+            const sa = String(a ?? "");
+            const sb = String(b ?? "");
+            if (sa === sb) return 0;
+            return sa < sb ? -1 : 1;
+          };
+        }
+        resolvedOptions() {
+          return { locale: this.locale, ...this.options };
+        }
+      }
+      g.Intl.Collator = PortableCollator;
+    }
+    if (typeof g.URL !== "function") {
+      class PortableURL {
+        constructor(url) {
+          __publicField(this, "href");
+          __publicField(this, "protocol");
+          __publicField(this, "username", "");
+          __publicField(this, "password", "");
+          __publicField(this, "host");
+          __publicField(this, "hostname");
+          __publicField(this, "port");
+          __publicField(this, "pathname");
+          __publicField(this, "search");
+          __publicField(this, "hash");
+          const raw = String(url ?? "").trim();
+          const match = /^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\/(?:([^:@/]+)(?::([^@/]*))?@)?([^/:?#]+)(?::([0-9]+))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/.exec(
+            raw
+          );
+          if (!match) {
+            throw new TypeError(`Invalid URL: ${raw}`);
+          }
+          this.href = raw;
+          this.protocol = match[1].toLowerCase();
+          this.username = match[2] ?? "";
+          this.password = match[3] ?? "";
+          this.hostname = match[4];
+          this.port = match[5] ?? "";
+          this.host = this.port ? `${this.hostname}:${this.port}` : this.hostname;
+          this.pathname = match[6] || "/";
+          this.search = match[7] ?? "";
+          this.hash = match[8] ?? "";
+        }
+        toString() {
+          return this.href;
+        }
+      }
+      g.URL = PortableURL;
+    }
+    if (typeof g.console !== "object" || g.console === null) {
+      const noop = () => {
+      };
+      g.console = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
     }
   }
   ensurePortableRuntimeGlobals();
@@ -24105,13 +24408,14 @@ var TwilightPortableCore = (function(exports) {
     };
   }
   class PortableQueueAndLibraryStore {
-    libraryRevisionCounter = 1;
-    queueIdCounter = 0;
-    entryIdCounter = 0;
-    tracks = /* @__PURE__ */ new Map();
-    queues = /* @__PURE__ */ new Map();
-    buildingQueues = /* @__PURE__ */ new Map();
     constructor(initialTracks = []) {
+      __publicField(this, "libraryRevisionCounter", 1);
+      __publicField(this, "queueIdCounter", 0);
+      __publicField(this, "entryIdCounter", 0);
+      __publicField(this, "tracks", /* @__PURE__ */ new Map());
+      __publicField(this, "queues", /* @__PURE__ */ new Map());
+      __publicField(this, "buildingQueues", /* @__PURE__ */ new Map());
+      __publicField(this, "playlistViews", /* @__PURE__ */ new Map());
       for (const track of initialTracks) {
         this.tracks.set(track.id, toTrackRecord(track));
       }
@@ -24653,7 +24957,6 @@ var TwilightPortableCore = (function(exports) {
         letterOffsets: {}
       };
     }
-    playlistViews = /* @__PURE__ */ new Map();
     async syncPlaylistView(sync) {
       if (sync.kind === "drop") {
         this.playlistViews.delete(sync.id);
@@ -24729,16 +25032,16 @@ var TwilightPortableCore = (function(exports) {
     }
   }
   class PortablePlaybackEngineAdapter {
-    port;
-    listeners = /* @__PURE__ */ new Map();
-    queueItems = [];
-    queueCursor = 0;
-    queueRevision = 0;
-    queueTokenCounter = 0;
-    currentQueueToken = "portable-token-0";
-    playMode = "sequential";
-    unsubscribePort = null;
     constructor(port) {
+      __publicField(this, "port");
+      __publicField(this, "listeners", /* @__PURE__ */ new Map());
+      __publicField(this, "queueItems", []);
+      __publicField(this, "queueCursor", 0);
+      __publicField(this, "queueRevision", 0);
+      __publicField(this, "queueTokenCounter", 0);
+      __publicField(this, "currentQueueToken", "portable-token-0");
+      __publicField(this, "playMode", "sequential");
+      __publicField(this, "unsubscribePort", null);
       this.port = port;
       this.unsubscribePort = port.subscribe((event) => {
         this.handlePortEvent(event);
