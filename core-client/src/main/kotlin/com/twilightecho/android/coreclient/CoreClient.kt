@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicLong
  * Transport abstraction between `CoreClient` and the underlying `QuickJsRuntimeHost`.
  */
 interface CoreTransport {
+    val generation: Long get() = 0L
+    val isRemote: Boolean get() = false
     val stateEvents: Flow<CoreEventMessage>
     suspend fun sendRequest(envelope: CoreRequestEnvelope): CoreResponseEnvelope
     suspend fun cancelRequest(envelope: CoreCancelEnvelope)
@@ -45,8 +47,10 @@ interface CoreClient {
     suspend fun querySnapshot(): CoreResult<CoreSnapshot>
     suspend fun queryQueueWindow(offset: Int = 0, limit: Int = 50): CoreResult<CoreQueueWindowView>
 
-    suspend fun syncLocalTracks(tracks: List<CoreTrackView>): Result<CoreResponseEnvelope>
+    /** Replaces the library membership, or with [merge] adds/updates rows and keeps the rest. */
+    suspend fun syncLocalTracks(tracks: List<CoreTrackView>, merge: Boolean = false): Result<CoreResponseEnvelope>
     suspend fun searchTracks(query: String): Result<CoreLibrarySearchPage>
+    suspend fun searchTracksPage(query: String, offset: Int, limit: Int): Result<CoreLibrarySearchPage> = searchTracks(query)
     suspend fun toggleFavorite(trackId: String): Result<CoreResponseEnvelope>
     suspend fun addBookmark(trackId: String, positionSec: Double, label: String): Result<CoreResponseEnvelope>
     suspend fun removeBookmark(bookmarkId: String): Result<CoreResponseEnvelope>
@@ -77,6 +81,7 @@ class DefaultCoreClient(
 
     private var currentEpoch: CoreEpoch = "epoch-boot"
     private var lastAppliedSequence: Long = -1L
+    private var sourceGeneration = transport.generation
 
     private val _snapshot = MutableStateFlow<CoreSnapshot?>(null)
     override val snapshot: StateFlow<CoreSnapshot?> = _snapshot.asStateFlow()
@@ -100,15 +105,17 @@ class DefaultCoreClient(
     override suspend fun reconcileState(): CoreResult<CoreSnapshot> {
         val result = querySnapshot()
         if (result is CoreResult.Success) {
-            applySnapshotIfNewer(result.value, forceEpochReset = true)
-            refreshQueueWindowForSnapshot(result.value)
+            refreshQueueWindowForSnapshot(_snapshot.value ?: result.value)
         }
         return result
     }
 
     override suspend fun executeCommand(command: CoreTypedCommand): CoreResult<JsonObject> {
+        resetChangedSource()
+        val origin = transport.generation
         val activeSnap = _snapshot.value
         val resolvedExpectedRevision = command.expectedRevision ?: activeSnap?.queue?.revision
+            ?: if (transport.isRemote) 0L else null
         val requestId = "req-${requestCounter.getAndIncrement()}"
         val commandId = "cmd-${UUID.randomUUID()}"
 
@@ -130,7 +137,7 @@ class DefaultCoreClient(
                 message = "Unknown command failure for ${command.name}"
             )
             // On STALE_EPOCH or OUTCOME_UNKNOWN, reconcile state before surfacing failure (Section 9.4)
-            if (failure.code == CoreErrorCode.STALE_EPOCH || failure.code == CoreErrorCode.OUTCOME_UNKNOWN) {
+            if (failure.code in listOf(CoreErrorCode.STALE_EPOCH, CoreErrorCode.STALE_REVISION, CoreErrorCode.OUTCOME_UNKNOWN)) {
                 reconcileState()
             }
             return CoreResult.Failure(failure, response.epoch)
@@ -142,13 +149,18 @@ class DefaultCoreClient(
             runCatching {
                 json.decodeFromJsonElement<CoreSnapshot>(snapshotElem)
             }.getOrNull()?.let { inlineSnapshot ->
-                applySnapshotIfNewer(inlineSnapshot, forceEpochReset = false)
+                val before = _snapshot.value
+                val applied = applySnapshotIfNewer(inlineSnapshot, forceEpochReset = false, expectedGeneration = origin)
+                if (applied && (before?.epoch != inlineSnapshot.epoch || before.queue != inlineSnapshot.queue))
+                    refreshQueueWindowForSnapshot(inlineSnapshot)
             }
         }
         return CoreResult.Success(valueObj, response.epoch)
     }
 
     override suspend fun querySnapshot(): CoreResult<CoreSnapshot> {
+        resetChangedSource()
+        val origin = transport.generation
         val requestId = "req-${requestCounter.getAndIncrement()}"
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
@@ -166,7 +178,7 @@ class DefaultCoreClient(
         }
         return runCatching {
             val snap = json.decodeFromJsonElement<CoreSnapshot>(response.value)
-            applySnapshotIfNewer(snap, forceEpochReset = false)
+            applySnapshotIfNewer(snap, forceEpochReset = true, expectedGeneration = origin)
             CoreResult.Success(snap, response.epoch)
         }.getOrElse { err ->
             CoreResult.Failure(
@@ -177,6 +189,8 @@ class DefaultCoreClient(
     }
 
     override suspend fun queryQueueWindow(offset: Int, limit: Int): CoreResult<CoreQueueWindowView> {
+        resetChangedSource()
+        val origin = transport.generation
         val requestId = "req-${requestCounter.getAndIncrement()}"
         val queueRef = _snapshot.value?.queue
         val payload = buildJsonObject {
@@ -201,6 +215,13 @@ class DefaultCoreClient(
         }
         return runCatching {
             val window = json.decodeFromJsonElement<CoreQueueWindowView>(response.value)
+            if (origin != transport.generation) return@runCatching CoreResult.Failure(
+                CoreErrorView(CoreErrorCode.CANCELLED, "播放来源已切换，请重新选择"), response.epoch)
+            val current = _snapshot.value
+            if (current?.epoch != response.epoch || current.queue?.id != window.queueId || current.queue.revision != window.revision) {
+                if (current?.queue != null) return@runCatching CoreResult.Failure(
+                    CoreErrorView(CoreErrorCode.STALE_REVISION, "队列已变化，请重新选择"), response.epoch)
+            }
             _queueWindow.value = window
             CoreResult.Success(window, response.epoch)
         }.getOrElse { err ->
@@ -211,7 +232,7 @@ class DefaultCoreClient(
         }
     }
 
-    override suspend fun syncLocalTracks(tracks: List<CoreTrackView>): Result<CoreResponseEnvelope> {
+    override suspend fun syncLocalTracks(tracks: List<CoreTrackView>, merge: Boolean): Result<CoreResponseEnvelope> {
         val requestId = "req-${requestCounter.getAndIncrement()}"
         val payload = buildJsonObject {
             put(
@@ -220,6 +241,7 @@ class DefaultCoreClient(
                     tracks.forEach { add(json.encodeToJsonElement(it)) }
                 }
             )
+            if (merge) put("merge", JsonPrimitive(true))
         }
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
@@ -233,9 +255,19 @@ class DefaultCoreClient(
     }
 
     override suspend fun searchTracks(query: String): Result<CoreLibrarySearchPage> {
+        return searchTracksInternal(query, null, null)
+    }
+
+    override suspend fun searchTracksPage(query: String, offset: Int, limit: Int): Result<CoreLibrarySearchPage> =
+        searchTracksInternal(query, offset, limit)
+
+    private suspend fun searchTracksInternal(query: String, offset: Int?, limit: Int?): Result<CoreLibrarySearchPage> {
+        resetChangedSource()
         val requestId = "req-${requestCounter.getAndIncrement()}"
         val payload = buildJsonObject {
             put("query", JsonPrimitive(query))
+            offset?.let { put("offset", JsonPrimitive(it)) }
+            limit?.let { put("limit", JsonPrimitive(it)) }
         }
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
@@ -247,7 +279,7 @@ class DefaultCoreClient(
         val response = transport.sendRequest(envelope)
         if (!response.ok || response.value == null) {
             val msg = response.error?.message ?: "Failed to execute search.songs"
-            return Result.failure(IllegalStateException(msg))
+            return Result.failure(CoreRequestException(response.error ?: CoreErrorView(CoreErrorCode.FAILED, msg)))
         }
         return runCatching {
             json.decodeFromJsonElement<CoreLibrarySearchPage>(response.value)
@@ -466,6 +498,8 @@ class DefaultCoreClient(
             )
             put("bitPerfect", JsonPrimitive(config.bitPerfect))
             put("gapless", JsonPrimitive(config.gapless))
+            put("dsp", json.encodeToJsonElement(config.dsp))
+            put("scenes", json.encodeToJsonElement(config.scenes))
         }
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
@@ -562,19 +596,24 @@ class DefaultCoreClient(
     }
 
     private suspend fun onStateEventReceived(event: CoreEventMessage) {
-        val previousQueueRev = _snapshot.value?.queue?.revision
-        val applied = applySnapshotIfNewer(event.snapshot, forceEpochReset = false)
-        if (applied && event.snapshot.queue?.revision != previousQueueRev) {
+        val previous = _snapshot.value
+        val applied = applySnapshotIfNewer(event.snapshot, forceEpochReset = false,
+            expectedGeneration = event.transportGeneration)
+        if (applied && (event.snapshot.epoch != previous?.epoch || event.snapshot.queue != previous.queue)) {
             refreshQueueWindowForSnapshot(event.snapshot)
         }
     }
 
     private suspend fun applySnapshotIfNewer(
         incoming: CoreSnapshot,
-        forceEpochReset: Boolean
+        forceEpochReset: Boolean,
+        expectedGeneration: Long? = null
     ): Boolean = reconcileMutex.withLock {
+        if (expectedGeneration != null && expectedGeneration != transport.generation) return@withLock false
+        resetChangedSource()
         val epochChanged = incoming.epoch != currentEpoch
-        if (forceEpochReset || epochChanged || lastAppliedSequence < 0L) {
+        if (epochChanged || lastAppliedSequence < 0L || (forceEpochReset && incoming.sequence == lastAppliedSequence)) {
+            if (epochChanged) _queueWindow.value = CoreQueueWindowView()
             currentEpoch = incoming.epoch
             lastAppliedSequence = incoming.sequence
             _snapshot.value = incoming
@@ -591,13 +630,27 @@ class DefaultCoreClient(
     private suspend fun refreshQueueWindowForSnapshot(snapshot: CoreSnapshot) {
         if (snapshot.queue != null) {
             queryQueueWindow(offset = 0, limit = 50)
+        } else {
+            _queueWindow.value = CoreQueueWindowView()
         }
+    }
+
+    private fun resetChangedSource() {
+        if (sourceGeneration == transport.generation) return
+        sourceGeneration = transport.generation
+        currentEpoch = "epoch-boot"
+        lastAppliedSequence = -1L
+        _snapshot.value = null
+        _queueWindow.value = CoreQueueWindowView()
     }
 
     private fun encodeCommandPayload(
         command: CoreTypedCommand,
         resolvedRevision: Long?
     ): JsonObject = when (command) {
+        is CoreTypedCommand.PlayCatalogSource -> buildJsonObject {
+            put("sourceId", JsonPrimitive(command.sourceId)); put("revision", JsonPrimitive(command.revision))
+        }
         is CoreTypedCommand.Play -> buildJsonObject {
             command.position?.let { put("position", JsonPrimitive(it)) }
         }
@@ -628,7 +681,9 @@ class DefaultCoreClient(
             put(
                 "tracks",
                 buildJsonArray {
-                    command.tracks.forEach { add(json.encodeToJsonElement(it)) }
+                    command.tracks.forEach { track -> add(if (transport.isRemote) buildJsonObject {
+                        put("id", JsonPrimitive(track.id))
+                    } else json.encodeToJsonElement(track)) }
                 }
             )
         }
@@ -702,6 +757,8 @@ class DefaultCoreClient(
             )
             put("bitPerfect", JsonPrimitive(command.config.bitPerfect))
             put("gapless", JsonPrimitive(command.config.gapless))
+            put("dsp", json.encodeToJsonElement(command.config.dsp))
+            put("scenes", json.encodeToJsonElement(command.config.scenes))
         }
     }
 

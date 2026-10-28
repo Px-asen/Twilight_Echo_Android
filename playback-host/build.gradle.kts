@@ -28,8 +28,10 @@ dependencies {
     api(project(":runtime-host"))
     api(project(":native-integration"))
     api(project(":adapters"))
+    api(project(":plugin-host"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    testImplementation(libs.junit)
 }

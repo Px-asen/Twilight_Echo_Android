@@ -41,7 +41,10 @@ class SwitchableCoreTransport(
     private val scope: CoroutineScope
 ) : CoreTransport {
 
-    private val activeDelegate = AtomicReference<CoreTransport>(localTransport)
+    private data class Route(val transport: CoreTransport, val generation: Long)
+    private val activeDelegate = AtomicReference(Route(localTransport, 0))
+    override val generation: Long get() = activeDelegate.get().generation
+    override val isRemote: Boolean get() = activeDelegate.get().transport.isRemote
     private var forwardJob: Job? = null
 
     private val _activeMode = MutableStateFlow<CoreOperatingMode>(CoreOperatingMode.StandaloneLocal)
@@ -55,10 +58,10 @@ class SwitchableCoreTransport(
     }
 
     val currentTransport: CoreTransport
-        get() = activeDelegate.get()
+        get() = activeDelegate.get().transport
 
     fun switchTo(targetTransport: CoreTransport, mode: CoreOperatingMode) {
-        activeDelegate.set(targetTransport)
+        activeDelegate.updateAndGet { Route(targetTransport, it.generation + 1) }
         _activeMode.value = mode
         bindEventForwarder(targetTransport)
     }
@@ -68,19 +71,29 @@ class SwitchableCoreTransport(
     }
 
     private fun bindEventForwarder(transport: CoreTransport) {
+        val origin = generation
         forwardJob?.cancel()
         forwardJob = scope.launch {
             transport.stateEvents.collect { event ->
-                _mergedStateEvents.emit(event)
+                if (origin == generation) _mergedStateEvents.emit(event.copy(transportGeneration = origin))
             }
         }
     }
 
     override suspend fun sendRequest(envelope: CoreRequestEnvelope): CoreResponseEnvelope {
-        return activeDelegate.get().sendRequest(envelope)
+        val route = activeDelegate.get()
+        val response = route.transport.sendRequest(envelope)
+        return if (route === activeDelegate.get()) response else CoreResponseEnvelope(
+            requestId = envelope.requestId, epoch = envelope.epoch, ok = false,
+            error = CoreErrorView(CoreErrorCode.CANCELLED, "播放来源已切换，请重新选择"))
+    }
+
+    fun updateRemoteConnection(connected: Boolean) {
+        val mode = _activeMode.value as? CoreOperatingMode.RemoteDesktopCore ?: return
+        _activeMode.value = mode.copy(connected = connected)
     }
 
     override suspend fun cancelRequest(envelope: CoreCancelEnvelope) {
-        activeDelegate.get().cancelRequest(envelope)
+        activeDelegate.get().transport.cancelRequest(envelope)
     }
 }

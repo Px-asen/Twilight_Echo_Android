@@ -32,5 +32,6 @@ include(
     ":media-session",
     ":ui",
     ":feature:player",
-    ":app"
+    ":app",
+    ":plugin-host"
 )

@@ -79,12 +79,12 @@ class NativeAudioEngineFdLeaseTest {
         assertEquals("/proc/self/fd/43", adapter.currentResolvedNativePath)
         assertEquals(listOf("content://media/external/audio/media/501"), fakeResourceAccess.releasedIds)
 
-        // Apply DSP EQ config: outputPerfect updates accordingly
+        // A request to bypass DSP is not confirmation of a measured bit-perfect output.
         adapter.setDspConfig("""{"enabled":true,"bitPerfect":true}""")
         assertFalse(adapter.getSnapshot().outputPerfect)
 
         adapter.setDspConfig("""{"enabled":false,"bitPerfect":true}""")
-        assertTrue(adapter.getSnapshot().outputPerfect)
+        assertFalse(adapter.getSnapshot().outputPerfect)
 
         // Stop playback: must release active track 2 FD lease
         adapter.stop()

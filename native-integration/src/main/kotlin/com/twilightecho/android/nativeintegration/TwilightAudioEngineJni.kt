@@ -14,9 +14,12 @@ class TwilightAudioEngineJni {
     external fun nativeDestroyEngine(handle: Long)
     external fun nativeSetEventListener(handle: Long, listener: TwilightAudioEventListener?)
     external fun nativeSetStateEventsEnabled(handle: Long, enabled: Boolean): Int
+    external fun nativeSetInputProvider(handle: Long, provider: NativeAudioInputProvider): Int
 
     external fun nativePlay(handle: Long, source: String, startTimeSeconds: Double): Int
+    external fun nativeLoad(handle: Long, source: String, startTimeSeconds: Double): Int
     external fun nativePause(handle: Long): Int
+    external fun nativeSetPaused(handle: Long, paused: Boolean): Int
     external fun nativeStop(handle: Long): Int
     external fun nativeSeek(handle: Long, positionSeconds: Double): Int
     external fun nativeSetVolume(handle: Long, volume: Double): Int
@@ -30,6 +33,12 @@ class TwilightAudioEngineJni {
 
     external fun nativeSetOutputConfig(handle: Long, outputConfigJson: String): Int
     external fun nativeSetDspConfig(handle: Long, dspConfigJson: String): Int
+    external fun nativeApplyDspState(handle: Long, revision: Long, stateJson: String): Int
+    external fun nativeGetDspGraphStatusJson(handle: Long): String
+    external fun nativeGetDspConfigJson(handle: Long): String
+    external fun nativeSetLoopRange(handle: Long, startSeconds: Double, endSeconds: Double): Int
+    external fun nativeSetVisualizationDemand(handle: Long, enabled: Boolean): Int
+    external fun nativeGetVisualizationDataJson(handle: Long, optionsJson: String): String
     external fun nativeSetOutputDevice(handle: Long, deviceId: String): Int
     external fun nativeSetOutputBackend(handle: Long, backendId: String): Int
 

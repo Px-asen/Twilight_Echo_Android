@@ -53,9 +53,13 @@ class CoreRuntimeThreadDispatcher(
         }
     }
 
-    override fun close() {
+    /** Dispose thread-affine resources after in-flight calls, without blocking Android's main thread. */
+    fun closeAfter(cleanup: () -> Unit) {
         if (closed.compareAndSet(false, true)) {
-            executor.shutdownNow()
+            executor.execute { cleanup() }
+            executor.shutdown()
         }
     }
+
+    override fun close() = closeAfter {}
 }

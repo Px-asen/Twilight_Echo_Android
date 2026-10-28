@@ -1,0 +1,13 @@
+This application uses dynamically linked FFmpeg 7.1.2 libraries:
+libavformat, libavcodec, libavutil and libswresample.
+FFmpeg is licensed under LGPL 2.1 or later; see COPYING.LGPLv2.1 here.
+FFmpeg project: https://ffmpeg.org/
+Unmodified upstream source: https://ffmpeg.org/releases/ffmpeg-7.1.2.tar.xz
+
+The audio-only build disables GPL, nonfree, external autodetection and networking.
+Build script and exact configuration: Twilight_Echo/sdk/android/ffmpeg/build-ffmpeg.sh
+Rebuild with Android NDK r27 or later (API 26), then set the Android Gradle
+ffmpegRoot property to the output directory. No FFmpeg source patches are used.
+The application loads the shared libraries through twilight_audio_jni; it does
+not statically incorporate FFmpeg. Replacement compatible shared libraries can
+be packaged by rebuilding the application with the same ffmpegRoot property.

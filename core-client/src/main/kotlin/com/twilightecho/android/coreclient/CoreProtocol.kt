@@ -113,6 +113,9 @@ data class CoreSnapshot(
     val migrationRequired: Boolean = false,
     val mute: CoreMuteState? = null,
     val libraryRevision: Long? = null,
+    val catalogRevision: Long? = null,
+    val entityMetadataRevision: Long? = null,
+    val presentationRevision: Long? = null,
     val playlistsRevision: Long? = null,
     val audioRevision: Long? = null,
     val settingsRevision: Long? = null,
@@ -140,7 +143,12 @@ enum class CoreErrorCode {
     @SerialName("FAILED") FAILED,
     @SerialName("NOT_FOUND") NOT_FOUND,
     @SerialName("PERMISSION_EXPIRED") PERMISSION_EXPIRED,
-    @SerialName("UNSUPPORTED_CAPABILITY") UNSUPPORTED_CAPABILITY
+    @SerialName("SOURCE_CHANGED") SOURCE_CHANGED,
+    @SerialName("UNSUPPORTED_CAPABILITY") UNSUPPORTED_CAPABILITY,
+    // Desktop LAN bridge only: the request's protocol version, target computer or zone is not served there.
+    @SerialName("UNSUPPORTED_PROTOCOL") UNSUPPORTED_PROTOCOL,
+    @SerialName("WRONG_TARGET") WRONG_TARGET,
+    @SerialName("UNKNOWN_ZONE") UNKNOWN_ZONE
 }
 
 /**
@@ -180,7 +188,8 @@ data class CoreEventMessage(
     val kind: String = "state",
     val epoch: CoreEpoch,
     val sequence: Long,
-    val snapshot: CoreSnapshot
+    val snapshot: CoreSnapshot,
+    @kotlinx.serialization.Transient val transportGeneration: Long? = null
 )
 
 /**
@@ -190,6 +199,10 @@ sealed interface CoreTypedCommand {
     val name: String
     val expectedRevision: Long?
         get() = null
+
+    data class PlayCatalogSource(val sourceId: String, val revision: Long) : CoreTypedCommand {
+        override val name = "catalog.play"
+    }
 
     @Serializable
     data class Play(val position: Double? = null) : CoreTypedCommand {

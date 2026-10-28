@@ -42,7 +42,8 @@ class AudioFocusCoordinator(
     private val context: Context,
     private val onInterruption: (PlatformInterruptionReason) -> Unit,
     private val onFocusRegained: (shouldResumeTransient: Boolean) -> Unit,
-    private val onDuckVolumeChange: (ducked: Boolean) -> Unit
+    private val onDuckVolumeChange: (ducked: Boolean) -> Unit,
+    private val isPlaying: () -> Boolean = { false }
 ) : Closeable {
 
     private val audioManager: AudioManager? =
@@ -50,8 +51,7 @@ class AudioFocusCoordinator(
 
     private val receiverRegistered = AtomicBoolean(false)
 
-    @Volatile
-    private var pausedByTransientFocusLoss: Boolean = false
+    private val resumeState = FocusResumeState()
 
     @Volatile
     private var duckingActive: Boolean = false
@@ -59,7 +59,7 @@ class AudioFocusCoordinator(
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS -> {
-                pausedByTransientFocusLoss = false
+                resumeState.cancel()
                 if (duckingActive) {
                     duckingActive = false
                     onDuckVolumeChange(false)
@@ -67,7 +67,7 @@ class AudioFocusCoordinator(
                 onInterruption(PlatformInterruptionReason.AUDIOFOCUS_LOSS)
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                pausedByTransientFocusLoss = true
+                resumeState.transientLoss(isPlaying())
                 onInterruption(PlatformInterruptionReason.AUDIOFOCUS_LOSS_TRANSIENT)
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
@@ -80,8 +80,7 @@ class AudioFocusCoordinator(
                     duckingActive = false
                     onDuckVolumeChange(false)
                 }
-                val shouldResume = pausedByTransientFocusLoss
-                pausedByTransientFocusLoss = false
+                val shouldResume = resumeState.gain()
                 onFocusRegained(shouldResume)
             }
         }
@@ -102,7 +101,7 @@ class AudioFocusCoordinator(
     private val becomingNoisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                pausedByTransientFocusLoss = false
+                resumeState.cancel()
                 onInterruption(PlatformInterruptionReason.AUDIO_BECOMING_NOISY)
             }
         }
@@ -112,14 +111,23 @@ class AudioFocusCoordinator(
         registerNoisyReceiverIfNeeded()
         val manager = audioManager ?: return true
         val res = manager.requestAudioFocus(audioFocusRequest)
-        return res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        if (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            resumeState.cancel()
+            // A new granted request need not dispatch AUDIOFOCUS_GAIN to its requester.
+            if (duckingActive) { duckingActive = false; onDuckVolumeChange(false) }
+            return true
+        }
+        return false
     }
 
     fun abandonPlaybackFocus() {
-        pausedByTransientFocusLoss = false
+        resumeState.cancel()
+        if (duckingActive) { duckingActive = false; onDuckVolumeChange(false) }
         unregisterNoisyReceiverIfNeeded()
         audioManager?.abandonAudioFocusRequest(audioFocusRequest)
     }
+
+    fun cancelPendingResume() = resumeState.cancel()
 
     private fun registerNoisyReceiverIfNeeded() {
         if (receiverRegistered.compareAndSet(false, true)) {

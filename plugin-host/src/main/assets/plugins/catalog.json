@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "id": "com.twilightecho.provider.ncm",
+      "name": "网易云音乐源",
+      "version": "1.1.0",
+      "description": "Twilight Echo 官方维护的基础流媒体供应商。提供网易云音乐曲库搜索、歌单解析、歌词与封面抓取功能。",
+      "author": "Px-asen",
+      "license": "Apache-2.0",
+      "type": [
+        "provider"
+      ],
+      "main": "index.mjs",
+      "engines": {
+        "twilightEcho": ">=0.20.0"
+      },
+      "apiVersion": 1,
+      "permissions": [
+        "network",
+        "settings",
+        "library:read",
+        "library:write"
+      ],
+      "androidRuntime": {
+        "apiVersion": 1,
+        "entry": "android.js",
+        "permissions": [
+          "network",
+          "settings"
+        ],
+        "networkHosts": [
+          "music.163.com",
+          "interface.music.163.com",
+          "interface3.music.163.com"
+        ]
+      },
+      "sourceUrl": "asset:ncm.tep",
+      "checksumSha256": "58abaf7441d49890f55b1da966776544b4399af447a4bdc4a8532c81070631e1"
+    }
+  ]
+}

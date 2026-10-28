@@ -1,28 +1,23 @@
 package com.twilightecho.android.runtimehost
 
 import app.cash.quickjs.QuickJs
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.Closeable
 
-/**
- * Host bridge interface exposed inside the JavaScript global scope (`__TWILIGHT_HOST_BRIDGE__`)
- * so that `music-core.js` can invoke synchronous/asynchronous Host Ports and emit state snapshots.
- */
-interface JsHostCallbackBridge {
-    fun invokePort(portName: String, methodName: String, argsJson: String): String
-    fun emitCoreEvent(eventJson: String)
-}
+/** The embedded Music Core could not be created, evaluated, booted or called. */
+class PortableCoreException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
 
 /**
- * Abstraction over the embedded JavaScript engine (`QuickJs` on Android device/emulator,
- * or a deterministic fallback engine in unit tests where native `libquickjs.so` is absent).
+ * The embedded JavaScript engine running `music-core.js`.
+ *
+ * The bundle exposes `globalThis.__TWILIGHT_PORTABLE_CORE__`, whose entry points take a JSON
+ * string and return JSON text. Nothing calls back into Kotlin from JavaScript: port calls,
+ * responses and state events are pulled with `drain()`, so the engine is never re-entered.
+ * Every failure throws; there is no fallback Core.
  */
 interface JsRuntimeEngine : Closeable {
-    val isNativeQuickJsAvailable: Boolean
-        get() = false
-    fun bindHostBridge(bridge: JsHostCallbackBridge)
-    fun evaluateScript(script: String, fileName: String = "music-core.js"): Any?
-    fun invokeGlobalFunction(functionExpr: String, argJson: String): String
-    fun drainMicrotasks()
+    fun evaluate(script: String, fileName: String)
+    fun callCore(method: String, argJson: String): String
 }
 
 /**
@@ -33,64 +28,49 @@ class CashQuickJsRuntimeEngine(
     private val runtimeDispatcher: CoreRuntimeThreadDispatcher
 ) : JsRuntimeEngine {
 
-    private var quickJs: QuickJs? = null
-    private var hostBridge: JsHostCallbackBridge? = null
-    private var scriptEvaluatedOk: Boolean = false
-
-    init {
+    private var quickJs: QuickJs? = run {
         runtimeDispatcher.checkOnRuntimeThread()
-        quickJs = runCatching { QuickJs.create() }.getOrNull()
-    }
-
-    override val isNativeQuickJsAvailable: Boolean
-        get() = quickJs != null && scriptEvaluatedOk
-
-    override fun bindHostBridge(bridge: JsHostCallbackBridge) {
-        runtimeDispatcher.checkOnRuntimeThread()
-        hostBridge = bridge
-        val engine = quickJs ?: return
-        runCatching {
-            engine.set("__TWILIGHT_HOST_BRIDGE__", JsHostCallbackBridge::class.java, bridge)
-        }.onFailure { err ->
-            runCatching { android.util.Log.e("CashQuickJsEngine", "Failed to bind host bridge", err) }
+        try {
+            QuickJs.create()
+        } catch (t: Throwable) {
+            throw PortableCoreException("QuickJS native runtime is unavailable on this device", t)
         }
     }
 
-    override fun evaluateScript(script: String, fileName: String): Any? {
-        runtimeDispatcher.checkOnRuntimeThread()
-        val engine = quickJs ?: return null
-        return runCatching {
-            val res = engine.evaluate(script, fileName)
-            scriptEvaluatedOk = true
-            res
-        }.onFailure { err ->
-            scriptEvaluatedOk = false
-            runCatching { android.util.Log.e("CashQuickJsEngine", "Failed to evaluate $fileName", err) }
-        }.getOrNull()
+    override fun evaluate(script: String, fileName: String) {
+        val engine = requireEngine()
+        try {
+            engine.evaluate(script, fileName)
+        } catch (t: Throwable) {
+            throw PortableCoreException("Failed to evaluate $fileName: ${t.message ?: t.javaClass.simpleName}", t)
+        }
     }
 
-    override fun invokeGlobalFunction(functionExpr: String, argJson: String): String {
-        runtimeDispatcher.checkOnRuntimeThread()
-        val engine = quickJs ?: return "{}"
-        if (!scriptEvaluatedOk) return "{}"
-        val escapedArg = org.json.JSONObject.quote(argJson)
-        val expression = "(function(a){var r=$functionExpr(a);return typeof r==='string'?r:JSON.stringify(r);})(JSON.parse($escapedArg))"
-        return runCatching {
-            val result = engine.evaluate(expression, "<host-call>")
-            (result as? String) ?: "{}"
-        }.onFailure { err ->
-            runCatching { android.util.Log.e("CashQuickJsEngine", "Failed to invoke $functionExpr", err) }
-        }.getOrDefault("{}")
-    }
-
-    override fun drainMicrotasks() {
-        runtimeDispatcher.checkOnRuntimeThread()
-        // CashApp QuickJS automatically drains pending jobs after evaluate calls.
+    override fun callCore(method: String, argJson: String): String {
+        require(CORE_METHOD.matches(method)) { "Invalid Core entry point: $method" }
+        val engine = requireEngine()
+        val expression = "globalThis.__TWILIGHT_PORTABLE_CORE__.$method(${JsonPrimitive(argJson)})"
+        val result = try {
+            engine.evaluate(expression, "<host-call:$method>")
+        } catch (t: Throwable) {
+            throw PortableCoreException("Core $method threw: ${t.message ?: t.javaClass.simpleName}", t)
+        }
+        return result as? String
+            ?: throw PortableCoreException("Core $method returned ${result?.javaClass?.simpleName ?: "nothing"} instead of JSON text")
     }
 
     override fun close() {
         runtimeDispatcher.checkOnRuntimeThread()
         quickJs?.close()
         quickJs = null
+    }
+
+    private fun requireEngine(): QuickJs {
+        runtimeDispatcher.checkOnRuntimeThread()
+        return quickJs ?: throw PortableCoreException("QuickJS runtime is closed")
+    }
+
+    private companion object {
+        val CORE_METHOD = Regex("[A-Za-z]+")
     }
 }

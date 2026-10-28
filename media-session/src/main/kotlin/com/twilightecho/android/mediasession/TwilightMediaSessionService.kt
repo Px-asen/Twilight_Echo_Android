@@ -6,6 +6,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.DefaultMediaNotificationProvider
 import com.twilightecho.android.playbackhost.AndroidPlaybackHost
 
 /**
@@ -23,7 +24,13 @@ class TwilightMediaSessionService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val playbackHost = AndroidPlaybackHost.getInstance(applicationContext)
-        val player = CoreSimpleBasePlayer(playbackHost = playbackHost)
+        val notificationProvider = DefaultMediaNotificationProvider.Builder(this)
+            .setChannelName(R.string.playback_notification_channel_name).build().apply {
+                setSmallIcon(R.drawable.ic_twilight_notification)
+            }
+        setMediaNotificationProvider(notificationProvider)
+        val player = CoreSimpleBasePlayer(playbackHost = playbackHost,
+            artworkLoader = MediaSessionArtwork(applicationContext, playbackHost)::load)
         playerAdapter = player
 
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)

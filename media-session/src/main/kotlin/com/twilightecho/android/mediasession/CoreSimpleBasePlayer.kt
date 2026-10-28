@@ -12,6 +12,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.twilightecho.android.coreclient.CoreClient
 import com.twilightecho.android.coreclient.CoreQueueWindowView
+import com.twilightecho.android.coreclient.CoreQueueEntryView
 import com.twilightecho.android.coreclient.CoreSnapshot
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.CoreTypedCommand
@@ -20,6 +21,8 @@ import com.twilightecho.android.playbackhost.AndroidPlaybackHost
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.guava.future
@@ -39,7 +42,8 @@ import kotlinx.coroutines.launch
 class CoreSimpleBasePlayer(
     private val playbackHost: AndroidPlaybackHost,
     private val coreClient: CoreClient = playbackHost.mediaSessionCoreClient,
-    applicationLooper: Looper = Looper.getMainLooper()
+    applicationLooper: Looper = Looper.getMainLooper(),
+    private val artworkLoader: suspend (CoreTrackView) -> ByteArray? = { null }
 ) : SimpleBasePlayer(applicationLooper) {
 
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -50,6 +54,12 @@ class CoreSimpleBasePlayer(
     @Volatile
     private var latestQueueWindow: CoreQueueWindowView = coreClient.queueWindow.value
 
+    private data class ArtworkKey(val id: String, val source: String?, val albumId: String?,
+        val cover: String?, val generation: Long)
+    private var artworkKey: ArtworkKey? = null
+    private var artworkData: ByteArray? = null
+    private var artworkJob: Job? = null
+
     init {
         mainScope.launch {
             combine(coreClient.snapshot, coreClient.queueWindow) { snap, queueWin ->
@@ -57,6 +67,26 @@ class CoreSimpleBasePlayer(
             }.collect { (snap, queueWin) ->
                 latestSnapshot = snap
                 latestQueueWindow = queueWin
+                updateArtwork(snap?.track)
+                invalidateState()
+            }
+        }
+    }
+
+    private fun updateArtwork(track: CoreTrackView?) {
+        val key = track?.let { ArtworkKey(it.id, it.source, it.albumId, it.cover,
+            playbackHost.systemMediaTransport.generation) }
+        if (key == artworkKey) return
+        artworkJob?.cancel()
+        artworkKey = key
+        artworkData = null
+        if (track == null) return
+        artworkJob = mainScope.launch {
+            val data = try { artworkLoader(track) }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { null }
+            if (key == artworkKey && key?.generation == playbackHost.systemMediaTransport.generation) {
+                artworkData = data
                 invalidateState()
             }
         }
@@ -65,20 +95,19 @@ class CoreSimpleBasePlayer(
     override fun getState(): State {
         val snap = latestSnapshot
         val playback = snap?.playback
-        val activeTrack = snap?.track
-        val queueItems = buildMediaItemQueue(snap, latestQueueWindow, activeTrack)
+        val entries = projectedQueueEntries(snap, latestQueueWindow)
+        val queueItems = buildMediaItemQueue(snap, entries)
 
-        val playbackState = when (playback?.state) {
+        val playbackState = if (queueItems.isEmpty()) Player.STATE_IDLE else when (playback?.state) {
             "playing", "paused" -> Player.STATE_READY
             "loading", "buffering" -> Player.STATE_BUFFERING
             else -> if (queueItems.isNotEmpty()) Player.STATE_READY else Player.STATE_IDLE
         }
 
         val isPlaying = playback?.state == "playing"
-        val currentQueueIndex = (playback?.queueIndex ?: 0).coerceIn(
-            0,
-            (queueItems.size - 1).coerceAtLeast(0)
-        )
+        val currentQueueIndex = entries.indexOfFirst {
+            it.occurrenceId == snap?.queue?.occurrenceId || it.index == (snap?.queue?.index ?: playback?.queueIndex)
+        }.coerceAtLeast(0)
         val positionMs = ((playback?.position ?: 0.0) * 1000.0).toLong().coerceAtLeast(0L)
 
         val playMode = PlayMode.fromWireValue(playback?.playMode)
@@ -126,9 +155,9 @@ class CoreSimpleBasePlayer(
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> =
-        mainScope.future {
+        sourceFuture {
             if (playWhenReady) {
-                playbackHost.requestFocusAndPlay()
+                playbackHost.requestSystemFocusAndPlay()
             } else {
                 coreClient.executeCommand(CoreTypedCommand.Pause)
             }
@@ -136,7 +165,7 @@ class CoreSimpleBasePlayer(
         }
 
     override fun handleStop(): ListenableFuture<*> =
-        mainScope.future {
+        sourceFuture {
             playbackHost.audioFocusCoordinator.abandonPlaybackFocus()
             coreClient.executeCommand(CoreTypedCommand.Stop)
             null
@@ -146,7 +175,7 @@ class CoreSimpleBasePlayer(
         mediaItemIndex: Int,
         positionMs: Long,
         seekCommand: Int
-    ): ListenableFuture<*> = mainScope.future {
+    ): ListenableFuture<*> = sourceFuture {
         when (seekCommand) {
             Player.COMMAND_SEEK_TO_NEXT,
             Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> {
@@ -157,17 +186,21 @@ class CoreSimpleBasePlayer(
                 coreClient.executeCommand(CoreTypedCommand.Previous)
             }
             Player.COMMAND_SEEK_TO_MEDIA_ITEM -> {
-                if (mediaItemIndex >= 0) {
-                    val rev = latestSnapshot?.queue?.revision ?: 0L
-                    coreClient.executeCommand(
+                val observed = latestSnapshot
+                val queue = observed?.queue ?: return@sourceFuture
+                val entry = projectedQueueEntries(observed, latestQueueWindow).getOrNull(mediaItemIndex)
+                    ?: return@sourceFuture
+                val origin = playbackHost.systemMediaTransport.generation
+                val result = coreClient.executeCommand(
                         CoreTypedCommand.SelectQueueIndex(
-                            revision = rev,
-                            index = mediaItemIndex,
-                            occurrenceId = "occ-$mediaItemIndex"
+                            id = queue.id,
+                            revision = queue.revision,
+                            index = entry.index,
+                            occurrenceId = entry.occurrenceId
                         )
-                    )
-                }
-                if (positionMs != C.TIME_UNSET && positionMs >= 0L) {
+                )
+                if (result.isSuccess && origin == playbackHost.systemMediaTransport.generation &&
+                    positionMs != C.TIME_UNSET && positionMs >= 0L) {
                     coreClient.executeCommand(CoreTypedCommand.Seek(positionMs / 1000.0))
                 }
             }
@@ -180,7 +213,7 @@ class CoreSimpleBasePlayer(
     }
 
     override fun handleSetRepeatMode(repeatMode: Int): ListenableFuture<*> =
-        mainScope.future {
+        sourceFuture {
             val mode = when (repeatMode) {
                 Player.REPEAT_MODE_ONE -> PlayMode.SINGLE
                 Player.REPEAT_MODE_ALL -> PlayMode.LOOP
@@ -191,14 +224,14 @@ class CoreSimpleBasePlayer(
         }
 
     override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<*> =
-        mainScope.future {
+        sourceFuture {
             val mode = if (shuffleModeEnabled) PlayMode.SHUFFLE else PlayMode.SEQUENCE
             coreClient.executeCommand(CoreTypedCommand.SetPlayMode(mode))
             null
         }
 
     override fun handleSetVolume(volume: Float): ListenableFuture<*> =
-        mainScope.future {
+        sourceFuture {
             coreClient.executeCommand(CoreTypedCommand.SetVolume(volume.toDouble().coerceIn(0.0, 1.0)))
             null
         }
@@ -208,23 +241,30 @@ class CoreSimpleBasePlayer(
         return Futures.immediateVoidFuture()
     }
 
+    private fun sourceFuture(block: suspend () -> Unit): ListenableFuture<*> {
+        val origin = playbackHost.systemMediaTransport.generation
+        return mainScope.future {
+            if (origin == playbackHost.systemMediaTransport.generation) block()
+            null
+        }
+    }
+
     private fun buildMediaItemQueue(
         snapshot: CoreSnapshot?,
-        queueWindow: CoreQueueWindowView,
-        activeTrack: CoreTrackView?
+        entries: List<CoreQueueEntryView>
     ): List<MediaItemData> {
-        val tracks: List<CoreTrackView> = when {
-            queueWindow.items.isNotEmpty() -> queueWindow.items.mapNotNull { it.track }
-            activeTrack != null -> listOf(activeTrack)
-            else -> emptyList()
-        }
-
-        return tracks.mapIndexed { idx, track ->
+        return entries.map { entry ->
+            val track = entry.track!!
             val metadata = MediaMetadata.Builder()
                 .setTitle(track.title)
                 .setArtist(track.artist)
                 .setAlbumTitle(track.album)
                 .setAlbumArtist(track.albumArtist ?: track.artist)
+                .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                .setIsPlayable(true)
+                .setArtworkData(artworkData.takeIf { track.id == artworkKey?.id &&
+                    entry.index == (snapshot?.queue?.index ?: snapshot?.playback?.queueIndex) },
+                    MediaMetadata.PICTURE_TYPE_FRONT_COVER)
                 .build()
 
             val mediaItem = MediaItem.Builder()
@@ -240,7 +280,7 @@ class CoreSimpleBasePlayer(
                     ?: C.TIME_UNSET
             }
 
-            MediaItemData.Builder(track.queueEntryId ?: "uid-$idx-${track.id}")
+            MediaItemData.Builder(entry.occurrenceId)
                 .setMediaItem(mediaItem)
                 .setMediaMetadata(metadata)
                 .setDurationUs(durationUs)
@@ -248,4 +288,16 @@ class CoreSimpleBasePlayer(
                 .build()
         }
     }
+}
+
+/** A bounded timeline retains real occurrence IDs and absolute indices, including the active item. */
+internal fun projectedQueueEntries(snapshot: CoreSnapshot?, window: CoreQueueWindowView): List<CoreQueueEntryView> {
+    val queue = snapshot?.queue
+    val entries = if (queue != null && window.queueId == queue.id && window.revision == queue.revision)
+        window.items.filter { it.track != null } else emptyList()
+    val active = snapshot?.track ?: return entries
+    val index = queue?.index ?: snapshot.playback?.queueIndex ?: 0
+    if (entries.any { it.index == index }) return entries
+    return (entries + CoreQueueEntryView(queue?.occurrenceId ?: active.queueEntryId ?: "active-${active.id}",
+        index, active)).sortedBy { it.index }
 }

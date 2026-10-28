@@ -1,26 +1,126 @@
-# Gradle & Android Studio
+# Gradle & Kotlin
 .gradle/
+.kotlin/
 **/build/
+!**/src/**/build/
 local.properties
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+.gradletasknamecache
+
+# Android Studio / IntelliJ IDEA / Editors
 *.iml
+*.ipr
+*.iws
 .idea/
-.cxx/
+.navigation/
 captures/
-.externalNativeBuild/
 output.json
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
 
-# Keystore & Signing
-*.jks
-*.keystore
+# Native / NDK / CMake / JNI build state
+.cxx/
+**/.cxx/
+.externalNativeBuild/
+**/.externalNativeBuild/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/compile_commands.json
+.ffmpeg/
+ffmpeg-build/
 
-# Android build outputs
+# Android build, profiling & packaging outputs
 *.apk
 *.aab
 *.ap_
 *.dex
+*.class
+*.hprof
+*.trace
+bin/
+gen/
+out/
+release/
+lint-results*.xml
+lint-results*.html
+
+# Keystore, Signing & Secrets
+*.jks
+*.keystore
+*.pepk
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+keystore.properties
+signing.properties
+.env
+.env.*
+!.env.example
+!.env.sample
+secrets/
+.secrets/
+
+# Logs & JVM Crash Dumps
+logs/
+*.log
+hs_err_pid*
+replay_pid*
+java_error_in_*.hprof
+
+# Node / Python / Tooling caches (for scripts & test fixtures)
+node_modules/
+.pnpm-store/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Temporary / Scratch / Backup files
+tmp/
+temp/
+.tmp/
+.artifacts/
+*.tmp
+*.temp
+*.bak
+*.orig
+*~
 
 # OS files
 .DS_Store
 Thumbs.db
+Desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
 
-.kotlin/
+# AI agent & local developer state
+.clinerules
+.cursorrules
+CLAUDE.md
+/AGENTS.md
+.claude/
+.gemini/
+.codex/
+.codex-tools/
+.agents/
+.opencode/
+.qoder/
+.local/
+.zcode/
+.worktrees/
+.superpowers/
+.birdview/
+.workbuddy/
+.omo/
+

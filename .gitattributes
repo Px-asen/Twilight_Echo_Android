@@ -1,0 +1,3 @@
+# Bundled-source integrity is recorded over exact bytes in core-lock.json.
+runtime-host/src/main/assets/core/music-core.js -text
+tools/android-host.patch -text

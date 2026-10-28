@@ -18,11 +18,13 @@ data class CoreTrackView(
     val albumId: String? = null,
     val source: String? = null,
     val ncmSongId: String? = null,
+    val cover: String? = null,
+    val unavailableReason: String? = null,
     val duration: Double = 0.0,
     val size: Long? = null,
     val format: String? = null,
     val sampleRate: Int? = null,
-    val bitrate: Int? = null,
+    val bitrate: Double? = null,
     val bitDepth: Int? = null,
     val discNumber: Int? = null,
     val trackNumber: Int? = null,
@@ -31,7 +33,8 @@ data class CoreTrackView(
     val albumArtist: String? = null,
     val addedAt: Long? = null,
     val bpm: Double? = null,
-    val isrc: String? = null
+    val isrc: String? = null,
+    val catalog: CatalogTrackReferences? = null
 )
 
 @Serializable
@@ -67,6 +70,14 @@ enum class PlayMode {
 data class CorePlaybackView(
     val streamTitle: String? = null,
     val dspActive: Boolean = false,
+    val eqActive: Boolean = false,
+    val perfectReason: String? = null,
+    val perfectReasonCode: String? = null,
+    val exclusive: Boolean = false,
+    val actualDeviceId: String? = null,
+    val actualDeviceName: String? = null,
+    val latencyMs: Double = 0.0,
+    val bufferSizeFrames: Int = 0,
     val gaplessBlockedReason: String? = null,
     val state: String = "stopped", // "stopped" | "loading" | "playing" | "paused" | "buffering" | "error"
     val position: Double = 0.0,
@@ -82,7 +93,7 @@ data class CorePlaybackView(
     val appliedConfigRevision: Long = 0L,
     val nativePlaybackActive: Boolean = false,
     val codec: String? = null,
-    val bitrate: Int? = null,
+    val bitrate: Double? = null,
     val sourceSampleRate: Int? = null,
     val sourceChannels: Int? = null,
     val sourceBitDepth: Int? = null,
@@ -94,6 +105,13 @@ data class CorePlaybackView(
     val actualSampleRate: Int? = null,
     val actualBitDepth: Int? = null,
     val actualChannels: Int? = null,
+    val actualSampleFormat: String? = null,
+    val requestedSampleRate: Int? = null,
+    val requestedSampleFormat: String? = null,
+    val hardwareSampleRate: Int? = null,
+    val hardwareBitDepth: Int? = null,
+    val hardwareChannels: Int? = null,
+    val hardwareSampleFormat: String? = null,
     val outputPerfect: Boolean = false,
     val sourceExact: Boolean = false,
     val pcmPassthrough: Boolean = false,
@@ -175,7 +193,9 @@ data class CoreBookmarkView(
 data class CoreLibrarySearchPage(
     val query: String,
     val total: Int,
-    val items: List<CoreTrackView>
+    val items: List<CoreTrackView>,
+    val offset: Int = 0,
+    val revision: Long? = null
 )
 
 /**
@@ -222,7 +242,9 @@ data class CoreEqConfigView(
     val preampDb: Double = 0.0,
     val bandsDb: List<Double> = listOf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
     val bitPerfect: Boolean = true,
-    val gapless: Boolean = true
+    val gapless: Boolean = true,
+    val dsp: CoreDspConfig = CoreDspConfig(),
+    val scenes: List<CoreDspScene> = emptyList()
 ) {
     companion object {
         val PRESETS: Map<String, List<Double>> = linkedMapOf(

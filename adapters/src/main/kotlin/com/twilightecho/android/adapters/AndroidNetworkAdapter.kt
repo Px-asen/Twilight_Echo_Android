@@ -53,6 +53,7 @@ class AndroidNetworkAdapter internal constructor(
             }
 
             val call = httpClient.newCall(requestBuilder.build())
+            spec.timeoutMs?.takeIf { it > 0 }?.let { call.timeout().timeout(it, TimeUnit.MILLISECONDS) }
             suspendCancellableCoroutine<ResourceAccessResult<NetworkResponsePayload>> { cont ->
                 cont.invokeOnCancellation {
                     call.cancel()

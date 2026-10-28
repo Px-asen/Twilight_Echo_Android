@@ -33,3 +33,6 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }
+
+// The embedded Core must be the exact bundle core-lock.json describes.
+tasks.named("preBuild") { dependsOn(":verifyPortableCore") }

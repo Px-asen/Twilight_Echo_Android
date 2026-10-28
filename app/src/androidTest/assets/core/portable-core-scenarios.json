@@ -1,0 +1,348 @@
+{
+  "schema": "portable-core-scenarios/1",
+  "description": "Wire-level scenarios replayed against the embedded Music Core by Node (scripts/portable-core-scenarios.test.cjs) and by Android QuickJS (PortableCoreScenarioTest). Both runners provide the same fake platform described here.",
+  "audio": {
+    "engineSessionId": "fake-engine",
+    "state": "idle",
+    "positionMs": 0,
+    "durationMs": 0,
+    "volume": 1,
+    "playbackRate": 1,
+    "playMode": "sequence",
+    "queueIndex": -1,
+    "queueGeneration": 0,
+    "codec": "flac",
+    "sampleRate": 44100,
+    "bitDepth": 16,
+    "channels": 2,
+    "outputBackend": "aaudio",
+    "actualSampleRate": 48000,
+    "actualBitDepth": 16,
+    "actualChannels": 2,
+    "outputPerfect": false,
+    "dspActive": false,
+    "eqActive": false,
+    "latencyMs": 20,
+    "bufferSizeFrames": 960,
+    "gaplessActive": false,
+    "preloadReady": false
+  },
+  "route": {
+    "deviceId": 2,
+    "deviceName": "Phone speaker",
+    "routeType": "speaker",
+    "outputBackend": "aaudio",
+    "supportedSampleRates": [48000],
+    "activeSampleRate": 48000,
+    "maxBitDepth": 16,
+    "isUsbHiResCapable": false
+  },
+  "tracks": {
+    "a": { "id": "a", "title": "Title a", "artist": "Echo Ensemble", "artists": ["Echo Ensemble"], "album": "Phase One", "source": "content://media/external/audio/media/a", "duration": 200 },
+    "b": { "id": "b", "title": "Title b", "artist": "Echo Ensemble", "artists": ["Echo Ensemble"], "album": "Phase One", "source": "content://media/external/audio/media/b", "duration": 200 },
+    "c": { "id": "c", "title": "Title c", "artist": "Echo Ensemble", "artists": ["Echo Ensemble"], "album": "Phase One", "source": "content://media/external/audio/media/c", "duration": 200 },
+    "d": { "id": "d", "title": "Title d", "artist": "Echo Ensemble", "artists": ["Echo Ensemble"], "album": "Phase One", "source": "content://media/external/audio/media/d", "duration": 200 }
+  },
+  "fragments": {
+    "queue-abc": [
+      { "request": "library.syncTracks", "payload": { "tracks": [{ "$track": "a" }, { "$track": "b" }, { "$track": "c" }] }, "expect": { "ok": true } },
+      { "request": "playback.replaceQueue", "payload": { "tracks": [{ "id": "a" }, { "id": "b" }, { "id": "c" }], "startIndex": 0, "play": true }, "expect": { "ok": true } }
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "plays a queue and navigates it",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        {
+          "expectSnapshot": {
+            "protocolVersion": 1,
+            "track": { "id": "a", "source": "content://media/external/audio/media/a" },
+            "playback": { "state": "playing" },
+            "queue": { "total": 3 },
+            "libraryTrackCount": 3
+          }
+        },
+        { "expectAudio": { "state": "playing" } },
+        {
+          "request": "playback.getQueueWindow", "kind": "query", "payload": { "offset": 0, "limit": 10 },
+          "expect": { "ok": true, "value": { "items": [{ "track": { "id": "a" } }, { "track": { "id": "b" } }, { "track": { "id": "c" } }], "currentIndex": 0 } }
+        },
+        {
+          "request": "playback.selectQueueIndex",
+          "payload": { "index": 2, "occurrenceId": { "$from": "value.items.2.occurrenceId" } },
+          "expectedRevision": { "$from": "snapshot.queue.revision" },
+          "expect": { "ok": true, "value": { "snapshot": { "track": { "id": "c" } } } }
+        },
+        { "request": "playback.previous", "expect": { "ok": true, "value": { "snapshot": { "track": { "id": "b" } } } } },
+        { "request": "playback.pause", "expect": { "ok": true, "value": { "snapshot": { "playback": { "state": "paused" } } } } },
+        { "request": "playback.setPlayMode", "payload": { "mode": "single" }, "expect": { "ok": true, "value": { "snapshot": { "playback": { "playMode": "single" } } } } },
+        { "expectAudio": { "playMode": "single" } },
+        { "request": "playback.setVolume", "payload": { "volume": 0.4 }, "expect": { "ok": true, "value": { "snapshot": { "playback": { "volume": 0.4 } } } } },
+        { "expectAudio": { "volume": 0.4 } }
+      ]
+    },
+    {
+      "name": "a natural track end advances through the Core session",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        { "platformAudio": { "state": "ended", "positionMs": 200000 } },
+        { "audioEvent": { "type": "track-ended", "queueIndex": 0, "reason": "eof" } },
+        { "wait": 50 },
+        { "expectSnapshot": { "track": { "id": "b" }, "queue": { "index": 1 } } },
+        { "expectAudio": { "state": "playing" } }
+      ]
+    },
+    {
+      "name": "wire guards reject stale, duplicate and malformed requests",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        { "expectSnapshot": {} },
+        { "request": "playback.pause", "epoch": "old-epoch", "expect": { "ok": false, "error": { "code": "STALE_EPOCH", "retryable": true } } },
+        { "request": "core.getSnapshot", "kind": "query", "epoch": "epoch-boot", "expect": { "ok": true } },
+        {
+          "request": "playback.selectQueueIndex", "payload": { "index": 1 },
+          "expectedRevision": { "$from": "snapshot.queue.revision", "$add": 7 },
+          "expect": { "ok": false, "error": { "code": "STALE_REVISION", "retryable": true } }
+        },
+        { "request": "playback.pause", "commandId": "cmd-1", "expect": { "ok": true } },
+        { "request": "playback.pause", "commandId": "cmd-1", "expect": { "ok": false, "error": { "code": "OUTCOME_UNKNOWN" } } },
+        { "request": "nope.nothing", "kind": "query", "expect": { "ok": false, "error": { "code": "INVALID_REQUEST" } } },
+        { "request": "playback.setPlayMode", "payload": { "mode": "warp" }, "expect": { "ok": false, "error": { "code": "INVALID_REQUEST" } } },
+        { "request": "playback.setVolume", "payload": { "volume": 3 }, "expect": { "ok": false, "error": { "code": "INVALID_REQUEST" } } },
+        { "request": "core.getSnapshot", "kind": "query", "protocolVersion": 99, "expect": { "ok": false, "error": { "code": "INVALID_REQUEST" } } }
+      ]
+    },
+    {
+      "name": "a revoked folder grant surfaces PERMISSION_EXPIRED",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        { "request": "playback.stop", "expect": { "ok": true } },
+        { "revoke": ["content://media/external/audio/media/b"] },
+        { "request": "playback.selectQueueIndex", "payload": { "index": 1 }, "expect": { "ok": false, "error": { "code": "PERMISSION_EXPIRED" } } }
+      ]
+    },
+    {
+      "name": "library sync replaces or merges without touching the queue",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        { "request": "library.syncTracks", "payload": { "tracks": [{ "$track": "d" }], "merge": true }, "expect": { "ok": true, "value": { "snapshot": { "libraryTrackCount": 4 } } } },
+        {
+          "request": "library.syncTracks", "payload": { "tracks": [{ "$track": "d" }] },
+          "expect": { "ok": true, "value": { "snapshot": { "libraryTrackCount": 1, "queue": { "total": 3 }, "track": { "id": "a" } } } }
+        },
+        { "request": "search.songs", "kind": "query", "payload": { "query": "Title d" }, "expect": { "ok": true, "value": { "items": [{ "id": "d" }] } } }
+      ]
+    },
+    {
+      "name": "playlists, favorites and collections",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        {
+          "request": "playlists.create", "payload": { "name": "Commute", "trackIds": ["a", "b"] },
+          "expect": { "ok": true, "value": { "snapshot": { "playlists": [{ "name": "Commute", "trackCount": 2 }] } } }
+        },
+        {
+          "request": "playlists.addTracks", "payload": { "playlistId": { "$from": "snapshot.playlists.0.id" }, "trackIds": ["c"] },
+          "expect": { "ok": true, "value": { "snapshot": { "playlists": [{ "trackCount": 3 }] } } }
+        },
+        {
+          "request": "playlists.rename", "payload": { "playlistId": { "$from": "snapshot.playlists.0.id" }, "name": "Evening" },
+          "expect": { "ok": true, "value": { "snapshot": { "playlists": [{ "name": "Evening" }] } } }
+        },
+        {
+          "request": "playlists.removeTrack", "payload": { "playlistId": { "$from": "snapshot.playlists.0.id" }, "trackId": "b" },
+          "expect": { "ok": true, "value": { "snapshot": { "playlists": [{ "trackIds": ["a", "c"] }] } } }
+        },
+        { "request": "playlists.create", "payload": { "name": "" }, "expect": { "ok": false, "error": { "code": "INVALID_REQUEST" } } },
+        { "request": "playlists.delete", "payload": { "playlistId": "nope" }, "expect": { "ok": false, "error": { "code": "NOT_FOUND" } } },
+        { "request": "playlists.toggleFavorite", "payload": { "trackId": "b" }, "expect": { "ok": true, "value": { "snapshot": { "favoriteTrackIds": ["b"] } } } },
+        { "request": "playlists.toggleFavorite", "payload": { "trackId": "b" }, "expect": { "ok": true, "value": { "snapshot": { "favoriteTrackIds": [] } } } },
+        {
+          "request": "playlists.delete", "payload": { "playlistId": { "$from": "snapshot.playlists.0.id" } },
+          "expect": { "ok": true, "value": { "snapshot": { "playlists": [] } } }
+        },
+        { "request": "library.collections", "kind": "query", "expect": { "ok": true, "value": { "albums": [{ "trackCount": 3 }] } } }
+      ]
+    },
+    {
+      "name": "engine output facts reach the playback view",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        {
+          "platformAudio": {
+            "actualSampleFormat": "float32", "requestedSampleRate": 44100, "requestedSampleFormat": "pcm16",
+            "hardwareSampleRate": 96000, "hardwareBitDepth": 24, "hardwareChannels": 2, "hardwareSampleFormat": "pcm24",
+            "actualDeviceName": "USB DAC"
+          }
+        },
+        { "audioEvent": { "type": "snapshot" } },
+        {
+          "expectSnapshot": {
+            "playback": {
+              "actualSampleFormat": "float32", "requestedSampleRate": 44100, "requestedSampleFormat": "pcm16",
+              "hardwareSampleRate": 96000, "hardwareBitDepth": 24, "hardwareChannels": 2, "hardwareSampleFormat": "pcm24",
+              "actualDeviceName": "USB DAC"
+            }
+          }
+        },
+        { "platformAudio": { "actualDeviceId": "2", "actualDeviceName": "AAudio Device #2 (Shared)" } },
+        { "audioEvent": { "type": "snapshot" } },
+        { "expectSnapshot": { "playback": { "actualDeviceName": "Phone speaker" } } }
+      ]
+    },
+    {
+      "name": "bookmarks use the Core-observed position",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        { "platformAudio": { "positionMs": 42000 } },
+        { "audioEvent": { "type": "snapshot" } },
+        { "expectSnapshot": { "playback": { "position": { "$approx": 42, "$tolerance": 0.5 } } } },
+        {
+          "request": "bookmarks.add", "payload": { "trackId": "a", "positionSec": 999, "label": "Chorus" },
+          "expect": { "ok": true, "value": { "snapshot": { "bookmarks": [{ "trackId": "a", "label": "Chorus", "positionSec": { "$approx": 42, "$tolerance": 1 } }] } } }
+        },
+        { "request": "bookmarks.add", "payload": { "trackId": "b", "positionSec": 1 }, "expect": { "ok": false, "error": { "code": "STALE_REVISION" } } },
+        {
+          "request": "bookmarks.remove", "payload": { "bookmarkId": { "$from": "snapshot.bookmarks.0.id" } },
+          "expect": { "ok": true, "value": { "snapshot": { "bookmarks": [] } } }
+        },
+        { "request": "bookmarks.remove", "payload": { "bookmarkId": "nope" }, "expect": { "ok": false, "error": { "code": "NOT_FOUND" } } }
+      ]
+    },
+    {
+      "name": "imported and online lyrics become Core overrides",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        {
+          "request": "lyrics.importLrc", "payload": { "trackId": "a", "lrcText": "[00:01.50]First synced line\n[00:01.50]第一行翻译\n[00:08.00]Second synced line" },
+          "expect": {
+            "ok": true,
+            "value": {
+              "source": "imported", "synced": true,
+              "lines": [{ "timeMs": 1500, "text": "First synced line", "translation": "第一行翻译" }, { "timeMs": 8000 }],
+              "snapshot": { "currentLyrics": { "source": "imported" } }
+            }
+          }
+        },
+        { "network": { "statusCode": 200, "headers": {}, "bodyUtf8": "{\"syncedLyrics\":\"[00:02.00]Online line\"}" } },
+        {
+          "request": "lyrics.fetchOnline", "kind": "query", "payload": { "trackId": "b" },
+          "expect": { "ok": true, "value": { "source": "online", "lines": [{ "text": "Online line" }] } }
+        },
+        { "expectNetworkUrl": "^https://lrclib\\.net/api/get\\?track_name=Title%20b&artist_name=Echo%20Ensemble&album_name=Phase%20One&duration=200$" },
+        { "request": "lyrics.current", "kind": "query", "payload": { "trackId": "b" }, "expect": { "ok": true, "value": { "source": "online" } } },
+        { "network": { "statusCode": 404, "headers": {}, "bodyUtf8": "" } },
+        { "request": "lyrics.fetchOnline", "kind": "query", "payload": { "trackId": "c" }, "expect": { "ok": false, "error": { "code": "NOT_FOUND" } } },
+        {
+          "request": "lyrics.fetchOnline", "kind": "query", "payload": { "trackId": "c", "url": "http://example.com/a.lrc" },
+          "expect": { "ok": false, "error": { "code": "INVALID_REQUEST" } }
+        },
+        { "network": { "fail": { "code": "FAILED", "message": "offline", "retryable": true } } },
+        { "request": "lyrics.fetchOnline", "kind": "query", "payload": { "trackId": "c" }, "expect": { "ok": false, "error": { "code": "FAILED", "retryable": true } } }
+      ]
+    },
+    {
+      "name": "a restart restores queue and documents from the session store",
+      "steps": [
+        { "request": "library.syncTracks", "payload": { "tracks": [{ "$track": "a" }, { "$track": "b" }, { "$track": "c" }] }, "expect": { "ok": true } },
+        { "request": "playback.replaceQueue", "payload": { "tracks": [{ "id": "a" }, { "id": "b" }, { "id": "c" }], "startIndex": 1, "play": true }, "expect": { "ok": true } },
+        { "request": "playlists.toggleFavorite", "payload": { "trackId": "c" }, "expect": { "ok": true } },
+        { "request": "settings.edit", "payload": { "key": "playbackResumeMode", "valueJson": "\"track\"" }, "expect": { "ok": true } },
+        { "wait": 200 },
+        { "restart": true },
+        {
+          "expectSnapshot": {
+            "track": { "id": "b" },
+            "queue": { "total": 3 },
+            "libraryTrackCount": 3,
+            "favoriteTrackIds": ["c"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a restart resumes the paused track at its position and volume",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        { "request": "playback.seek", "payload": { "position": 30 }, "expect": { "ok": true } },
+        { "request": "playback.pause", "expect": { "ok": true } },
+        { "request": "playback.setVolume", "payload": { "volume": 0.42 }, "expect": { "ok": true } },
+        { "request": "playback.seek", "payload": { "position": 12.75 }, "expect": { "ok": true } },
+        { "restart": true },
+        {
+          "expectSnapshot": {
+            "track": { "id": "a" },
+            "playback": { "state": "paused", "position": { "$approx": 12.75, "$tolerance": 0.05 }, "volume": 0.42 }
+          }
+        },
+        { "expectAudio": { "volume": 0.42 } }
+      ]
+    },
+    {
+      "name": "a legacy Kotlin-mirror payload migrates on boot",
+      "stored": {
+        "revision": "3",
+        "payload": {
+          "libraryTracks": [{ "$track": "a" }, { "$track": "b" }, { "$track": "c" }],
+          "queueTracks": [{ "$track": "a" }, { "$track": "b" }, { "$track": "c" }],
+          "currentQueueIndex": 2,
+          "queueRevision": 9,
+          "playMode": "loop",
+          "favoriteTrackIds": ["a"],
+          "bookmarks": [{ "id": "bm-1", "trackId": "b", "positionSec": 12.5, "label": "Intro", "createdAtMs": 1700000000000 }],
+          "playlists": [{ "id": "pl-1", "name": "Old list", "trackIds": ["a", "c"], "trackCount": 2, "updatedAtMs": 1700000000000 }],
+          "customLyrics": { "a": { "trackId": "a", "source": "imported", "synced": true, "lines": [{ "timeMs": 1000, "text": "Hello", "translation": "你好" }] } },
+          "eqConfig": { "enabled": true, "preset": "Rock", "preampDb": -3, "bandsDb": [4, 3, 1.5, -1, -1.5, 0, 2, 3.5, 4, 4], "bitPerfect": false, "gapless": true }
+        }
+      },
+      "steps": [
+        {
+          "expectSnapshot": {
+            "libraryTrackCount": 3,
+            "track": { "id": "c" },
+            "queue": { "total": 3 },
+            "favoriteTrackIds": ["a"],
+            "bookmarks": [{ "label": "Intro" }],
+            "playlists": [{ "name": "Old list" }],
+            "eqConfig": { "preset": "Rock" }
+          }
+        },
+        { "request": "lyrics.current", "kind": "query", "payload": { "trackId": "a" }, "expect": { "ok": true, "value": { "lines": [{ "text": "Hello", "translation": "你好" }] } } }
+      ]
+    },
+    {
+      "name": "a corrupt payload is replaced under CAS instead of failing boot",
+      "stored": { "revision": "1", "raw": "{not json" },
+      "steps": [
+        { "request": "library.syncTracks", "payload": { "tracks": [{ "$track": "a" }] }, "expect": { "ok": true } },
+        { "wait": 200 },
+        { "expectStored": { "schema": "portable-core/1" } }
+      ]
+    },
+    {
+      "name": "queue revisions start at 0 and keep rising across replaced queues",
+      "steps": [
+        { "request": "playback.replaceQueue", "payload": { "tracks": [{ "id": "ghost" }], "play": false }, "expect": { "ok": false, "error": { "code": "NOT_FOUND" } } },
+        { "request": "playback.replaceQueue", "expectedRevision": 1, "payload": { "tracks": [{ "id": "no-cover", "title": "No artwork" }], "play": false }, "expect": { "ok": false, "error": { "code": "STALE_REVISION" } } },
+        { "request": "playback.replaceQueue", "expectedRevision": 0, "payload": { "tracks": [{ "id": "no-cover", "title": "No artwork" }], "play": false }, "expect": { "ok": true } },
+        { "expectSnapshot": { "track": { "id": "no-cover", "title": "No artwork" }, "queue": { "total": 1, "revision": 1 } } },
+        { "request": "playback.replaceQueue", "expectedRevision": 1, "payload": { "tracks": [{ "id": "no-cover", "title": "No artwork" }], "play": false }, "expect": { "ok": true } },
+        { "expectSnapshot": { "queue": { "total": 1, "revision": 2 } } },
+        { "request": "playback.replaceQueue", "expectedRevision": 1, "payload": { "tracks": [{ "id": "no-cover", "title": "No artwork" }], "play": false }, "expect": { "ok": false, "error": { "code": "STALE_REVISION" } } }
+      ]
+    },
+    {
+      "name": "queue edits use the wire revision and reject a stale one",
+      "steps": [
+        { "$fragment": "queue-abc" },
+        { "expectSnapshot": { "queue": { "total": 3, "revision": 1 } } },
+        { "request": "playback.replaceQueue", "payload": { "tracks": [{ "id": "a" }, { "id": "b" }, { "id": "c" }], "play": false }, "expect": { "ok": true } },
+        { "expectSnapshot": { "queue": { "total": 3, "revision": 2 } } },
+        { "request": "queue.edit", "payload": { "id": { "$from": "snapshot.queue.id" }, "revision": { "$from": "snapshot.queue.revision" }, "edit": { "kind": "remove", "entryIds": [{ "$from": "snapshot.queue.occurrenceId" }] } }, "expect": { "ok": true } },
+        { "request": "queue.edit", "payload": { "id": { "$from": "snapshot.queue.id" }, "revision": 2, "edit": { "kind": "remove", "entryIds": [{ "$from": "snapshot.queue.occurrenceId" }] } }, "expect": { "ok": false, "error": { "code": "STALE_REVISION" } } },
+        { "expectSnapshot": { "queue": { "total": 2, "revision": 3 } } }
+      ]
+    }
+  ]
+}

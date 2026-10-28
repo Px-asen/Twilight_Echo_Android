@@ -14,6 +14,10 @@ class TwilightEchoApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        val processName = if (android.os.Build.VERSION.SDK_INT >= 28) getProcessName()
+            else java.io.File("/proc/self/cmdline").readText().substringBefore('\u0000')
+        // The isolated plugin worker must not construct the Core, audio engine or app storage.
+        if (processName != packageName) return
         playbackHost = AndroidPlaybackHost.getInstance(this)
     }
 }

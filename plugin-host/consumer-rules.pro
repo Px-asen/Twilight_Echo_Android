@@ -1,0 +1,2 @@
+-keep interface com.twilightecho.android.plugins.PluginHostCallback { *; }
+-keep class com.twilightecho.android.plugins.PluginWorkerService { *; }

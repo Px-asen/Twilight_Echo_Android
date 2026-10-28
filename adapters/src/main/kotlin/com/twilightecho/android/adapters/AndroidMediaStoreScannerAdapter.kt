@@ -1,12 +1,17 @@
 package com.twilightecho.android.adapters
 
+import android.Manifest
 import android.content.ContentUris
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.MediaStore
 import com.twilightecho.android.coreclient.CoreTrackView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+/** A MediaStore song and where its file lives ([StorageLocation]); null when MediaStore does not say. */
+data class MediaStoreTrack(val track: CoreTrackView, val location: String?)
 
 /**
  * Queries Android `MediaStore.Audio.Media.EXTERNAL_CONTENT_URI` on `Dispatchers.IO` and maps
@@ -16,8 +21,14 @@ class AndroidMediaStoreScannerAdapter(
     private val context: Context
 ) {
 
-    suspend fun scanDeviceMusic(): List<CoreTrackView> = withContext(Dispatchers.IO) {
-        val results = mutableListOf<CoreTrackView>()
+    /** Whether Android lets the app read the phone's music; picked music folders carry their own access. */
+    fun canReadDeviceMusic(): Boolean = context.checkSelfPermission(
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO
+        else Manifest.permission.READ_EXTERNAL_STORAGE
+    ) == PackageManager.PERMISSION_GRANTED
+
+    suspend fun scanDeviceMusic(): List<MediaStoreTrack> = withContext(Dispatchers.IO) {
+        val results = mutableListOf<MediaStoreTrack>()
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
         } else {
@@ -37,6 +48,14 @@ class AndroidMediaStoreScannerAdapter(
             add(MediaStore.Audio.Media.DATE_ADDED)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 add(MediaStore.Audio.Media.BITRATE)
+            }
+            // Where the file lives, so a music folder's files find their songs here.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                add(MediaStore.Audio.Media.VOLUME_NAME)
+                add(MediaStore.Audio.Media.RELATIVE_PATH)
+            } else {
+                @Suppress("DEPRECATION")
+                add(MediaStore.Audio.Media.DATA)
             }
         }.toTypedArray()
 
@@ -67,6 +86,14 @@ class AndroidMediaStoreScannerAdapter(
                 } else {
                     -1
                 }
+                val volumeCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) cursor.getColumnIndex(MediaStore.Audio.Media.VOLUME_NAME) else -1
+                val relativePathCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    cursor.getColumnIndex(MediaStore.Audio.Media.RELATIVE_PATH)
+                } else {
+                    -1
+                }
+                @Suppress("DEPRECATION")
+                val dataCol = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) cursor.getColumnIndex(MediaStore.Audio.Media.DATA) else -1
 
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idCol)
@@ -122,9 +149,18 @@ class AndroidMediaStoreScannerAdapter(
                         null
                     }
 
-                    val format = inferAudioFormat(mimeType, displayName)
+                    val format = audioFormat(mimeType, displayName)
+                    val location = if (dataCol >= 0) {
+                        StorageLocation.ofPath(cursor.getString(dataCol))
+                    } else {
+                        StorageLocation.ofMediaStore(
+                            if (volumeCol >= 0) cursor.getString(volumeCol) else null,
+                            if (relativePathCol >= 0) cursor.getString(relativePathCol) else null,
+                            displayName
+                        )
+                    }
 
-                    results.add(
+                    results += MediaStoreTrack(
                         CoreTrackView(
                             id = "mediastore-$id",
                             queueEntryId = "occ-ms-$id",
@@ -137,30 +173,19 @@ class AndroidMediaStoreScannerAdapter(
                             duration = durationMs / 1000.0,
                             size = sizeBytes,
                             format = format,
-                            sampleRate = if (format == "FLAC" || format == "WAV") 96000 else 44100,
-                            bitDepth = if (format == "FLAC" || format == "WAV") 24 else 16,
-                            bitrate = bitrateKbps,
+                            // MediaStore does not report these fields here. The decoder supplies
+                            // measured values during playback; file extensions are not evidence.
+                            sampleRate = null,
+                            bitDepth = null,
+                            bitrate = bitrateKbps?.toDouble(),
                             addedAt = addedAt
-                        )
+                        ),
+                        location
                     )
                 }
             }
-        }
+        }.getOrThrow()
 
         results
-    }
-
-    private fun inferAudioFormat(mimeType: String?, displayName: String?): String {
-        val ext = displayName?.substringAfterLast('.', "")?.lowercase().orEmpty()
-        val mime = mimeType?.lowercase().orEmpty()
-        return when {
-            ext == "flac" || "flac" in mime -> "FLAC"
-            ext == "wav" || "wav" in mime -> "WAV"
-            ext == "dsf" || ext == "dff" || "dsd" in mime -> "DSD"
-            ext == "m4a" || ext == "alac" || "mp4" in mime || "aac" in mime -> "AAC/M4A"
-            ext == "ogg" || ext == "opus" || "ogg" in mime || "opus" in mime -> "OPUS/OGG"
-            ext == "mp3" || "mpeg" in mime -> "MP3"
-            else -> ext.uppercase().ifEmpty { "AUDIO" }
-        }
     }
 }

@@ -1,0 +1,82 @@
+name: Android
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-and-unit-tests:
+    name: Locked Core and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Twilight_Echo_Android
+
+      # Only a bundle built from a commit can be rebuilt and compared here.
+      - name: Read core-lock.json
+        id: lock
+        working-directory: Twilight_Echo_Android
+        run: |
+          node -e '
+            const lock = require("./core-lock.json")
+            if (lock.sourceDirty) {
+              console.error(`music-core.js was built from uncommitted Core sources on ${lock.commit}; rebuild it from a clean commit`)
+              process.exit(1)
+            }
+            console.log(`commit=${lock.commit}`)
+            console.log(`sha256=${lock.bundleSha256}`)
+          ' >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Px-asen/Twilight_Echo
+          ref: ${{ steps.lock.outputs.commit }}
+          path: Twilight_Echo
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: Twilight_Echo/pnpm-lock.yaml
+
+      - name: Rebuild music-core.js from the locked commit
+        working-directory: Twilight_Echo
+        env:
+          SKIP_ANDROID_SYNC: '1'
+        run: |
+          pnpm install --frozen-lockfile --config.ignore-scripts=true
+          pnpm run build:portable-core
+          actual=$(sha256sum dist/portable-core/music-core.js | cut -d' ' -f1)
+          if [ "$actual" != "${{ steps.lock.outputs.sha256 }}" ]; then
+            echo "Rebuilt bundle $actual does not match core-lock.json ${{ steps.lock.outputs.sha256 }}"
+            exit 1
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # verifyPortableCore checks the shipped bundle, lock and scenario corpus against each other.
+      - name: Verify the shipped Core and run unit tests
+        working-directory: Twilight_Echo_Android
+        run: ./gradlew verifyPortableCore testDebugUnitTest

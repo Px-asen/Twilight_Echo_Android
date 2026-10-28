@@ -138,6 +138,9 @@ data class AudioSnapshot(
     val playbackRate: Double = 1.0,
     val playMode: String = "sequence",
     val queueIndex: Int = -1,
+    /** The `loadQueue` generation [queueIndex] refers to; 0 before any queue was loaded. */
+    val queueGeneration: Long = 0L,
+    val errorMessage: String? = null,
     val codec: String? = null,
     val sampleRate: Int? = null,
     val bitDepth: Int? = null,
@@ -145,7 +148,33 @@ data class AudioSnapshot(
     val outputBackend: String? = "oboe",
     val actualSampleRate: Int? = null,
     val actualBitDepth: Int? = null,
-    val outputPerfect: Boolean = false
+    val outputPerfect: Boolean = false,
+    val dspActive: Boolean = false,
+    val eqActive: Boolean = false,
+    val actualChannels: Int? = null,
+    val actualSampleFormat: String? = null,
+    val requestedSampleRate: Int? = null,
+    val requestedSampleFormat: String? = null,
+    val hardwareSampleRate: Int? = null,
+    val hardwareBitDepth: Int? = null,
+    val hardwareChannels: Int? = null,
+    val hardwareSampleFormat: String? = null,
+    val perfectReason: String? = null,
+    val perfectReasonCode: String? = null,
+    val exclusive: Boolean = false,
+    val actualDeviceId: String? = null,
+    val actualDeviceName: String? = null,
+    val latencyMs: Double = 0.0,
+    val bufferSizeFrames: Int = 0,
+    val gaplessActive: Boolean = false,
+    val gaplessBlockedReason: String? = null,
+    val preloadReady: Boolean = false,
+    val crossfadeActive: Boolean = false,
+    val crossfadeSeconds: Double = 0.0,
+    val crossfadeMixActive: Boolean = false,
+    val crossfadeEffectiveSeconds: Double = 0.0,
+    val crossfadeCurve: String? = null,
+    val crossfadeBlockedReason: String? = null
 )
 
 @Serializable
@@ -176,6 +205,13 @@ interface AudioEnginePort : Closeable {
     suspend fun setVolume(volume: Double)
     suspend fun setPlayMode(mode: PlayMode)
     suspend fun loadQueue(tracks: List<CoreTrackView>, startIndex: Int)
+
+    /**
+     * Loads a queue tagged with the Core's generation counter. Engines that can report it
+     * stamp [AudioSnapshot.queueGeneration] so late events never map onto a newer queue.
+     */
+    suspend fun loadQueue(tracks: List<CoreTrackView>, startIndex: Int, queueGeneration: Long) =
+        loadQueue(tracks, startIndex)
     suspend fun selectQueueIndex(index: Int)
     suspend fun next()
     suspend fun previous()
@@ -194,7 +230,9 @@ data class NetworkRequestSpec(
     val method: String = "GET",
     val headers: Map<String, String> = emptyMap(),
     val bodyUtf8: String? = null,
-    val contentType: String = "application/json; charset=utf-8"
+    val contentType: String = "application/json; charset=utf-8",
+    /** Whole-call deadline; null keeps the client's default timeouts. */
+    val timeoutMs: Long? = null
 )
 
 @Serializable
@@ -220,19 +258,21 @@ interface NetworkClientPort {
 
 /**
  * AudioDevicePort (Sections 11.7 & 13.6):
- * Reports real hardware output route (speaker, wired headset, Bluetooth, USB DAC) and
- * actual supported sample rates / bit depth so Music Core never fabricates Hi-Fi labels.
+ * Device inventory reports capabilities; the active route is resolved from the playback stream.
+ * Empty capabilities and zero-valued formats mean the platform supplied no value.
  */
 @Serializable
 data class AudioDeviceRouteInfo(
     val deviceId: Int = 0,
-    val deviceName: String = "Android Speaker",
-    val routeType: String = "speaker", // "speaker" | "wired_headset" | "bluetooth" | "usb_dac"
-    val outputBackend: String = "oboe",
-    val supportedSampleRates: List<Int> = listOf(48000),
-    val activeSampleRate: Int = 48000,
-    val maxBitDepth: Int = 16,
-    val isUsbHiResCapable: Boolean = false
+    val deviceName: String = "系统输出",
+    val routeType: String = "unknown", // "unknown" | "speaker" | "wired_headset" | "bluetooth" | "usb_dac"
+    val outputBackend: String = "",
+    val supportedSampleRates: List<Int> = emptyList(),
+    val activeSampleRate: Int = 0,
+    val maxBitDepth: Int = 0,
+    val isUsbHiResCapable: Boolean = false,
+    /** How a Bluetooth output carries the sound: "a2dp", "le_audio" or "call" (the headset's call link). */
+    val bluetoothProfile: String = ""
 )
 
 interface AudioDevicePort : Closeable {

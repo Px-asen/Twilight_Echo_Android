@@ -24,7 +24,8 @@ import com.twilightecho.android.ui.theme.TwilightEchoTheme
 
 /**
  * Main Activity hosting Jetpack Compose UI (`NowPlayingScreen`), handling runtime audio permission
- * requests (`READ_MEDIA_AUDIO` on API 33+ or `READ_EXTERNAL_STORAGE` on API <= 32), and connecting
+ * requests (`READ_MEDIA_AUDIO` on API 33+ or `READ_EXTERNAL_STORAGE` on API <= 32), notification
+ * permission on API 33+, and connecting
  * to `TwilightMediaSessionService` so system media notifications stay active during playback.
  */
 class MainActivity : ComponentActivity() {
@@ -39,23 +40,21 @@ class MainActivity : ComponentActivity() {
 
     private var mediaControllerFuture: ListenableFuture<MediaController>? = null
 
+    private val requestNotificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Playback remains available when notifications are declined. */ }
+
     private val requestAudioPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { _ ->
-        // Proceed with MediaStore scan whether newly granted or partial access granted
-        playerViewModel.onScanDeviceMusic()
+    ) { granted ->
+        if (granted) playerViewModel.onScanDeviceMusic()
+        else playerViewModel.onScanPermissionDenied()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(
-                Color.TRANSPARENT,
-                Color.TRANSPARENT
-            ),
-            navigationBarStyle = SystemBarStyle.light(
-                Color.TRANSPARENT,
-                Color.TRANSPARENT
-            )
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
         )
         super.onCreate(savedInstanceState)
         setContent {
@@ -66,6 +65,17 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        requestNotificationPermissionIfNeeded()
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        val preferences = getSharedPreferences("runtime_permissions", MODE_PRIVATE)
+        if (preferences.getBoolean("notifications_requested", false)) return
+        // Ask once, not on every launch after a refusal. Settings retains a direct system entry.
+        preferences.edit().putBoolean("notifications_requested", true).apply()
+        requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     private fun ensurePermissionAndScanDeviceMusic() {

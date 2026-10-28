@@ -2,294 +2,176 @@ package com.twilightecho.android.runtimehost
 
 import com.twilightecho.android.coreclient.CoreErrorCode
 import com.twilightecho.android.coreclient.CoreTrackView
-import com.twilightecho.android.coreclient. DefaultCoreClient
+import com.twilightecho.android.coreclient.DefaultCoreClient
 import com.twilightecho.android.coreclient.PlayMode
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.encodeToString
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
+/** A port call the Core must see as a typed wire error rather than a generic failure. */
+class PortCallFailure(
+    val code: CoreErrorCode,
+    message: String,
+    val retryable: Boolean = false
+) : Exception(message)
+
 /**
- * Connects JavaScript Port invocations (`__TWILIGHT_HOST_BRIDGE__.invokePort(...)`) to the
- * injected Kotlin `CoreHostPorts` using structured JSON envelopes (Sections 8.1 & 9.6).
+ * Executes the port calls the embedded Core puts in its outbox (`{type:'port', port, method, args}`)
+ * against the injected [CoreHostPorts]. Arguments are validated strictly: a malformed call is an
+ * `INVALID_REQUEST`, never a silently defaulted or partially applied operation.
+ *
+ * Calls for one port arrive in order (the host runs one FIFO lane per port), so the queue the
+ * audio engine was last given is consistent with the `play` that follows it.
  */
 class CorePortBridge(
     private val ports: CoreHostPorts,
-    private val runtimeScope: CoroutineScope,
-    private val onStateEventJson: (String) -> Unit,
     private val json: Json = DefaultCoreClient.DefaultJson
-) : JsHostCallbackBridge {
+) {
+    @Volatile
+    private var loadedQueue: List<CoreTrackView> = emptyList()
 
-    override fun invokePort(portName: String, methodName: String, argsJson: String): String {
-        val args = runCatching {
-            json.parseToJsonElement(argsJson).jsonObject
-        }.getOrElse { JsonObject(emptyMap()) }
+    suspend fun call(port: String, method: String, args: JsonObject): JsonElement = when (port) {
+        "sessionStore" -> sessionStore(method, args)
+        "resourceAccess" -> resourceAccess(method, args)
+        "audioEngine" -> audioEngine(method, args)
+        "network" -> network(method, args)
+        "audioDevice" -> audioDevice(method)
+        else -> unsupported(port, method)
+    }
 
-        return try {
-            when (portName) {
-                "clock" -> handleClockPort(methodName)
-                "sessionStore" -> handleSessionStorePort(methodName, args)
-                "resourceAccess" -> handleResourceAccessPort(methodName, args)
-                "audioEngine" -> handleAudioEnginePort(methodName, args)
-                "network" -> handleNetworkPort(methodName, args)
-                "audioDevice" -> handleAudioDevicePort(methodName)
-                else -> encodeError(
-                    CoreErrorCode.UNSUPPORTED_CAPABILITY,
-                    "Unknown host port: $portName.$methodName"
-                )
+    private suspend fun sessionStore(method: String, args: JsonObject): JsonElement = when (method) {
+        "load" -> ports.sessionStore.load()?.let { stored ->
+            buildJsonObject {
+                put("revision", JsonPrimitive(stored.revision))
+                put("payloadJson", JsonPrimitive(stored.payloadJson))
             }
-        } catch (t: Throwable) {
-            encodeError(
-                CoreErrorCode.FAILED,
-                "Port exception in $portName.$methodName: ${t.message ?: t.javaClass.simpleName}"
-            )
+        } ?: JsonNull
+        "save" -> when (val result = ports.sessionStore.save(args.requireString("payloadJson"), args.optString("expectedRevision"))) {
+            is SaveSessionResult.Ok -> buildJsonObject {
+                put("ok", JsonPrimitive(true))
+                put("revision", JsonPrimitive(result.revision))
+            }
+            is SaveSessionResult.Conflict -> buildJsonObject {
+                put("ok", JsonPrimitive(false))
+                put("reason", JsonPrimitive(result.reason))
+                result.actualRevision?.let { put("actualRevision", JsonPrimitive(it)) }
+            }
+        }
+        else -> unsupported("sessionStore", method)
+    }
+
+    private suspend fun resourceAccess(method: String, args: JsonObject): JsonElement {
+        val resourceId = args.requireString("resourceId")
+        return when (method) {
+            "resolveNativeUri" -> JsonPrimitive(ports.resourceAccess.resolveNativeUri(resourceId).orThrow())
+            "stat" -> json.encodeToJsonElement(ResourceStat.serializer(), ports.resourceAccess.stat(resourceId).orThrow())
+            else -> unsupported("resourceAccess", method)
         }
     }
 
-    override fun emitCoreEvent(eventJson: String) {
-        onStateEventJson(eventJson)
-    }
-
-    private fun handleClockPort(methodName: String): String = when (methodName) {
-        "nowUnixMs" -> encodeOk(JsonPrimitive(ports.clock.nowUnixMs()))
-        "nowMonotonicMs" -> encodeOk(JsonPrimitive(ports.clock.nowMonotonicMs()))
-        else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown clock method: $methodName")
-    }
-
-    private fun handleSessionStorePort(methodName: String, args: JsonObject): String = runBlocking {
-        when (methodName) {
-            "load" -> {
-                val stored = ports.sessionStore.load()
-                if (stored == null) {
-                    encodeOk( kotlinx.serialization.json.JsonNull)
-                } else {
-                    encodeOk(
-                        buildJsonObject {
-                            put("revision", JsonPrimitive(stored.revision))
-                            put("payloadJson", JsonPrimitive(stored.payloadJson))
-                        }
-                    )
+    private suspend fun audioEngine(method: String, args: JsonObject): JsonElement {
+        val engine = ports.audioEngine
+        when (method) {
+            "loadQueue" -> {
+                val rows = args["tracks"] as? JsonArray ?: invalid("audioEngine.loadQueue requires tracks")
+                val tracks = rows.mapIndexed { index, row ->
+                    runCatching { json.decodeFromJsonElement(CoreTrackView.serializer(), row) }
+                        .getOrElse { invalid("Queue item $index is not a playable track: ${it.message}") }
                 }
-            }
-            "save" -> {
-                val payloadJson = args["payloadJson"]?.jsonPrimitive?.contentOrNull ?: "{}"
-                val expectedRevision = args["expectedRevision"]?.jsonPrimitive?.contentOrNull
-                when (val result = ports.sessionStore.save(payloadJson, expectedRevision)) {
-                    is SaveSessionResult.Ok -> encodeOk(
-                        buildJsonObject {
-                            put("ok", JsonPrimitive(true))
-                            put("revision", JsonPrimitive(result.revision))
-                        }
-                    )
-                    is SaveSessionResult.Conflict -> encodeOk(
-                        buildJsonObject {
-                            put("ok", JsonPrimitive(false))
-                            put("reason", JsonPrimitive("conflict"))
-                            result.actualRevision?.let { put("actualRevision", JsonPrimitive(it)) }
-                        }
-                    )
-                }
-            }
-            else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown sessionStore method: $methodName")
-        }
-    }
-
-    private fun handleResourceAccessPort(methodName: String, args: JsonObject): String = runBlocking {
-        val resourceId = args["resourceId"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        when (methodName) {
-            "stat" -> {
-                when (val res = ports.resourceAccess.stat(resourceId)) {
-                    is ResourceAccessResult.Ok -> encodeOk(
-                        json.parseToJsonElement(json.encodeToString(res.value))
-                    )
-                    is ResourceAccessResult.Error -> encodeError(res.code, res.message, res.retryable)
-                }
-            }
-            "resolveNativeUri" -> {
-                when (val res = ports.resourceAccess.resolveNativeUri(resourceId)) {
-                    is ResourceAccessResult.Ok -> encodeOk(JsonPrimitive(res.value))
-                    is ResourceAccessResult.Error -> encodeError(res.code, res.message, res.retryable)
-                }
-            }
-            "acquirePlayableResource" -> {
-                when (val res = ports.resourceAccess.acquirePlayableResource(resourceId)) {
-                    is ResourceAccessResult.Ok -> encodeOk(
-                        json.parseToJsonElement(json.encodeToString(res.value))
-                    )
-                    is ResourceAccessResult.Error -> encodeError(res.code, res.message, res.retryable)
-                }
-            }
-            "releasePlayableResource" -> {
-                ports.resourceAccess.releasePlayableResource(resourceId)
-                encodeOk(JsonPrimitive(true))
-            }
-            else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown resourceAccess method: $methodName")
-        }
-    }
-
-    private fun handleAudioEnginePort(methodName: String, args: JsonObject): String = runBlocking {
-        when (methodName) {
-            "load" -> {
-                val resourceId = args["resourceId"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                val nativeUri = args["nativeUri"]?.jsonPrimitive?.contentOrNull ?: resourceId
-                val mimeType = args["mimeType"]?.jsonPrimitive?.contentOrNull
-                val startTime = args["startTimeSeconds"]?.jsonPrimitive?.doubleOrNull ?: 0.0
-                ports.audioEngine.load(
-                    AudioSourceDescriptor(
-                        resourceId = resourceId,
-                        nativeUri = nativeUri,
-                        mimeType = mimeType,
-                        startTimeSeconds = startTime
-                    )
-                )
-                encodeOk(JsonPrimitive(true))
+                val startIndex = args.requireLong("startIndex").toInt()
+                if (tracks.isNotEmpty() && startIndex !in tracks.indices) invalid("startIndex $startIndex is outside the queue")
+                engine.loadQueue(tracks, startIndex, args.optLong("queueGeneration") ?: 0L)
+                loadedQueue = tracks
             }
             "play" -> {
-                val position = args["position"]?.jsonPrimitive?.doubleOrNull
-                ports.audioEngine.play(position)
-                encodeOk(JsonPrimitive(true))
+                val position = args.requireDouble("position")
+                args.optString("source")?.let { source ->
+                    val index = engine.getSnapshot().queueIndex
+                    if (loadedQueue.getOrNull(index)?.source != source) {
+                        throw PortCallFailure(CoreErrorCode.SOURCE_CHANGED, "The audio engine no longer holds the requested track at queue index $index")
+                    }
+                }
+                engine.play(position)
             }
-            "pause" -> {
-                ports.audioEngine.pause()
-                encodeOk(JsonPrimitive(true))
-            }
-            "stop" -> {
-                ports.audioEngine.stop()
-                encodeOk(JsonPrimitive(true))
-            }
-            "seek" -> {
-                val positionMs = args["positionMs"]?.jsonPrimitive?.longOrNull
-                    ?: ((args["position"]?.jsonPrimitive?.doubleOrNull ?: 0.0) * 1000.0).toLong()
-                ports.audioEngine.seek(positionMs)
-                encodeOk(JsonPrimitive(true))
-            }
+            "pause" -> engine.pause()
+            "stop" -> engine.stop()
+            "seek" -> engine.seek(args.requireLong("positionMs").coerceAtLeast(0L))
             "setVolume" -> {
-                val volume = args["volume"]?.jsonPrimitive?.doubleOrNull ?: 1.0
-                ports.audioEngine.setVolume(volume)
-                encodeOk(JsonPrimitive(true))
+                val volume = args.requireDouble("volume")
+                if (volume !in 0.0..1.0) invalid("Volume $volume is outside 0..1")
+                engine.setVolume(volume)
             }
             "setPlayMode" -> {
-                val modeStr = args["mode"]?.jsonPrimitive?.contentOrNull
-                ports.audioEngine.setPlayMode(PlayMode.fromWireValue(modeStr))
-                encodeOk(JsonPrimitive(true))
+                val mode = args.requireString("mode")
+                engine.setPlayMode(PlayMode.entries.firstOrNull { it.toWireValue() == mode } ?: invalid("Unknown play mode: $mode"))
             }
-            "loadQueue" -> {
-                val startIndex = args["startIndex"]?.jsonPrimitive?.intOrNull ?: 0
-                val tracks = args["tracks"]?.jsonArray?.mapNotNull { elem ->
-                    runCatching { json.decodeFromJsonElement<CoreTrackView>(elem) }.getOrNull()
-                }.orEmpty()
-                ports.audioEngine.loadQueue(tracks, startIndex)
-                encodeOk(JsonPrimitive(true))
-            }
-            "selectQueueIndex" -> {
-                val index = args["index"]?.jsonPrimitive?.intOrNull ?: 0
-                ports.audioEngine.selectQueueIndex(index)
-                encodeOk(JsonPrimitive(true))
-            }
-            "next" -> {
-                ports.audioEngine.next()
-                encodeOk(JsonPrimitive(true))
-            }
-            "previous" -> {
-                ports.audioEngine.previous()
-                encodeOk(JsonPrimitive(true))
-            }
-            "setDspConfig" -> {
-                val configJson = args["configJson"]?.jsonPrimitive?.contentOrNull ?: args.toString()
-                ports.audioEngine.setDspConfig(configJson)
-                encodeOk(JsonPrimitive(true))
-            }
-            "getSnapshot" -> {
-                val snap = ports.audioEngine.getSnapshot()
-                encodeOk(json.parseToJsonElement(json.encodeToString(snap)))
-            }
-            else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown audioEngine method: $methodName")
+            "setDspConfig" -> engine.setDspConfig(args.requireString("configJson"))
+            "getSnapshot" -> return json.encodeToJsonElement(AudioSnapshot.serializer(), engine.getSnapshot())
+            else -> unsupported("audioEngine", method)
         }
+        return JsonPrimitive(true)
     }
 
-    private fun handleNetworkPort(methodName: String, args: JsonObject): String = runBlocking {
-        when (methodName) {
-            "request", "execute" -> {
-                val url = args["url"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                if (url.isBlank()) {
-                    return@runBlocking encodeError(CoreErrorCode.INVALID_REQUEST, "Network request url is required")
-                }
-                val method = args["method"]?.jsonPrimitive?.contentOrNull ?: "GET"
-                val bodyUtf8 = args["bodyUtf8"]?.jsonPrimitive?.contentOrNull
-                val contentType = args["contentType"]?.jsonPrimitive?.contentOrNull
-                    ?: "application/json; charset=utf-8"
-                val headersObj = args["headers"] as? JsonObject
-                val headers = headersObj?.entries?.associate { (k, v) ->
-                    k to (v.jsonPrimitive.contentOrNull ?: "")
-                }.orEmpty()
-                val spec = NetworkRequestSpec(
-                    url = url,
-                    method = method,
-                    headers = headers,
-                    bodyUtf8 = bodyUtf8,
-                    contentType = contentType
-                )
-                when (val res = ports.networkClient.execute(spec)) {
-                    is ResourceAccessResult.Ok -> encodeOk(
-                        json.parseToJsonElement(json.encodeToString(res.value))
-                    )
-                    is ResourceAccessResult.Error -> encodeError(res.code, res.message, res.retryable)
-                }
-            }
-            else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown network method: $methodName")
-        }
-    }
-
-    private fun handleAudioDevicePort(methodName: String): String = when (methodName) {
-        "getActiveRoute" -> {
-            val route = ports.audioDevice.getActiveRoute()
-            encodeOk(json.parseToJsonElement(json.encodeToString(route)))
-        }
-        "listOutputDevices" -> {
-            val devices = ports.audioDevice.listOutputDevices()
-            encodeOk(json.parseToJsonElement(json.encodeToString(devices)))
-        }
-        else -> encodeError(CoreErrorCode.INVALID_REQUEST, "Unknown audioDevice method: $methodName")
-    }
-
-    fun dispatchAudioEventToCore(event: AudioEvent, notifyJs: (String) -> Unit) {
-        runtimeScope.launch {
-            val payloadJson = json.encodeToString(event)
-            notifyJs(payloadJson)
-        }
-    }
-
-    private fun encodeOk(value: kotlinx.serialization.json.JsonElement): String =
-        buildJsonObject {
-            put("ok", JsonPrimitive(true))
-            put("value", value)
-        }.toString()
-
-    private fun encodeError(
-        code: CoreErrorCode,
-        message: String,
-        retryable: Boolean = false
-    ): String = buildJsonObject {
-        put("ok", JsonPrimitive(false))
-        put(
-            "error",
-            buildJsonObject {
-                put("code", JsonPrimitive(code.name))
-                put("message", JsonPrimitive(message))
-                put("retryable", JsonPrimitive(retryable))
-            }
+    private suspend fun network(method: String, args: JsonObject): JsonElement {
+        if (method != "request") unsupported("network", method)
+        val headers = (args["headers"] as? JsonObject)?.mapValues { (name, value) ->
+            (value as? JsonPrimitive)?.takeIf { it.isString }?.content ?: invalid("Header $name must be a string")
+        }.orEmpty()
+        val spec = NetworkRequestSpec(
+            url = args.requireString("url"),
+            method = args.optString("method") ?: "GET",
+            headers = headers,
+            bodyUtf8 = args.optString("bodyUtf8"),
+            contentType = args.optString("contentType") ?: "application/json; charset=utf-8",
+            timeoutMs = args.optLong("timeoutMs")
         )
-    }.toString()
+        return json.encodeToJsonElement(NetworkResponsePayload.serializer(), ports.networkClient.execute(spec).orThrow())
+    }
+
+    private fun audioDevice(method: String): JsonElement = when (method) {
+        "getActiveRoute" -> json.encodeToJsonElement(AudioDeviceRouteInfo.serializer(), ports.audioDevice.getActiveRoute())
+        "listOutputDevices" -> json.encodeToJsonElement(
+            ListSerializer(AudioDeviceRouteInfo.serializer()),
+            ports.audioDevice.listOutputDevices()
+        )
+        else -> unsupported("audioDevice", method)
+    }
+
+    private fun <T> ResourceAccessResult<T>.orThrow(): T = when (this) {
+        is ResourceAccessResult.Ok -> value
+        is ResourceAccessResult.Error -> throw PortCallFailure(code, message, retryable)
+    }
+
+    private fun unsupported(port: String, method: String): Nothing =
+        throw PortCallFailure(CoreErrorCode.UNSUPPORTED_CAPABILITY, "Unknown host port: $port.$method")
+
+    private fun invalid(message: String): Nothing = throw PortCallFailure(CoreErrorCode.INVALID_REQUEST, message)
+
+    private fun JsonObject.primitive(key: String): JsonPrimitive? =
+        (this[key] as? JsonPrimitive)?.takeUnless { it is JsonNull }
+
+    private fun JsonObject.optString(key: String): String? =
+        primitive(key)?.let { if (it.isString) it.content else invalid("$key must be a string") }
+
+    private fun JsonObject.requireString(key: String): String = optString(key) ?: invalid("$key is required")
+
+    private fun JsonObject.optLong(key: String): Long? = primitive(key)?.let {
+        if (it.isString || it.booleanOrNull != null) invalid("$key must be a number")
+        it.longOrNull ?: it.doubleOrNull?.takeIf { d -> d % 1.0 == 0.0 }?.toLong() ?: invalid("$key must be an integer")
+    }
+
+    private fun JsonObject.requireLong(key: String): Long = optLong(key) ?: invalid("$key is required")
+
+    private fun JsonObject.requireDouble(key: String): Double = primitive(key)?.let {
+        if (it.isString) invalid("$key must be a number")
+        it.doubleOrNull?.takeIf { d -> d.isFinite() } ?: invalid("$key must be a finite number")
+    } ?: invalid("$key is required")
 }

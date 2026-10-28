@@ -6,115 +6,36 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.graphics.vector.group
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
 /**
- * Precision custom vector iconography aligned with Desktop `PlayerControlIcon.vue` (24x24 grid,
- * crisp 1.8dp rounded strokes and geometric fills). Eliminates text buttons and raw emojis.
+ * Playback controls use Google Material Symbols Rounded (Apache-2.0), imported as native vectors.
+ * Original SVGs and the icon mapping live in ui/icons/material-symbols-rounded.
+ * Other icons retain the custom 24x24 grid and rounded strokes.
  */
 object TwilightIcons {
 
     val Play: ImageVector by lazy {
-        ImageVector.Builder(
-            name = "TwilightPlay",
-            defaultWidth = 24.dp,
-            defaultHeight = 24.dp,
-            viewportWidth = 24f,
-            viewportHeight = 24f
-        ).apply {
-            path(
-                fill = SolidColor(Color.Black),
-                pathFillType = PathFillType.NonZero
-            ) {
-                moveTo(7.5f, 5.2f)
-                curveTo(6.7f, 4.7f, 5.7f, 5.3f, 5.7f, 6.2f)
-                verticalLineTo(17.8f)
-                curveTo(5.7f, 18.7f, 6.7f, 19.3f, 7.5f, 18.8f)
-                lineTo(18.2f, 13.0f)
-                curveTo(19.0f, 12.5f, 19.0f, 11.5f, 18.2f, 11.0f)
-                close()
-            }
-        }.build()
+        roundedSymbol("TwilightPlay",
+            "M320-273v-414q0-17 12-28.5t28-11.5q5 0 10.5 1.5T381-721l326 207q9 6 13.5 15t4.5 19q0 10-4.5 19T707-446L381-239q-5 3-10.5 4.5T360-233q-16 0-28-11.5T320-273Z")
     }
 
     val Pause: ImageVector by lazy {
-        ImageVector.Builder(
-            name = "TwilightPause",
-            defaultWidth = 24.dp,
-            defaultHeight = 24.dp,
-            viewportWidth = 24f,
-            viewportHeight = 24f
-        ).apply {
-            path(fill = SolidColor(Color.Black)) {
-                moveTo(6.5f, 5f)
-                horizontalLineTo(9.8f)
-                verticalLineTo(19f)
-                horizontalLineTo(6.5f)
-                close()
-                moveTo(14.2f, 5f)
-                horizontalLineTo(17.5f)
-                verticalLineTo(19f)
-                horizontalLineTo(14.2f)
-                close()
-            }
-        }.build()
+        roundedSymbol("TwilightPause",
+            "M640-200q-33 0-56.5-23.5T560-280v-400q0-33 23.5-56.5T640-760q33 0 56.5 23.5T720-680v400q0 33-23.5 56.5T640-200Zm-320 0q-33 0-56.5-23.5T240-280v-400q0-33 23.5-56.5T320-760q33 0 56.5 23.5T400-680v400q0 33-23.5 56.5T320-200Z")
     }
 
     val SkipPrevious: ImageVector by lazy {
-        ImageVector.Builder(
-            name = "TwilightSkipPrevious",
-            defaultWidth = 24.dp,
-            defaultHeight = 24.dp,
-            viewportWidth = 24f,
-            viewportHeight = 24f
-        ).apply {
-            path(
-                stroke = SolidColor(Color.Black),
-                strokeLineWidth = 2.0f,
-                strokeLineCap = StrokeCap.Round,
-                strokeLineJoin = StrokeJoin.Round
-            ) {
-                moveTo(6f, 6f)
-                verticalLineTo(18f)
-            }
-            path(
-                fill = SolidColor(Color.Black)
-            ) {
-                moveTo(18f, 6.2f)
-                verticalLineTo(17.8f)
-                lineTo(9.2f, 12f)
-                close()
-            }
-        }.build()
+        roundedSymbol("TwilightSkipPrevious",
+            "M220-280v-400q0-17 11.5-28.5T260-720q17 0 28.5 11.5T300-680v400q0 17-11.5 28.5T260-240q-17 0-28.5-11.5T220-280Zm458-1L430-447q-9-6-13.5-14.5T412-480q0-10 4.5-18.5T430-513l248-166q5-4 11-5t11-1q16 0 28 11t12 29v330q0 18-12 29t-28 11q-5 0-11-1t-11-5Z")
     }
 
     val SkipNext: ImageVector by lazy {
-        ImageVector.Builder(
-            name = "TwilightSkipNext",
-            defaultWidth = 24.dp,
-            defaultHeight = 24.dp,
-            viewportWidth = 24f,
-            viewportHeight = 24f
-        ).apply {
-            path(
-                stroke = SolidColor(Color.Black),
-                strokeLineWidth = 2.0f,
-                strokeLineCap = StrokeCap.Round,
-                strokeLineJoin = StrokeJoin.Round
-            ) {
-                moveTo(18f, 6f)
-                verticalLineTo(18f)
-            }
-            path(
-                fill = SolidColor(Color.Black)
-            ) {
-                moveTo(6f, 6.2f)
-                verticalLineTo(17.8f)
-                lineTo(14.8f, 12f)
-                close()
-            }
-        }.build()
+        roundedSymbol("TwilightSkipNext",
+            "M660-280v-400q0-17 11.5-28.5T700-720q17 0 28.5 11.5T740-680v400q0 17-11.5 28.5T700-240q-17 0-28.5-11.5T660-280Zm-440-35v-330q0-18 12-29t28-11q5 0 11 1t11 5l248 166q9 6 13.5 14.5T548-480q0 10-4.5 18.5T530-447L282-281q-5 4-11 5t-11 1q-16 0-28-11t-12-29Z")
     }
 
     val HeartOutline: ImageVector by lazy {
@@ -181,27 +102,8 @@ object TwilightIcons {
     }
 
     val Queue: ImageVector by lazy {
-        strokeIcon("TwilightQueue") {
-            path(
-                stroke = SolidColor(Color.Black),
-                strokeLineWidth = 1.9f,
-                strokeLineCap = StrokeCap.Round,
-                strokeLineJoin = StrokeJoin.Round
-            ) {
-                moveTo(8f, 6f)
-                horizontalLineTo(20f)
-                moveTo(8f, 12f)
-                horizontalLineTo(20f)
-                moveTo(8f, 18f)
-                horizontalLineTo(20f)
-                moveTo(4f, 6f)
-                horizontalLineTo(4.2f)
-                moveTo(4f, 12f)
-                horizontalLineTo(4.2f)
-                moveTo(4f, 18f)
-                horizontalLineTo(4.2f)
-            }
-        }
+        roundedSymbol("TwilightQueue",
+            "M640-160q-50 0-85-35t-35-85q0-50 35-85t85-35q11 0 21 1.5t19 6.5v-288q0-17 11.5-28.5T720-720h120q17 0 28.5 11.5T880-680q0 17-11.5 28.5T840-640h-80v360q0 50-35 85t-85 35ZM160-320q-17 0-28.5-11.5T120-360q0-17 11.5-28.5T160-400h240q17 0 28.5 11.5T440-360q0 17-11.5 28.5T400-320H160Zm0-160q-17 0-28.5-11.5T120-520q0-17 11.5-28.5T160-560h400q17 0 28.5 11.5T600-520q0 17-11.5 28.5T560-480H160Zm0-160q-17 0-28.5-11.5T120-680q0-17 11.5-28.5T160-720h400q17 0 28.5 11.5T600-680q0 17-11.5 28.5T560-640H160Z")
     }
 
     val Equalizer: ImageVector by lazy {
@@ -267,105 +169,23 @@ object TwilightIcons {
     }
 
     val RepeatSequence: ImageVector by lazy {
-        strokeIcon("TwilightRepeatSequence") {
-            path(
-                stroke = SolidColor(Color.Black),
-                strokeLineWidth = 1.85f,
-                strokeLineCap = StrokeCap.Round,
-                strokeLineJoin = StrokeJoin.Round
-            ) {
-                moveTo(4f, 8f)
-                horizontalLineTo(18f)
-                moveTo(15f, 5f)
-                lineTo(18.5f, 8f)
-                lineTo(15f, 11f)
-                moveTo(4f, 16f)
-                horizontalLineTo(18f)
-                moveTo(15f, 13f)
-                lineTo(18.5f, 16f)
-                lineTo(15f, 19f)
-            }
-        }
+        roundedSymbol("TwilightRepeatSequence",
+            "M160-320q-17 0-28.5-11.5T120-360q0-17 11.5-28.5T160-400h240q17 0 28.5 11.5T440-360q0 17-11.5 28.5T400-320H160Zm0-160q-17 0-28.5-11.5T120-520q0-17 11.5-28.5T160-560h400q17 0 28.5 11.5T600-520q0 17-11.5 28.5T560-480H160Zm0-160q-17 0-28.5-11.5T120-680q0-17 11.5-28.5T160-720h400q17 0 28.5 11.5T600-680q0 17-11.5 28.5T560-640H160Zm511 499q-5 3-10 3t-10-2q-5-2-8-6.5t-3-10.5v-246q0-6 3-10.5t8-6.5q5-2 10-2t10 3l184 122q5 3 7 7.5t2 9.5q0 5-2 9.5t-7 7.5L671-141Z")
     }
 
     val RepeatAll: ImageVector by lazy {
-        strokeIcon("TwilightRepeatAll") {
-            path(
-                stroke = SolidColor(Color.Black),
-                strokeLineWidth = 1.85f,
-                strokeLineCap = StrokeCap.Round,
-                strokeLineJoin = StrokeJoin.Round
-            ) {
-                moveTo(17f, 2f)
-                lineTo(21f, 6f)
-                lineTo(17f, 10f)
-                moveTo(3f, 11f)
-                verticalLineTo(9f)
-                curveTo(3f, 7.3f, 4.3f, 6f, 6f, 6f)
-                horizontalLineTo(21f)
-                moveTo(7f, 22f)
-                lineTo(3f, 18f)
-                lineTo(7f, 14f)
-                moveTo(21f, 13f)
-                verticalLineTo(15f)
-                curveTo(21f, 16.7f, 19.7f, 18f, 18f, 18f)
-                horizontalLineTo(3f)
-            }
-        }
+        roundedSymbol("TwilightRepeatAll",
+            "m274-200 34 34q12 12 11.5 28T308-110q-12 12-28.5 12.5T251-109L148-212q-6-6-8.5-13t-2.5-15q0-8 2.5-15t8.5-13l103-103q12-12 28.5-11.5T308-370q11 12 11.5 28T308-314l-34 34h406v-120q0-17 11.5-28.5T720-440q17 0 28.5 11.5T760-400v120q0 33-23.5 56.5T680-200H274Zm412-480H280v120q0 17-11.5 28.5T240-520q-17 0-28.5-11.5T200-560v-120q0-33 23.5-56.5T280-760h406l-34-34q-12-12-11.5-28t11.5-28q12-12 28.5-12.5T709-851l103 103q6 6 8.5 13t2.5 15q0 8-2.5 15t-8.5 13L709-589q-12 12-28.5 11.5T652-590q-11-12-11.5-28t11.5-28l34-34Z")
     }
 
     val RepeatOne: ImageVector by lazy {
-        strokeIcon("TwilightRepeatOne") {
-            path(
-                stroke = SolidColor(Color.Black),
-                strokeLineWidth = 1.85f,
-                strokeLineCap = StrokeCap.Round,
-                strokeLineJoin = StrokeJoin.Round
-            ) {
-                moveTo(17f, 2f)
-                lineTo(21f, 6f)
-                lineTo(17f, 10f)
-                moveTo(3f, 11f)
-                verticalLineTo(9f)
-                curveTo(3f, 7.3f, 4.3f, 6f, 6f, 6f)
-                horizontalLineTo(21f)
-                moveTo(7f, 22f)
-                lineTo(3f, 18f)
-                lineTo(7f, 14f)
-                moveTo(21f, 13f)
-                verticalLineTo(15f)
-                curveTo(21f, 16.7f, 19.7f, 18f, 18f, 18f)
-                horizontalLineTo(3f)
-                // Center '1'
-                moveTo(11f, 10.5f)
-                lineTo(12.5f, 9.5f)
-                verticalLineTo(14.5f)
-            }
-        }
+        roundedSymbol("TwilightRepeatOne",
+            "M460-540h-30q-13 0-21.5-8.5T400-570q0-13 8.5-21.5T430-600h50q17 0 28.5 11.5T520-560v170q0 13-8.5 21.5T490-360q-13 0-21.5-8.5T460-390v-150ZM274-200l34 34q12 12 11.5 28T308-110q-12 12-28.5 12.5T251-109L148-212q-6-6-8.5-13t-2.5-15q0-8 2.5-15t8.5-13l103-103q12-12 28.5-11.5T308-370q11 12 11.5 28T308-314l-34 34h406v-120q0-17 11.5-28.5T720-440q17 0 28.5 11.5T760-400v120q0 33-23.5 56.5T680-200H274Zm412-480H280v120q0 17-11.5 28.5T240-520q-17 0-28.5-11.5T200-560v-120q0-33 23.5-56.5T280-760h406l-34-34q-12-12-11.5-28t11.5-28q12-12 28.5-12.5T709-851l103 103q6 6 8.5 13t2.5 15q0 8-2.5 15t-8.5 13L709-589q-12 12-28.5 11.5T652-590q-11-12-11.5-28t11.5-28l34-34Z")
     }
 
     val Shuffle: ImageVector by lazy {
-        strokeIcon("TwilightShuffle") {
-            path(
-                stroke = SolidColor(Color.Black),
-                strokeLineWidth = 1.85f,
-                strokeLineCap = StrokeCap.Round,
-                strokeLineJoin = StrokeJoin.Round
-            ) {
-                moveTo(16f, 3f)
-                horizontalLineTo(21f)
-                verticalLineTo(8f)
-                moveTo(4f, 20f)
-                lineTo(21f, 3f)
-                moveTo(21f, 16f)
-                verticalLineTo(21f)
-                horizontalLineTo(16f)
-                moveTo(15f, 15f)
-                lineTo(21f, 21f)
-                moveTo(4f, 4f)
-                lineTo(9f, 9f)
-            }
-        }
+        roundedSymbol("TwilightShuffle",
+            "M600-160q-17 0-28.5-11.5T560-200q0-17 11.5-28.5T600-240h64l-99-99q-12-12-11.5-28.5T566-396q12-12 28.5-12t28.5 12l97 98v-62q0-17 11.5-28.5T760-400q17 0 28.5 11.5T800-360v160q0 17-11.5 28.5T760-160H600Zm-428-12q-11-11-11-28t11-28l492-492h-64q-17 0-28.5-11.5T560-760q0-17 11.5-28.5T600-800h160q17 0 28.5 11.5T800-760v160q0 17-11.5 28.5T760-560q-17 0-28.5-11.5T720-600v-64L228-172q-11 11-28 11t-28-11Zm-1-560q-11-11-11-28t11-28q11-11 27.5-11t28.5 11l168 167q11 11 11.5 27.5T395-565q-11 11-28 11t-28-11L171-732Z")
     }
 
     val Search: ImageVector by lazy {
@@ -646,6 +466,72 @@ object TwilightIcons {
             }
         }
     }
+
+    val ArrowBack: ImageVector by lazy {
+        strokeIcon("ArrowBack") { path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+            moveTo(19f, 12f); lineTo(5f, 12f); moveTo(11f, 6f); lineTo(5f, 12f); lineTo(11f, 18f)
+        } }
+    }
+    val ArrowRight: ImageVector by lazy {
+        strokeIcon("ArrowRight") { path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+            moveTo(5f, 12f); lineTo(19f, 12f); moveTo(13f, 6f); lineTo(19f, 12f); lineTo(13f, 18f)
+        } }
+    }
+    val More: ImageVector by lazy {
+        strokeIcon("More") { path(fill = SolidColor(Color.Black)) {
+            for (x in listOf(5f, 12f, 19f)) {
+                moveTo(x + 1.5f, 12f)
+                arcTo(1.5f, 1.5f, 0f, true, true, x - 1.5f, 12f)
+                arcTo(1.5f, 1.5f, 0f, true, true, x + 1.5f, 12f)
+            }
+        } }
+    }
+    val Computer: ImageVector by lazy {
+        strokeIcon("Computer") { path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+            moveTo(3f, 4f); lineTo(21f, 4f); lineTo(21f, 16f); lineTo(3f, 16f); close()
+            moveTo(12f, 16f); lineTo(12f, 21f); moveTo(8f, 21f); lineTo(16f, 21f)
+        } }
+    }
+
+    val Phone: ImageVector by lazy {
+        strokeIcon("Phone") { path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+            moveTo(8f, 2.5f); lineTo(16f, 2.5f)
+            arcTo(2f, 2f, 0f, false, true, 18f, 4.5f); lineTo(18f, 19.5f)
+            arcTo(2f, 2f, 0f, false, true, 16f, 21.5f); lineTo(8f, 21.5f)
+            arcTo(2f, 2f, 0f, false, true, 6f, 19.5f); lineTo(6f, 4.5f)
+            arcTo(2f, 2f, 0f, false, true, 8f, 2.5f); close()
+            moveTo(10.5f, 18.5f); lineTo(13.5f, 18.5f)
+        } }
+    }
+    val Speaker: ImageVector by lazy {
+        strokeIcon("Speaker") { path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+            moveTo(4f, 9f); lineTo(8f, 9f); lineTo(13f, 4.5f); lineTo(13f, 19.5f); lineTo(8f, 15f); lineTo(4f, 15f); close()
+            moveTo(16.5f, 9f); arcTo(4f, 4f, 0f, false, true, 16.5f, 15f)
+            moveTo(19f, 6.5f); arcTo(7.5f, 7.5f, 0f, false, true, 19f, 17.5f)
+        } }
+    }
+
+    /** Material Symbols Rounded SVGs use a 0 -960 960 960 viewBox. */
+    private fun roundedSymbol(name: String, data: String): ImageVector = ImageVector.Builder(
+        name = name,
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 960f,
+        viewportHeight = 960f
+    ).apply {
+        group(translationY = 960f) {
+            addPath(
+                pathData = addPathNodes(data),
+                fill = SolidColor(Color.Black),
+                pathFillType = PathFillType.NonZero
+            )
+        }
+    }.build()
 
     private inline fun strokeIcon(
         name: String,
