@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <a href="./README.md"><strong>简体中文</strong></a> · <strong>English</strong>
+</p>
+
+<p align="center">
   <a href="https://github.com/Px-asen/Twilight_Echo_Android/releases"><img alt="Releases" src="https://img.shields.io/github/v/release/Px-asen/Twilight_Echo_Android?display_name=tag&style=flat-square&color=8b5cf6" /></a>
   <img alt="Android 8.0+ (API 26+)" src="https://img.shields.io/badge/Android-8.0%2B%20(API%2026%2B)-3ddc84?style=flat-square" />
   <img alt="Native Audio: FFmpeg + C++ DSP + AAudio" src="https://img.shields.io/badge/Audio-FFmpeg%20%2B%20C%2B%2B%20DSP%20%2B%20AAudio-8b5cf6?style=flat-square" />
@@ -15,8 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="./README.md"><strong>简体中文</strong></a>
-  · <a href="https://github.com/Px-asen/Twilight_Echo_Android/releases">Download APK</a>
+  <a href="https://github.com/Px-asen/Twilight_Echo_Android/releases"><strong>Download APK</strong></a>
   · <a href="#quick-start">Quick Start</a>
   · <a href="#features-at-a-glance">Features</a>
   · <a href="#desktop-core-lan-bridge">Desktop Core Bridge</a>
