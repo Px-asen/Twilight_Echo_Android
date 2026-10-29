@@ -24,7 +24,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.twilightecho.android.coreclient.CoreTrackView
-import com.twilightecho.android.plugins.providerArtworkPreview
 import com.twilightecho.android.ui.components.*
 import com.twilightecho.android.ui.theme.LocalTwilightAccents
 import com.twilightecho.android.ui.theme.TwilightEchoTheme
@@ -38,9 +37,9 @@ internal fun StreamingHome(state: StreamingUiState, actions: StreamingActions) {
         SectionLink("发现", actions.library, Modifier.padding(start = 20.dp, end = 16.dp).testTag("streaming-open-library")) {
             StreamingAccountButton(state, actions)
         }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+        LazyRow(Modifier.fillMaxWidth().padding(vertical = 12.dp).testTag("home-recommendations"), contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StreamingRecommendation.entries.forEach { kind ->
+            items(StreamingRecommendation.entries, key = { it.name }) { kind ->
                 val section = state.sections[kind]
                 RecommendationCard(kind, section, { open(kind) },
                     section?.tracks?.firstOrNull()?.takeIf { ready }?.let { first -> { actions.play(section.tracks, first) } })
@@ -272,9 +271,9 @@ private fun StreamingDetailContent(detail: StreamingDetail, state: PlayerUiState
                     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally) {
                         val shape = RoundedCornerShape(20.dp)
-                        if (detail.collection != null) StreamingArtwork(detail.collection,
+                        if (detail.collection != null && visual != null) ArtworkImage(visual,
                             Modifier.padding(top = 4.dp).size(196.dp)
-                                .shadow(28.dp, shape).clip(shape))
+                                .shadow(28.dp, shape).clip(shape), ContentScale.Crop)
                         else if (detail.recommendation != null) Box(Modifier.padding(top = 4.dp).size(120.dp)
                             .clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceContainer),
                             contentAlignment = Alignment.Center) {
@@ -445,15 +444,15 @@ internal fun StreamingPlaylistPicker(state: StreamingUiState, tracks: List<CoreT
 }
 
 @Composable
-internal fun rememberStreamingArtwork(item: StreamingCollection): TrackArtworkVisual {
-    val preview by produceState<String?>(null, item.cover) { value = item.cover?.let { providerArtworkPreview(it) } }
+internal fun rememberStreamingArtwork(item: StreamingCollection, size: Int = 1024, extractColors: Boolean = true): TrackArtworkVisual {
+    item.cover?.let { return rememberProviderArtwork(it, size, extractColors) }
     return rememberTrackArtwork("streaming-${item.kind}-${item.id}", item.title, item.subtitle,
-        null, null, previewOnly = true, previewDataUrl = preview)
+        null, null, previewOnly = true, maxSize = size, extractColors = extractColors)
 }
 
 @Composable
-internal fun StreamingArtwork(item: StreamingCollection, modifier: Modifier) {
-    val artwork = rememberStreamingArtwork(item)
+internal fun StreamingArtwork(item: StreamingCollection, modifier: Modifier, size: Int = 256) {
+    val artwork = rememberStreamingArtwork(item, size, extractColors = false)
     ArtworkImage(artwork, modifier.then(if (artwork.isRealEmbeddedArt) Modifier.testTag("loadedStreamingArtwork") else Modifier), ContentScale.Crop)
 }
 

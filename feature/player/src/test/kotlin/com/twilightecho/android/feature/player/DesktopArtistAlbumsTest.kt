@@ -16,7 +16,6 @@ class DesktopArtistAlbumsTest {
     private var revision = 9L
     private var fail = false
     private var uniqueAlbums = false
-    private var busyOnce = false
     private var gate: CompletableDeferred<Unit>? = null
     private fun client() = DesktopLibraryClient(object : CoreTransport {
         override val stateEvents = MutableSharedFlow<CoreEventMessage>()
@@ -36,12 +35,8 @@ class DesktopArtistAlbumsTest {
                             if (uniqueAlbums) "release-$i" else if (i == 104) "release-2" else "release-1", track = CatalogSourceTrack("歌曲 $i")) }))
                 }
                 "catalog.detail" -> {
+                    if (uniqueAlbums && calls.count { it.name == "catalog.detail" } > 2) delay(1_250)
                     gate?.let { withContext(NonCancellable) { it.await() } }
-                    if (busyOnce) {
-                        busyOnce = false
-                        return CoreResponseEnvelope(requestId = envelope.requestId, epoch = "desktop", ok = false,
-                            error = CoreErrorView(CoreErrorCode.BUSY, "电脑请求较多，请稍后重试"))
-                    }
                     if (fail) return CoreResponseEnvelope(requestId = envelope.requestId, epoch = "desktop", ok = false,
                         error = CoreErrorView(CoreErrorCode.FAILED, "专辑读取失败"))
                     val id = payload.getValue("id").jsonPrimitive.content
@@ -104,7 +99,7 @@ class DesktopArtistAlbumsTest {
         assertTrue(presenter.state.value.albumsLoaded)
     }
 
-    @Test fun largeDiscographiesArePacedAndPublishAlbumsBeforeTheWholeListFinishes() = runTest {
+    @Test fun pacedTransportReadsPublishAlbumsBeforeTheWholeListFinishes() = runTest {
         uniqueAlbums = true
         val presenter = DesktopLibraryPresenter(backgroundScope, client())
         presenter.open(artist); runCurrent()
@@ -118,16 +113,23 @@ class DesktopArtistAlbumsTest {
         assertTrue(presenter.state.value.albumsLoaded)
     }
 
-    @Test fun aBusyDesktopWaitsForTheRateWindowBeforeRetryingTheSameRead() = runTest {
+    @Test fun refreshingAnArtistKeepsItsAlbumsWhileReadingAndAfterAFailure() = runTest {
         val presenter = DesktopLibraryPresenter(backgroundScope, client())
         presenter.open(artist); runCurrent()
-        busyOnce = true; presenter.artistTab(true); runCurrent()
+        presenter.artistTab(true); runCurrent()
+        val albums = presenter.state.value.albums
+        val metadata = presenter.state.value.metadata
+        gate = CompletableDeferred()
+        presenter.open(artist, refresh = true); runCurrent()
+        assertEquals(albums, presenter.state.value.albums)
+        assertEquals(metadata, presenter.state.value.metadata)
         assertTrue(presenter.state.value.albumsLoading)
-        assertNull(presenter.state.value.albumsError)
-        advanceTimeBy(59_999); runCurrent()
-        assertEquals(1, calls.count { it.name == "catalog.detail" })
-        advanceTimeBy(1); runCurrent()
+        fail = true; gate!!.complete(Unit); runCurrent()
+        assertEquals("专辑读取失败", presenter.state.value.albumsError)
+        assertEquals(albums, presenter.state.value.albums)
+        assertFalse(presenter.state.value.albumsLoading)
+        fail = false; presenter.loadArtistAlbums(); runCurrent()
         assertTrue(presenter.state.value.albumsLoaded)
-        assertEquals(listOf("release-1", "release-2"), presenter.state.value.albums.map { it.id })
+        assertEquals(albums, presenter.state.value.albums)
     }
 }

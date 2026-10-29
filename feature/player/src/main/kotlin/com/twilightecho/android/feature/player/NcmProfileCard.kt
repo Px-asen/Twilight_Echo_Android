@@ -14,16 +14,14 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.twilightecho.android.plugins.providerArtworkPreview
 import com.twilightecho.android.ui.components.*
 
 @Composable
 internal fun NcmAvatar(nickname: String, url: String?, modifier: Modifier = Modifier) {
     // A changed URL starts a fresh image state, including when the signed-in account changes.
     key(url) {
-        val preview by produceState<String?>(null, url) { value = url?.let { providerArtworkPreview(it, size = 256) } }
-        val visual = rememberTrackArtwork("ncm-avatar-$url", nickname, null, null,
-            previewDataUrl = preview, previewOnly = true)
+        val visual = url?.let { rememberProviderArtwork(it, 256, extractColors = false) }
+            ?: rememberTrackArtwork("ncm-avatar", nickname, null, null, previewOnly = true, maxSize = 256, extractColors = false)
         Box(modifier.clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .semantics { contentDescription = "${nickname.ifBlank { "网易云用户" }}的头像" }, contentAlignment = Alignment.Center) {
             if (visual.isRealEmbeddedArt) ArtworkImage(visual, Modifier.fillMaxSize().testTag("ncmAvatarLoaded"), ContentScale.Crop)

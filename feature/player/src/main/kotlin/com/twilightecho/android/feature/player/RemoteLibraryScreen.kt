@@ -42,20 +42,21 @@ internal data class RemoteArtworkEnvironment(val remote: Boolean = false,
 internal val LocalRemoteArtwork = compositionLocalOf { RemoteArtworkEnvironment() }
 
 @Composable
-internal fun rememberPlayerArtwork(track: CoreTrackView?, size: Int = 1024): TrackArtworkVisual {
+internal fun rememberPlayerArtwork(track: CoreTrackView?, size: Int = 1024, extractColors: Boolean = true): TrackArtworkVisual {
     val environment = LocalRemoteArtwork.current
     // A folder's image is a local file; any other cover is a provider's web image.
     val folderCover = track?.cover?.takeIf { it.startsWith("content://") }
-    val providerCover by produceState<String?>(null, track?.cover, size) {
-        value = track?.cover?.takeIf { folderCover == null }?.let { com.twilightecho.android.plugins.providerArtworkPreview(it, size) }
-    }
     val remote = track?.id?.let { it.startsWith("remote-track:") || it.startsWith(DesktopMediaReference.PREFIX) } == true
     LaunchedEffect(track?.id, environment.revision) {
         if (remote) track?.id?.let(environment.request)
     }
+    if (!remote && folderCover == null && (track?.source == null || track.source?.startsWith("provider://") == true)) {
+        track?.cover?.let { return rememberProviderArtwork(it, size, extractColors) }
+    }
     return rememberTrackArtwork(track?.id, track?.title, track?.artist, track?.source?.let(CueSource::audio), track?.albumId,
         previewOnly = remote || track?.source?.startsWith("provider://") == true,
-        previewDataUrl = if (remote) environment.previews[track?.id] else providerCover, coverUri = folderCover)
+        previewDataUrl = if (remote) environment.previews[track?.id] else null, coverUri = folderCover, maxSize = size,
+        extractColors = extractColors)
 }
 
 /** Which computer the phone is linked to on the left, and where the sound comes out on the right. */
@@ -118,19 +119,21 @@ internal fun RemoteCatalogScreen(state: PlayerUiState, actions: PlayerActions, m
         RemoteEntityScreen(state, actions, modifier)
         return
     }
-    Column(modifier) {
+    Box(modifier) {
+    Column(Modifier.fillMaxSize()) {
         val listState = rememberLazyListState()
-        LaunchedEffect(data.kind, data.page?.offset) { listState.scrollToItem(0) }
-        if (data.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        ScrollToTopOn("${state.libraryDevice}:${data.kind}:${data.page?.offset ?: 0}", listState)
         data.error?.let { EmptyState("电脑资料未载入", it, actionLabel = "刷新", onAction = { actions.catalogPage(0) }) }
         val page = data.page
         if (!data.loading && data.error == null && page?.items.isNullOrEmpty())
             EmptyState("还没有整理好的资料", "电脑完成曲库整理后，资料会显示在这里。", actionLabel = "刷新", onAction = { actions.catalogPage(0) })
-        LazyColumn(Modifier.weight(1f), state = listState,
+        LazyColumn(Modifier.weight(1f).testTag("desktopCatalog"), state = listState,
             contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp + LocalDockInset.current)) {
             items(page?.items.orEmpty(), key = { it.id }) { entity -> CatalogEntityRow(entity) { actions.openEntity(entity) } }
             page?.let { item { LibraryPageControls(it.offset, it.items.size, it.total, data.loading, actions.catalogPage) } }
         }
+    }
+    if (data.loading) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
     }
 }
 
@@ -176,10 +179,11 @@ private fun RemoteEntityScreen(state: PlayerUiState, actions: PlayerActions, mod
     val desktopOutput = state.operatingMode is CoreOperatingMode.RemoteDesktopCore
     val artist = entity.kind == "artist"
     val listState = rememberLazyListState()
-    LaunchedEffect(entity.id, data.sources?.offset) { listState.scrollToItem(0) }
+    LaunchedEffect(entity.id, data.sources?.offset ?: 0) { listState.scrollToItem(0) }
     // Each artist or album page recolors itself from its own portrait or cover.
     TwilightEchoTheme(seed = artwork.seedColor ?: LocalTwilightAccents.current.seed) {
     AmbientBackground(modifier) {
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(Modifier.fillMaxSize().testTag("desktopEntity"), state = listState,
         contentPadding = PaddingValues(bottom = 24.dp + LocalDockInset.current)) {
         item {
@@ -195,7 +199,6 @@ private fun RemoteEntityScreen(state: PlayerUiState, actions: PlayerActions, mod
         }
         item {
             Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                if (data.detailLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
                 data.detailError?.let {
                     Text(it, color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = { actions.openEntity(entity) }) { Text("重新读取资料") }
@@ -222,7 +225,7 @@ private fun RemoteEntityScreen(state: PlayerUiState, actions: PlayerActions, mod
                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
         }
         if (artist && data.artistAlbums) {
-            if (data.albumsLoading) item { LoadingContent("正在载入专辑") }
+            if (data.albumsLoading && data.albums.isEmpty()) item { LoadingContent("正在载入专辑") }
             data.albumsError?.let { item { EmptyState("专辑未载入", it, actionLabel = "重试", onAction = actions.retryArtistAlbums) } }
             items(data.albums, key = { it.id }) { album -> CatalogEntityRow(album) { actions.openEntity(album) } }
             if (data.albumsLoaded && data.albums.isEmpty()) item { EmptyState("暂无专辑", "电脑曲库中还没有这位歌手的专辑。") }
@@ -236,6 +239,8 @@ private fun RemoteEntityScreen(state: PlayerUiState, actions: PlayerActions, mod
             }
         }
         item { data.sources?.let { LibraryPageControls(it.offset, it.items.size, it.total, data.detailLoading, actions.sourcePage) } }
+    }
+    if (data.detailLoading || data.albumsLoading) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
     }
     }
     }

@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,6 +20,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.*
@@ -28,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
 import com.twilightecho.android.ui.components.*
 import com.twilightecho.android.ui.theme.Monet
 import com.twilightecho.android.ui.theme.TwilightEchoTheme
@@ -49,6 +52,11 @@ import com.twilightecho.android.ui.theme.LocalContentSurfaceOpacity
 fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier,
     onRequestScanMusicPermission: (() -> Unit)? = null) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val latestState = rememberUpdatedState(state)
+    LifecycleStartEffect(viewModel) {
+        viewModel.onPresentationActive(true)
+        onStopOrDispose { viewModel.onPresentationActive(false) }
+    }
     var pluginsOpen by rememberSaveable { mutableStateOf(false) }
     var pluginsAccountOnly by rememberSaveable { mutableStateOf(false) }
     var lyricsTrackId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -121,27 +129,27 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier,
         )
     }
     val streaming = viewModel.streamingPresenter
-    fun openStreamingAccount() {
+    val openStreamingAccount: () -> Unit = remember(viewModel) { {
         val plugin = viewModel.pluginPresenter.repository.state.value.entries.find { it.id == NCM_PLUGIN_ID }
         pluginsAccountOnly = plugin?.installedVersion != null && plugin.enabled
         if (pluginsAccountOnly) viewModel.pluginPresenter.open(plugin!!) else viewModel.pluginPresenter.close()
         pluginsOpen = true
-    }
-    val streamingActions = StreamingActions(account = ::openStreamingAccount, library = {
+    } }
+    val streamingActions = remember(viewModel, openStreamingAccount) { StreamingActions(account = openStreamingAccount, library = {
         streaming.libraryRoot()
         viewModel.onSelectLibraryTab(LibrarySectionTab.STREAMING)
         viewModel.onSelectMainTab(MainDestinationTab.LIBRARY)
     }, refresh = streaming::refresh, recommendation = { kind ->
-        if (state.streaming.access == StreamingAccess.READY) streaming.openRecommendation(kind) else openStreamingAccount()
+        if (latestState.value.streaming.access == StreamingAccess.READY) streaming.openRecommendation(kind) else openStreamingAccount()
     }, group = streaming::openGroup, collection = {
-        if (state.streaming.access == StreamingAccess.READY) streaming.openCollection(it) else openStreamingAccount()
+        if (latestState.value.streaming.access == StreamingAccess.READY) streaming.openCollection(it) else openStreamingAccount()
     }, back = streaming::closeDetail,
         retry = streaming::retryDetail, page = streaming::page, artistTab = streaming::artistTab, root = streaming::libraryRoot,
         playlistQuery = streaming::playlistQuery, playlistSort = viewModel::onStreamingPlaylistSort, retryArtist = streaming::retryArtist,
         play = { tracks, track ->
-            if (state.streaming.access == StreamingAccess.READY) viewModel.onPlayProviderTracks(tracks, track) else openStreamingAccount()
+            if (latestState.value.streaming.access == StreamingAccess.READY) viewModel.onPlayProviderTracks(tracks, track) else openStreamingAccount()
         }, createPlaylist = viewModel::onCreateStreamingPlaylist, deletePlaylist = viewModel::onDeleteStreamingPlaylist,
-        addToPlaylist = viewModel::onAddToStreamingPlaylist, removeFromPlaylist = viewModel::onRemoveFromStreamingPlaylist)
+        addToPlaylist = viewModel::onAddToStreamingPlaylist, removeFromPlaylist = viewModel::onRemoveFromStreamingPlaylist) }
     if (pluginsOpen) {
         PlayerAppearance(state, actions.requestArtwork) {
             PluginsScreen(viewModel.pluginPresenter, onBack = { pluginsOpen = false; streaming.refreshAccount() }, onPlay = { tracks, selected ->
@@ -150,16 +158,18 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier,
         }
         return
     }
-    PlayerAppContent(state, actions.copy(streaming = streamingActions, toggleFavorite = {
-        if (state.currentTrack?.source?.startsWith("provider://ncm/") == true && state.streaming.access != StreamingAccess.READY)
+    val appActions = remember(actions, streamingActions, viewModel) { actions.copy(streaming = streamingActions, toggleFavorite = {
+        val current = latestState.value
+        if (current.currentTrack?.source?.startsWith("provider://ncm/") == true && current.streaming.access != StreamingAccess.READY)
             openStreamingAccount() else viewModel.onToggleFavoriteCurrentTrack()
     }, openPlugins = {
         pluginsAccountOnly = false; viewModel.pluginPresenter.close(); pluginsOpen = true
     }, importLyrics = {
-        lyricsTrackId = state.currentTrack?.id
+        lyricsTrackId = latestState.value.currentTrack?.id
         lyricsSource = viewModel.currentLyricsSourceKey()
         importLyrics.launch(arrayOf("text/*", "application/octet-stream", "application/x-lrc"))
-    }), modifier)
+    }) }
+    PlayerAppContent(state, appActions, modifier)
 }
 
 
@@ -167,7 +177,14 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier,
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PlayerAppContent(state: PlayerUiState, actions: PlayerActions, modifier: Modifier = Modifier) {
-    PlayerAppearance(state, actions.requestArtwork) { PlayerAppSurface(state, actions, modifier) }
+    val position = rememberUpdatedState(state.interpolatedPositionSec)
+    val lyricIndex = rememberUpdatedState(state.activeLyricIndex)
+    val progress = remember { PlayerProgress(position, lyricIndex) }
+    // Retain the same object across clock-only snapshots so strong skipping also skips unstable list inputs.
+    val contentState = state.withoutProgressTicks().let { projection -> remember(projection) { projection } }
+    CompositionLocalProvider(LocalPlayerProgress provides progress) {
+        PlayerAppearance(contentState, actions.requestArtwork) { PlayerAppSurface(contentState, actions, modifier) }
+    }
 }
 
 @Composable
@@ -222,6 +239,8 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
     val savedPages = rememberSaveableStateHolder()
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val playerOpen = state.isImmersivePlayerOpen && state.currentTrack != null
+    val playerVisibility = remember { MutableTransitionState(false) }
+    playerVisibility.targetState = playerOpen
     // Home is the streaming page: without a streaming provider the app starts in, and returns to, the library.
     val homeTab = if (state.homeAvailable == true) MainDestinationTab.HOME else MainDestinationTab.LIBRARY
     val activeTab = if (state.activeMainTab == MainDestinationTab.HOME) homeTab else state.activeMainTab
@@ -278,21 +297,33 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
         library = { collectionId = null; actions.streaming.library() })
     val dockInset = if (imeVisible) 0.dp else if (state.currentTrack != null) 136.dp else 68.dp
     val ambientArtwork = state.currentTrack?.let { rememberPlayerArtwork(it) }
-    AmbientBackground(modifier.fillMaxSize(), ambientArtwork) {
+    AmbientBackground(modifier.fillMaxSize(), ambientArtwork,
+        showBackdrop = !playerVisibility.currentState || !playerVisibility.targetState) {
         Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()
+            // Keep the page's saved scroll/composition, but do not paint it under the opaque player.
+            // Enter/exit transitions still draw the page until the player fully covers it.
+            .drawWithContent { if (!playerVisibility.currentState || !playerVisibility.targetState) drawContent() }
             .then(if (playerOpen) Modifier.clearAndSetSemantics { } else Modifier)) {
-            if (state.isDesktopLibrary || state.operatingMode is com.twilightecho.android.coreclient.CoreOperatingMode.RemoteDesktopCore)
-                LibraryPlaybackHeader(state, actions)
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                val pageKey = if (streamingDetailOpen) "streaming:${state.streaming.detail!!.key}" else when (activeTab) {
+                val pageKey = if (streamingDetailOpen) "streaming:${state.streaming.detail!!.key}"
+                    else if (desktopDetailOpen) "desktop:${state.desktopLibrary.selected!!.kind}:${state.desktopLibrary.selected.id}"
+                    else when (activeTab) {
                     MainDestinationTab.LIBRARY -> if (collectionId != null) "collection:$collectionKind:$collectionId"
                         else "library:${state.activeLibraryTab}"
                     MainDestinationTab.SETTINGS -> "settings:$settingsDestination"
                     else -> activeTab.name
                 }
+                val headerResetKey = when {
+                    streamingDetailOpen -> "${state.streaming.detail!!.offset}"
+                    desktopDetailOpen -> "${state.desktopLibrary.sources?.offset ?: 0}"
+                    activeTab == MainDestinationTab.LIBRARY && collectionId == null -> libraryHeaderResetKey(state)
+                    activeTab == MainDestinationTab.SEARCH -> "${state.searchSource}:${state.searchQuery}"
+                    else -> ""
+                }
                 // The tab bar sits below the pages in the layout, so pages only keep a small breathing space.
                 CompositionLocalProvider(LocalDockInset provides 0.dp) {
                     savedPages.SaveableStateProvider(pageKey) {
+                        PlaybackHeaderPage(state, actions, headerResetKey) {
                             if (streamingDetailOpen) StreamingDetailScreen(state.streaming.detail!!, state, actions.streaming)
                             else when (activeTab) {
                                 MainDestinationTab.HOME -> HomeTabScreen(state, actions.copy(streaming = streamingFrom(MainDestinationTab.HOME)))
@@ -303,6 +334,7 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
                                 MainDestinationTab.SEARCH -> SearchTabScreen(state, actions.copy(streaming = streamingFrom(MainDestinationTab.SEARCH)))
                                 MainDestinationTab.SETTINGS -> SettingsTabScreen(state, actions, settingsDestination, { settingsDestination = it })
                             }
+                        }
                     }
                 }
             }
@@ -321,7 +353,7 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
                 actions.selectTab(tab)
             }
         }
-        AnimatedVisibility(playerOpen,
+        AnimatedVisibility(playerVisibility,
             enter = slideInVertically(tween(320), initialOffsetY = { it / 3 }) + fadeIn(tween(220)),
             exit = slideOutVertically(tween(240), targetOffsetY = { it / 3 }) + fadeOut(tween(180))) {
             ImmersiveNowPlayingScreen(state, actions, lyricsViewport, { openSettings(SettingsDestination.AUDIO) })
@@ -408,8 +440,8 @@ private fun MiniPlayer(state: PlayerUiState, actions: PlayerActions, modifier: M
             Text(track.artist.ifBlank { "未知艺术家" }, style = MaterialTheme.typography.bodySmall, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        QuietIconButton(if (state.isPlaying) TwilightIcons.Pause else TwilightIcons.Play,
-            if (state.isPlaying) "暂停" else "播放", actions.togglePlayback)
+        QuietIconButton(if (state.playbackButtonPlaying) TwilightIcons.Pause else TwilightIcons.Play,
+            if (state.playbackButtonPlaying) "暂停" else "播放", actions.togglePlayback)
         QuietIconButton(TwilightIcons.SkipNext, "下一首", actions.next)
     }
 }

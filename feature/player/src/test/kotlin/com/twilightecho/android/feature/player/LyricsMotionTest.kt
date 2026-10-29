@@ -16,7 +16,6 @@ class LyricsMotionTest {
         assertEquals(1f, active.scale)
         assertEquals(0f, active.offsetDp)
         assertEquals(0f, active.blurDp)
-        assertEquals(0.18f, active.glow)
         assertEquals(0.42f, neighbor.alpha)
         assertEquals(0.9f, neighbor.blurDp, 0.001f)
         assertEquals(0.30f, distant.alpha)
@@ -40,13 +39,13 @@ class LyricsMotionTest {
         assertEquals(0f, lyricFocus(0, 12, true, false, true, 36, 8f).blurDp)
     }
 
-    @Test fun reducedMotionRetainsFocusWithoutTransformsOrGlow() {
-        assertEquals(LyricFocus(0.22f, 1f, 0f, 0f, 0f), lyricFocus(0, 4, true, true, false, 36))
-        assertEquals(LyricFocus(1f, 1f, 0f, 0f, 0f), lyricFocus(4, 4, true, true, false, 36))
+    @Test fun reducedMotionRetainsFocusWithoutTransforms() {
+        assertEquals(LyricFocus(0.22f, 1f, 0f, 0f), lyricFocus(0, 4, true, true, false, 36))
+        assertEquals(LyricFocus(1f, 1f, 0f, 0f), lyricFocus(4, 4, true, true, false, 36))
     }
 
     @Test fun untimedLyricsHaveNoArtificialTimeFocus() {
-        assertEquals(LyricFocus(0.86f, 1f, 0f, 0f, 0f), lyricFocus(0, 4, false, true, true, 36))
+        assertEquals(LyricFocus(0.86f, 1f, 0f, 0f), lyricFocus(0, 4, false, true, true, 36))
         assertEquals(0f, lyricFocus(0, -1, true, true, true, 36).blurDp)
     }
 

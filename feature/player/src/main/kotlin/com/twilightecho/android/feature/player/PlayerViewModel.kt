@@ -32,6 +32,7 @@ import com.twilightecho.android.coreclient.RemoteConnectionPhase
 import com.twilightecho.android.coreclient.PlayMode
 import com.twilightecho.android.coreclient.DesktopCoreDevice
 import com.twilightecho.android.coreclient.DesktopDiscoveryState
+import com.twilightecho.android.coreclient.DesktopMediaReference
 import com.twilightecho.android.coreclient.mergeDesktopDevices
 import com.twilightecho.android.coreclient.withScene
 import com.twilightecho.android.coreclient.TrackArtworkPage
@@ -98,7 +99,7 @@ data class AudioDiagnosticsUiModel(
     val bluetoothProfile: String = ""
 )
 
-data class AudioOutputDeviceUi(val id: String, val name: String)
+data class AudioOutputDeviceUi(val id: String, val name: String, val sampleRates: List<Int> = emptyList())
 
 enum class LibrarySectionTab(val label: String) {
     SONGS("歌曲"),
@@ -126,6 +127,8 @@ data class PlayerUiState(
     val sequence: Long = 0L,
     val queueRevision: Long = 0L,
     val isPlaying: Boolean = false,
+    /** Immediate button feedback while the Core acknowledges a play/pause request. */
+    val requestedPlaying: Boolean? = null,
     val playbackState: String = "stopped",
     val currentTrack: CoreTrackView? = null,
     val anchorPositionSeconds: Double = 0.0,
@@ -161,6 +164,7 @@ data class PlayerUiState(
     val dspStatus: CoreDspStatus = CoreDspStatus(),
     val audioLevels: List<Float> = emptyList(),
     val audioDevices: List<AudioOutputDeviceUi> = emptyList(),
+    val activeOutputSampleRates: List<Int> = emptyList(),
     val audioMonitorError: String? = null,
     val newPlaylistNameDraft: String = "",
     val currentLyrics: CoreLyricsView? = null,
@@ -218,6 +222,7 @@ data class PlayerUiState(
         (librarySource as? LibrarySource.Desktop)?.let { it.connected && it.serverId == libraryDevice } == true
     val interpolatedPositionSec: Double
         get() = displayedPositionSeconds
+    val playbackButtonPlaying: Boolean get() = requestedPlaying ?: isPlaying
 }
 
 /** A song on a computer that cannot be reached right now, and the ways to still hear it. */
@@ -278,6 +283,7 @@ class PlayerViewModel(
     private var pendingPlay: PendingPlay? = null
     private var promptJob: Job? = null
     private var queueJob: Job? = null
+    private var playTracksJob: Job? = null
     private var desktopConnectJob: Job? = null
     private var sourceGeneration = 0L
     private var loadedSource: String? = null
@@ -287,6 +293,14 @@ class PlayerViewModel(
     // Output presets edit the same config from the playback host.
     private val audioSettingsMutex: Mutex get() = playbackHost.audioConfigMutex
     private var audioMonitorJob: Job? = null
+    private var presentationActive = false
+    private var playPauseRequest = 0L
+    private val playPauseMutex = Mutex()
+    private var seekRequest = 0L
+    private val seekMutex = Mutex()
+    @Volatile private var pendingSeek: PendingSeekHold? = null
+    private val attemptedAutoLyricsTrackIds: MutableSet<String> =
+        java.util.Collections.synchronizedSet(LinkedHashSet())
 
     init {
         viewModelScope.launch {
@@ -299,7 +313,8 @@ class PlayerViewModel(
         viewModelScope.launch { playbackHost.musicFolders.collect { folders -> _uiState.update { it.copy(musicFolders = folders) } } }
         viewModelScope.launch {
             playbackHost.outputRoute.collect { route ->
-                _uiState.update { it.copy(diagnostics = it.diagnostics.copy(bluetoothProfile = route.bluetoothProfile)) }
+                _uiState.update { it.copy(diagnostics = it.diagnostics.copy(bluetoothProfile = route.bluetoothProfile),
+                    activeOutputSampleRates = route.supportedSampleRates) }
             }
         }
         pluginPresenter.initialize()
@@ -343,20 +358,19 @@ class PlayerViewModel(
             if (error != null) { _uiState.update { it.copy(errorBanner = error) }; streamingPresenter.clearFavoriteError() }
         } }
         viewModelScope.launch {
-            uiState.map { it.currentTrack }.distinctUntilChangedBy { it?.id }.collectLatest { track ->
+            uiState.map { it.currentTrack }.distinctUntilChangedBy { it?.id }.collect { track ->
                 streamingPresenter.observeTrack(track)
-                if (track?.source?.startsWith("provider://ncm/") == true && playbackHost.operatingMode.value is CoreOperatingMode.StandaloneLocal) {
-                    runCatching {
-                        val lyrics = playbackHost.plugins.call("com.twilightecho.provider.ncm", "getLyrics",
-                            kotlinx.serialization.json.buildJsonArray {
-                                add(kotlinx.serialization.json.buildJsonObject { put("ncmSongId", kotlinx.serialization.json.JsonPrimitive(track.ncmSongId)) })
-                            }) as? kotlinx.serialization.json.JsonObject
-                        val lrc = lyrics?.get("mobileLrc")?.jsonPrimitive?.contentOrNull
-                        if (!lrc.isNullOrBlank() && uiState.value.currentTrack?.id == track.id)
-                            coreClient.importLrcLyrics(track.id, lrc)
-                    }
-                }
             }
+        }
+        viewModelScope.launch {
+            combine(
+                uiState.map { it.currentTrack }.distinctUntilChangedBy { it?.id },
+                playbackHost.operatingMode,
+                coreClient.snapshot.map { Triple(it?.epoch, it?.lyricsRevision, it?.lyricsContentRevision) }.distinctUntilChanged()
+            ) { track, mode, revisions -> Triple(track, mode, revisions) }
+                .collectLatest { (track, mode, _) ->
+                    if (track != null) resolveLyricsForTrack(track, mode)
+                }
         }
         val savedHost = playbackHost.getSavedRemoteDesktopUrl()
             ?: ""
@@ -379,7 +393,10 @@ class PlayerViewModel(
                 _uiState.update { it.copy(operatingMode = mode) }
                 if (changed) {
                     sourceGeneration++
+                    pendingSeek = null
+                    attemptedAutoLyricsTrackIds.clear()
                     queueJob?.cancel()
+                    playTracksJob?.cancel()
                     _uiState.update { it.copy(queueItems = emptyList(), isLoadingQueue = false,
                         currentTrack = null, isPlaying = false) }
                 }
@@ -487,7 +504,7 @@ class PlayerViewModel(
             while (isActive) {
                 delay(100L)
                 _uiState.update { state ->
-                    if (!state.isPlaying || state.durationSeconds <= 0.0) {
+                    if (!presentationActive || !state.isImmersivePlayerOpen || !state.isPlaying || state.durationSeconds <= 0.0) {
                         state
                     } else {
                         val elapsedSeconds =
@@ -510,19 +527,44 @@ class PlayerViewModel(
     }
 
     fun onTogglePlayPause() {
-        val currentlyPlaying = _uiState.value.isPlaying
-        launchForCurrentSource {
-            if (currentlyPlaying) {
-                report(coreClient.executeCommand(CoreTypedCommand.Pause))
-            } else {
-                report(playbackHost.requestFocusAndPlay())
+        val play = !_uiState.value.playbackButtonPlaying
+        val request = ++playPauseRequest
+        val origin = playbackHost.switchableTransport.generation
+        _uiState.update { it.copy(requestedPlaying = play) }
+        viewModelScope.launch {
+            try {
+                // A native Pause may still be fading out. Finish it before submitting Play,
+                // and skip intermediate taps that have not started. The latest tap wins.
+                playPauseMutex.withLock {
+                    if (request == playPauseRequest && origin == playbackHost.switchableTransport.generation) {
+                        val result = if (play) playbackHost.requestFocusAndPlay()
+                            else coreClient.executeCommand(CoreTypedCommand.Pause)
+                        if (request == playPauseRequest) report(result)
+                    }
+                }
+            } finally {
+                if (request == playPauseRequest) _uiState.update { it.copy(requestedPlaying = null) }
             }
         }
     }
 
+    /** Only the visible full-screen player needs the 10 Hz interpolated position. */
+    fun onPresentationActive(active: Boolean) { presentationActive = active }
+
     fun onSeekTo(positionSeconds: Double) {
         val clamped = positionSeconds.coerceIn(0.0, _uiState.value.durationSeconds.coerceAtLeast(0.0))
         val monoNow = nowMonotonicMs()
+        val request = ++seekRequest
+        val origin = playbackHost.switchableTransport.generation
+        val currentState = _uiState.value
+        val source = loadedSource ?: "$origin:${currentState.epoch}"
+        pendingSeek = PendingSeekHold(
+            request = request,
+            source = source,
+            trackId = currentState.currentTrack?.id,
+            targetSeconds = clamped,
+            anchorMonotonicMs = monoNow
+        )
         _uiState.update {
             it.copy(
                 anchorPositionSeconds = clamped,
@@ -531,8 +573,29 @@ class PlayerViewModel(
                 activeLyricIndex = computeActiveLyricIndex(it.currentLyrics, clamped)
             )
         }
-        launchForCurrentSource {
-            if (!report(coreClient.executeCommand(CoreTypedCommand.Seek(clamped)))) coreClient.reconcileState()
+        viewModelScope.launch {
+            seekMutex.withLock {
+                if (request != seekRequest || origin != playbackHost.switchableTransport.generation) return@withLock
+                val result = coreClient.executeCommand(CoreTypedCommand.Seek(clamped))
+                if (request != seekRequest || origin != playbackHost.switchableTransport.generation) return@withLock
+                when (result) {
+                    is CoreResult.Success -> {
+                        val settledAt = nowMonotonicMs()
+                        val hold = pendingSeek
+                        if (hold != null && hold.request == request) {
+                            pendingSeek = hold.copy(settled = true, settledAtMonotonicMs = settledAt)
+                        }
+                    }
+                    is CoreResult.Failure -> {
+                        if (result.error.code != CoreErrorCode.CANCELLED) {
+                            val hold = pendingSeek
+                            if (hold != null && hold.request == request) pendingSeek = null
+                            report(result)
+                            coreClient.reconcileState()
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1041,8 +1104,12 @@ class PlayerViewModel(
                     val levels = (visualization["visualizerBars"] as? JsonArray).orEmpty().map {
                         (it.jsonPrimitive.doubleOrNull ?: 0.0).toFloat().coerceIn(0f, 1f)
                     }
-                    val devices = playbackHost.audioDeviceAdapter.listOutputDevices().map { AudioOutputDeviceUi(it.deviceId.toString(), it.deviceName) }
-                    _uiState.update { it.copy(dspStatus = status, audioLevels = levels, audioDevices = devices, audioMonitorError = null) }
+                    val devices = playbackHost.audioDeviceAdapter.listOutputDevices().map {
+                        AudioOutputDeviceUi(it.deviceId.toString(), it.deviceName, it.supportedSampleRates)
+                    }
+                    val rates = playbackHost.audioDeviceAdapter.sampleRatesForOutput("auto")
+                    _uiState.update { it.copy(dspStatus = status, audioLevels = levels, audioDevices = devices,
+                        activeOutputSampleRates = rates, audioMonitorError = null) }
                     delay(100L)
                 }
             } catch (error: kotlinx.coroutines.CancellationException) { throw error }
@@ -1238,13 +1305,16 @@ class PlayerViewModel(
         val startIndex = playable.indexOfFirst { it.id == startTrackId }
         val expectedRev = _uiState.value.queueRevision
         val origin = playbackHost.switchableTransport.generation
-        viewModelScope.launch {
+        playTracksJob?.cancel()
+        playTracksJob = viewModelScope.launch {
             if (origin != playbackHost.switchableTransport.generation) return@launch
             val queue = try {
                 playable.map { track ->
                     val serverId = ownerOf(track) ?: return@map track
                     playbackHost.desktopStreamTracks(serverId, listOf(track)).single().also { desktopLibrary.aliasArtwork(it.id, track.id) }
                 }
+            } catch (cancel: CancellationException) {
+                throw cancel
             } catch (error: Exception) { banner(error.message ?: "播放失败，请重试"); return@launch }
             val result = coreClient.executeCommand(CoreTypedCommand.ReplaceQueue(revision = expectedRev, tracks = queue,
                 startIndex = startIndex, play = false))
@@ -1379,13 +1449,135 @@ class PlayerViewModel(
         }
     }
 
+    private suspend fun resolveLyricsForTrack(track: CoreTrackView, mode: CoreOperatingMode) {
+        if (mode is CoreOperatingMode.RemoteDesktopCore) {
+            runCatching { coreClient.getCurrentLyrics(track.id) }
+                .onFailure { if (it is CancellationException) throw it }
+            return
+        }
+
+        val existing = coreClient.snapshot.value?.currentLyrics?.takeIf { it.trackId == track.id }
+        if (existing != null && existing.lines.isNotEmpty()) return
+        if (!attemptedAutoLyricsTrackIds.add(track.id)) return
+        while (attemptedAutoLyricsTrackIds.size > 256) {
+            val first = synchronized(attemptedAutoLyricsTrackIds) {
+                attemptedAutoLyricsTrackIds.firstOrNull()
+            } ?: break
+            attemptedAutoLyricsTrackIds.remove(first)
+        }
+
+        val trackSource = track.source
+        when {
+            trackSource?.startsWith("provider://ncm/") == true -> {
+                val ncmId = track.ncmSongId?.takeIf { it.isNotBlank() }
+                    ?: trackSource.substringAfterLast('/').takeIf { it.isNotBlank() }
+                if (ncmId != null && importNcmLyricsById(track.id, ncmId)) return
+                fetchOnlineLyricsSilently(track.id)
+            }
+            trackSource != null && trackSource.startsWith("provider://") -> {
+                val imported = try {
+                    val lrc = playbackHost.plugins.providerLyrics(trackSource)
+                    if (!lrc.isNullOrBlank() && isStillActiveLocalTrack(track.id)) {
+                        coreClient.importLrcLyrics(track.id, lrc).isSuccess
+                    } else false
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Exception) {
+                    false
+                }
+                if (!imported) fetchBestEffortOnlineLyrics(track)
+            }
+            track.id.startsWith(DesktopMediaReference.PREFIX) -> {
+                val desktopView = try {
+                    playbackHost.resolveDesktopLyrics(track.id).getOrNull()
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Exception) {
+                    null
+                }
+                val serialized = desktopView?.let(::serializeLyricsViewToLrc)
+                if (serialized != null && isStillActiveLocalTrack(track.id)) {
+                    val (original, translation) = serialized
+                    if (coreClient.importLrcLyrics(track.id, original, translation).isSuccess) return
+                }
+                fetchBestEffortOnlineLyrics(track)
+            }
+            else -> {
+                fetchBestEffortOnlineLyrics(track)
+            }
+        }
+    }
+
+    private fun isStillActiveLocalTrack(trackId: String): Boolean =
+        playbackHost.operatingMode.value is CoreOperatingMode.StandaloneLocal &&
+            uiState.value.currentTrack?.id == trackId
+
+    private suspend fun importNcmLyricsById(trackId: String, ncmSongId: String): Boolean {
+        return try {
+            val lyrics = playbackHost.plugins.call(
+                NCM_PLUGIN_ID,
+                "getLyrics",
+                kotlinx.serialization.json.buildJsonArray {
+                    add(
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("ncmSongId", kotlinx.serialization.json.JsonPrimitive(ncmSongId))
+                        }
+                    )
+                }
+            ) as? kotlinx.serialization.json.JsonObject
+            val lrc = lyrics?.get("mobileLrc")?.jsonPrimitive?.contentOrNull
+            if (!lrc.isNullOrBlank() && isStillActiveLocalTrack(trackId)) {
+                coreClient.importLrcLyrics(trackId, lrc).isSuccess
+            } else {
+                false
+            }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private suspend fun fetchBestEffortOnlineLyrics(track: CoreTrackView) {
+        if (!isStillActiveLocalTrack(track.id)) return
+        if (ncmEnabled() && track.title.isNotBlank()) {
+            val directNcmId = track.ncmSongId?.takeIf { it.isNotBlank() }
+            if (directNcmId != null && importNcmLyricsById(track.id, directNcmId)) return
+            val matchedId = try {
+                val matched = streamingPresenter.findMatch(track)
+                matched?.ncmSongId?.takeIf { it.isNotBlank() }
+                    ?: matched?.source?.takeIf { it.startsWith("provider://ncm/") }?.substringAfterLast('/')
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                null
+            }
+            if (!matchedId.isNullOrBlank() && importNcmLyricsById(track.id, matchedId)) return
+        }
+        fetchOnlineLyricsSilently(track.id)
+    }
+
+    private suspend fun fetchOnlineLyricsSilently(trackId: String) {
+        if (!isStillActiveLocalTrack(trackId)) return
+        try {
+            coreClient.fetchOnlineLyrics(trackId)
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (_: Exception) {
+            // Silent when no online lyrics exist for this track.
+        }
+    }
+
     private fun applyCoreSnapshot(snapshot: CoreSnapshot, queueWindow: CoreQueueWindowView) {
         val source = "${playbackHost.switchableTransport.generation}:${snapshot.epoch}"
         if (source != loadedSource) {
             loadedSource = source
             sourceGeneration++
+            playPauseRequest++
+            pendingSeek = null
+            attemptedAutoLyricsTrackIds.clear()
             queueJob?.cancel()
-            _uiState.update { it.copy(queueItems = emptyList(), isLoadingQueue = false, queueError = null) }
+            _uiState.update { it.copy(queueItems = emptyList(), isLoadingQueue = false, queueError = null, requestedPlaying = null) }
         }
         val playback = snapshot.playback
         val isPlaying = playback?.state == "playing"
@@ -1393,8 +1585,21 @@ class PlayerViewModel(
         val durationSeconds = playback?.duration?.takeIf { it > 0.0 }
             ?: snapshot.track?.duration
             ?: 0.0
+        val playbackRate = playback?.playbackRate ?: 1.0
         val monoNow = nowMonotonicMs()
         val currentTrackId = snapshot.track?.id
+
+        val seekEval = evaluatePendingSeekHold(
+            hold = pendingSeek,
+            source = source,
+            trackId = currentTrackId,
+            incomingPositionSeconds = positionSeconds,
+            durationSeconds = durationSeconds,
+            isPlaying = isPlaying,
+            playbackRate = playbackRate,
+            monoNowMs = monoNow
+        )
+        pendingSeek = seekEval.hold
 
         val diagnostics = diagnosticsFor(snapshot)
         val queueId = snapshot.queue?.id ?: queueWindow.queueId
@@ -1407,7 +1612,7 @@ class PlayerViewModel(
             emptyList()
         }
 
-        val activeLyricIdx = computeActiveLyricIndex(snapshot.currentLyrics, positionSeconds)
+        val activeLyricIdx = computeActiveLyricIndex(snapshot.currentLyrics, seekEval.displayedPositionSeconds)
 
         _uiState.update { current ->
             current.copy(
@@ -1418,11 +1623,11 @@ class PlayerViewModel(
                 isPlaying = isPlaying,
                 playbackState = playback?.state ?: "stopped",
                 currentTrack = snapshot.track,
-                anchorPositionSeconds = positionSeconds,
-                anchorMonotonicMs = monoNow,
-                displayedPositionSeconds = positionSeconds,
+                anchorPositionSeconds = seekEval.anchorPositionSeconds,
+                anchorMonotonicMs = seekEval.anchorMonotonicMs,
+                displayedPositionSeconds = seekEval.displayedPositionSeconds,
                 durationSeconds = durationSeconds,
-                playbackRate = playback?.playbackRate ?: 1.0,
+                playbackRate = playbackRate,
                 volume = playback?.volume ?: 1.0,
                 playMode = PlayMode.fromWireValue(playback?.playMode),
                 diagnostics = diagnostics.copy(bluetoothProfile = current.diagnostics.bluetoothProfile),
@@ -1469,7 +1674,9 @@ class PlayerViewModel(
     }
 
     private fun report(result: CoreResult<*>): Boolean {
-        if (result is CoreResult.Failure) _uiState.update { it.copy(errorBanner = result.error.message) }
+        if (shouldSurfaceCoreError(result) && result is CoreResult.Failure) {
+            _uiState.update { it.copy(errorBanner = result.error.message) }
+        }
         return result.isSuccess
     }
 
@@ -1509,4 +1716,109 @@ class PlayerViewModel(
             return PlayerViewModel(playbackHost = playbackHost) as T
         }
     }
+}
+
+internal data class PendingSeekHold(
+    val request: Long,
+    val source: String,
+    val trackId: String?,
+    val targetSeconds: Double,
+    val anchorMonotonicMs: Long,
+    val settled: Boolean = false,
+    val settledAtMonotonicMs: Long = 0L
+)
+
+internal data class SeekHoldEvaluation(
+    val hold: PendingSeekHold?,
+    val anchorPositionSeconds: Double,
+    val anchorMonotonicMs: Long,
+    val displayedPositionSeconds: Double
+)
+
+internal fun evaluatePendingSeekHold(
+    hold: PendingSeekHold?,
+    source: String,
+    trackId: String?,
+    incomingPositionSeconds: Double,
+    durationSeconds: Double,
+    isPlaying: Boolean,
+    playbackRate: Double,
+    monoNowMs: Long
+): SeekHoldEvaluation {
+    if (hold == null || hold.source != source || hold.trackId != trackId) {
+        return SeekHoldEvaluation(
+            hold = null,
+            anchorPositionSeconds = incomingPositionSeconds,
+            anchorMonotonicMs = monoNowMs,
+            displayedPositionSeconds = incomingPositionSeconds
+        )
+    }
+    val elapsed = if (isPlaying) {
+        ((monoNowMs - hold.anchorMonotonicMs).coerceAtLeast(0L) / 1000.0) * playbackRate
+    } else {
+        0.0
+    }
+    val upperBound = if (durationSeconds > 0.0) maxOf(durationSeconds, hold.targetSeconds) else Double.MAX_VALUE
+    val expected = (hold.targetSeconds + elapsed).coerceIn(0.0, upperBound)
+    val tolerance = if (hold.settled) 1.5 else 0.25
+    val caughtUp = kotlin.math.abs(incomingPositionSeconds - expected) <= tolerance
+    val settledExpired = hold.settled && (monoNowMs - hold.settledAtMonotonicMs) >= 1500L
+    val hardExpired = (monoNowMs - hold.anchorMonotonicMs) >= 5000L
+    return if (caughtUp || settledExpired || hardExpired) {
+        SeekHoldEvaluation(
+            hold = null,
+            anchorPositionSeconds = incomingPositionSeconds,
+            anchorMonotonicMs = monoNowMs,
+            displayedPositionSeconds = incomingPositionSeconds
+        )
+    } else {
+        SeekHoldEvaluation(
+            hold = hold,
+            anchorPositionSeconds = hold.targetSeconds,
+            anchorMonotonicMs = hold.anchorMonotonicMs,
+            displayedPositionSeconds = expected
+        )
+    }
+}
+
+internal fun shouldSurfaceCoreError(result: CoreResult<*>): Boolean =
+    result is CoreResult.Failure && result.error.code != CoreErrorCode.CANCELLED
+
+internal fun serializeLyricsViewToLrc(view: CoreLyricsView): Pair<String, String?>? {
+    if (view.lines.isEmpty()) return null
+    if (!view.synced) {
+        val original = view.lines.joinToString("\n") { it.text }.trim()
+        if (original.isBlank()) return null
+        val translation = if (view.lines.any { !it.translation.isNullOrBlank() }) {
+            view.lines.joinToString("\n") { it.translation.orEmpty() }
+        } else {
+            null
+        }
+        return original to translation
+    }
+    var lastMs = -1L
+    val origLines = ArrayList<String>(view.lines.size)
+    val transLines = ArrayList<String>()
+    for (line in view.lines) {
+        val rawMs = line.timeMs.coerceAtLeast(0L)
+        val safeMs = if (rawMs <= lastMs) lastMs + 1L else rawMs
+        lastMs = safeMs
+        val tag = formatLrcTimestamp(safeMs)
+        val text = line.text.trim().ifEmpty { "…" }
+        origLines.add("$tag$text")
+        val trans = line.translation?.trim()
+        if (!trans.isNullOrEmpty()) {
+            transLines.add("$tag$trans")
+        }
+    }
+    val original = origLines.joinToString("\n")
+    val translation = transLines.takeIf { it.isNotEmpty() }?.joinToString("\n")
+    return original to translation
+}
+
+private fun formatLrcTimestamp(ms: Long): String {
+    val minutes = ms / 60_000L
+    val seconds = (ms / 1_000L) % 60L
+    val millis = ms % 1_000L
+    return String.format(java.util.Locale.US, "[%02d:%02d.%03d]", minutes, seconds, millis)
 }

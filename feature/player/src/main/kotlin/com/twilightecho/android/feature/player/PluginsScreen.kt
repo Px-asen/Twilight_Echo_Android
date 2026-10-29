@@ -1,8 +1,6 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.twilightecho.android.feature.player
 
-import android.graphics.BitmapFactory
-import android.util.Base64
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -17,7 +15,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -42,9 +39,9 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
     var sourceDialog by remember { mutableStateOf(false) }
     var sourceDraft by rememberSaveable { mutableStateOf(repository.indexUrl) }
     var loginOpen by rememberSaveable { mutableStateOf(accountOnly) }
-    // The CDN index is shared with Desktop; this page lists its audio sources, Android-ready ones first.
+    // The CDN index is shared with Desktop and lists every plugin; only audio sources with an Android build install here.
     val sources = remember(repository.entries) {
-        repository.entries.filter { "provider" in it.type || it.installedVersion != null }.sortedBy { it.unsupportedReason != null }
+        repository.entries.sortedWith(compareBy({ it.installedVersion == null }, { it.unsupportedReason != null }))
     }
     LaunchedEffect(Unit) { if (!accountOnly) presenter.revalidate() }
     fun back() { if (accountOnly) onBack() else if (loginOpen) loginOpen = false else if (provider.plugin != null) presenter.close() else onBack() }
@@ -69,7 +66,7 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
             LazyColumn(Modifier.fillMaxSize().testTag("pluginRepository"), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item {
-                    PageHeading("音源")
+                    PageHeading("插件", "手机上可安装音源插件，其他插件请在桌面端使用")
                     GlassCard(Modifier.fillMaxWidth().padding(bottom = 10.dp), onClick = { sourceDraft = repository.indexUrl; sourceDialog = true }) {
                         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             IconTile(TwilightIcons.Library, Modifier.padding(end = 14.dp), container = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
@@ -88,7 +85,7 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                     GlassCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(18.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconTile(TwilightIcons.SignalWave, size = 48.dp,
+                                IconTile(if ("provider" in plugin.type) TwilightIcons.SignalWave else TwilightIcons.Sparkles, size = 48.dp,
                                     container = if (installed?.enabled == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer,
                                     content = if (installed?.enabled == true) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onPrimaryContainer)
                                 Column(Modifier.weight(1f).padding(start = 14.dp)) {
@@ -96,7 +93,7 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                                     Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         TagChip(plugin.version)
                                         TagChip(when {
-                                            installed == null -> if (plugin.unsupportedReason != null) "不支持" else "未安装"
+                                            installed == null -> plugin.unsupportedReason?.let { if (it == MOBILE_UNSUPPORTED) it else "不支持" } ?: "未安装"
                                             installed.enabled -> "已启用"
                                             else -> "已停用"
                                         }, highlighted = installed?.enabled == true)
@@ -111,7 +108,8 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                                 modifier = Modifier.padding(top = 6.dp)) }
                             Row(Modifier.padding(top = 14.dp).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (installed == null || plugin.updateAvailable) PillButton(if (installed == null) "安装" else "更新", { install = plugin },
+                                if ((installed == null && plugin.unsupportedReason == null) || (installed != null && plugin.updateAvailable))
+                                    PillButton(if (installed == null) "安装" else "更新", { install = plugin },
                                     Modifier.testTag("plugin-install-${plugin.id}"), TwilightIcons.Plus,
                                     enabled = plugin.unsupportedReason == null && !repository.busy, tonal = installed != null)
                                 if (installed != null) {
@@ -130,17 +128,22 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                 }
             }
         } else {
-            if (loginOpen) ProviderLoginPanel(provider, presenter)
+            if (loginOpen) { if (provider.generic) ProviderAccountPanel(provider, presenter) else ProviderLoginPanel(provider, presenter) }
             else {
-                OutlinedTextField(provider.query, presenter::query, placeholder = { Text("歌曲、歌手、专辑") }, label = { Text("搜索网易云音乐") },
+                // Plugins-repository providers show search only when they declare it, as on Desktop.
+                if (!provider.generic || provider.provider?.searchable() == true)
+                OutlinedTextField(provider.query, presenter::query, placeholder = { Text("歌曲、歌手、专辑") },
+                    label = { Text(if (provider.generic) "搜索${provider.plugin?.name.orEmpty()}" else "搜索网易云音乐") },
                     singleLine = true, shape = RoundedCornerShape(50), colors = twilightFieldColors(),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).testTag("providerSearch"),
                     leadingIcon = { Icon(TwilightIcons.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { presenter.search() }),
                     trailingIcon = { IconButton(enabled = !provider.busy, onClick = { presenter.search() }) { Icon(TwilightIcons.ArrowRight, "搜索音源") } })
-                val sections = listOf("discovery" to "发现歌单", "daily" to "每日推荐", "liked" to "我喜欢", "library" to "我的歌单")
-                PillTabs(sections.map { it.first }, provider.pageKind, { kind -> sections.first { it.first == kind }.second },
+                val sections = if (provider.generic) provider.tabs
+                    else listOf("discovery" to "发现歌单", "daily" to "每日推荐", "liked" to "我喜欢", "library" to "我的歌单")
+                if (sections.isNotEmpty()) PillTabs(sections.map { it.first }, provider.pageKind, { kind -> sections.first { it.first == kind }.second },
                     { if (!provider.busy) presenter.section(it) }, Modifier.padding(vertical = 8.dp))
+                provider.notice?.let { ProviderNotice(it, Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) }
                 provider.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) }
                 LazyColumn(Modifier.weight(1f).testTag("providerResults"), contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -169,10 +172,11 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                                 headlineColor = if (available) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)),
                             modifier = Modifier.padding(horizontal = 4.dp).clip(RoundedCornerShape(18.dp))
                                 .clickable(enabled = !provider.busy && available) {
-                                    if (provider.nickname.isNullOrBlank()) loginOpen = true else onPlay(provider.tracks, track)
+                                    // NCM asks for an account first; other sources report their own sign-in needs when played.
+                                    if (!provider.generic && provider.nickname.isNullOrBlank()) loginOpen = true else onPlay(provider.tracks, track)
                                 })
                     }
-                    if (provider.total > maxOf(provider.tracks.size, provider.playlists.size) && provider.pageKind in listOf("search", "playlist", "liked", "discovery")) item {
+                    if (!provider.generic && provider.total > maxOf(provider.tracks.size, provider.playlists.size) && provider.pageKind in listOf("search", "playlist", "liked", "discovery")) item {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             val size = if (provider.pageKind in listOf("playlist", "liked")) 100 else 30
                             val count = maxOf(provider.tracks.size, provider.playlists.size)
@@ -185,9 +189,26 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                                 enabled = provider.offset + count < provider.total && !provider.busy, tonal = true)
                         }
                     }
+                    // A provider's own paging: where the next page starts, and the first page's size to step back.
+                    if (provider.generic && provider.pageKind in listOf("search", "playlist") && (provider.offset > 0 || provider.nextOffset != null)) item {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            PillButton("上一页", { presenter.nextPage((provider.offset - provider.pageSize.coerceAtLeast(1)).coerceAtLeast(0)) },
+                                enabled = provider.offset > 0 && !provider.busy, tonal = true)
+                            Text("${provider.offset + 1}–${provider.offset + provider.tracks.size}" +
+                                if (provider.pageKind == "playlist" && provider.total >= provider.offset + provider.tracks.size) " / ${provider.total}" else "",
+                                modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                            PillButton("下一页", { provider.nextOffset?.let { presenter.nextPage(it) } },
+                                enabled = provider.nextOffset != null && !provider.busy, tonal = true)
+                        }
+                    }
                     if (!provider.busy && provider.tracks.isEmpty() && provider.playlists.isEmpty()) item {
-                        EmptyState("从一首歌开始", if (provider.query.isBlank()) "搜索喜欢的音乐，或探索歌单。登录后可读取你的收藏和推荐。" else "没有找到结果。试试其他关键词，或查看上方的错误提示。",
-                            TwilightIcons.Search)
+                        EmptyState("从一首歌开始", when {
+                            provider.query.isNotBlank() -> "没有找到结果。试试其他关键词，或查看上方的错误提示。"
+                            !provider.generic -> "搜索喜欢的音乐，或探索歌单。登录后可读取你的收藏和推荐。"
+                            provider.profile == null -> "登录后可读取你的歌单和推荐；点右上角的“登录”。"
+                            else -> "从上方选择推荐或歌单。"
+                        }, TwilightIcons.Search)
                     }
                 }
             }
@@ -195,7 +216,7 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
     }
     }
     install?.let { plugin -> AlertDialog(onDismissRequest = { install = null }, title = { Text("安装 ${plugin.name}？") },
-        text = { Text("${if (plugin.sourceUrl.startsWith("asset:")) "随应用提供的插件" else "插件包将使用仓库声明的 SHA-256 校验"}\n\n允许访问：\n${plugin.androidRuntime?.networkHosts?.joinToString("\n")}\n\n插件设置和账号凭据独立保存。") },
+        text = { Text(plugin.installSummary(), Modifier.verticalScroll(rememberScrollState())) },
         confirmButton = { TextButton(onClick = { install = null; scope.launch { runCatching { presenter.repository.install(plugin.id) } } }) { Text("安装并启用") } },
         dismissButton = { TextButton(onClick = { install = null }) { Text("取消") } }) }
     remove?.let { plugin -> AlertDialog(onDismissRequest = { remove = null }, title = { Text("卸载 ${plugin.name}？") }, text = { Text("同时删除插件设置和账号凭据；本机与电脑的音乐队列不受影响。") },
@@ -208,10 +229,26 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
         dismissButton = { TextButton(onClick = { sourceDialog = false }) { Text("取消") } })
 }
 
-/** Desktop-only sources share the index; the shared rules still decide what installs. */
-private fun PluginEntry.androidAvailability(): String = unsupportedReason?.let { reason ->
-    if (androidRuntime == null) "尚未发布 Android 版本 · 桌面端可用" else reason
-} ?: "支持 Android · 网络与独立插件设置"
+/** The shared index's reason for a plugin that runs only on Desktop: anything but an audio source with an Android build. */
+private const val MOBILE_UNSUPPORTED = "移动端不适配"
+
+/** Desktop-only plugins share the index; the shared rules still decide what installs. */
+private fun PluginEntry.androidAvailability(): String = when (val reason = unsupportedReason) {
+    null -> "支持 Android · 网络与独立插件设置"
+    MOBILE_UNSUPPORTED -> "$MOBILE_UNSUPPORTED · 请在桌面端使用"
+    else -> reason
+}
+
+/** What installing grants: the hosts the runtime declares, and the server the user types in for `userServer` sources. */
+private fun PluginEntry.installSummary(): String = buildString {
+    val runtime = androidRuntime
+    append(if (sourceUrl.startsWith("asset:")) "随应用提供的插件" else "插件包将使用仓库声明的 SHA-256 校验")
+    append("\n\n允许访问：\n").append(runtime?.networkHosts.orEmpty().joinToString("\n"))
+    runtime?.mediaHosts?.takeIf { it.isNotEmpty() }?.let { append("\n\n图片与音频：\n").append(it.joinToString("\n")) }
+    runtime?.cleartextHosts?.takeIf { it.isNotEmpty() }?.let { append("\n\n允许 HTTP 明文：\n").append(it.joinToString("\n")) }
+    if (runtime?.userServer == true) append("\n\n登录时填写的服务器（可为局域网或 HTTP 地址）")
+    append("\n\n插件设置和账号凭据独立保存。")
+}
 
 @Composable
 private fun HeaderAccountButton(label: String, quiet: Boolean, onClick: () -> Unit) {
@@ -243,11 +280,8 @@ private fun ProviderLoginPanel(state: ProviderPageState, presenter: PluginPresen
                         modes.forEach { (key, label) -> ChoicePill(label, mode == key, Modifier) { mode = key; secret = "" } }
                     }
                     if (mode == "qr") {
-                        val qr = remember(state.qrImage) { state.qrImage?.substringAfter("base64,")?.let { runCatching { Base64.decode(it, Base64.DEFAULT).let { b -> BitmapFactory.decodeByteArray(b, 0, b.size).asImageBitmap() } }.getOrNull() } }
-                        // QR codes need a light quiet zone to scan reliably, so this one tile stays white.
-                        qr?.let { Box(Modifier.align(Alignment.CenterHorizontally).clip(RoundedCornerShape(24.dp)).background(Color.White).padding(14.dp)) {
-                            Image(it, "网易云登录二维码", Modifier.size(220.dp), filterQuality = androidx.compose.ui.graphics.FilterQuality.None)
-                        } }
+                        val qr = rememberQrBitmap(state.qrImage)
+                        qr?.let { LoginQrCode(it, "网易云登录二维码", Modifier.align(Alignment.CenterHorizontally)) }
                         PillButton(if (qr == null) "获取二维码" else "刷新二维码", { presenter.qr() }, Modifier.fillMaxWidth(), enabled = !state.busy,
                             tonal = qr != null)
                         if (state.qrKey != null) PillButton("我已扫码，检查登录", { presenter.checkQr() }, Modifier.fillMaxWidth(), enabled = !state.busy)

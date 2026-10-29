@@ -9,6 +9,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -114,19 +115,13 @@ private fun PlaybackSettings(state: PlayerUiState, actions: PlayerActions) {
         MiniAction("恢复原速", Modifier.padding(start = 18.dp, bottom = 8.dp)) { actions.editDsp { it.copy(playbackRate = 1.0) } }
     }
     AudioCard("输出方式") {
-        SettingsSwitch("原始采样率优先", "关闭后使用连续播放策略，以固定采样率减少切歌时重开设备。", config.bitPerfect, actions.toggleBitPerfect)
-        if (!config.bitPerfect) AudioChoice("连续播放采样率", dsp.continuitySampleRate.toString(),
-            listOf("44100" to "44.1 kHz", "48000" to "48 kHz", "96000" to "96 kHz")) { selected ->
-            actions.editDsp { it.copy(continuitySampleRate = selected.toInt()) }
-        }
-        CardDivider()
         val devices = listOf("auto" to "跟随系统") + state.audioDevices.map { it.id to it.name }
         AudioChoice("输出设备", dsp.outputDeviceId, devices) { selected -> actions.editDsp { it.copy(outputDeviceId = selected) } }
         if (dsp.outputDeviceId != "auto" && devices.none { it.first == dsp.outputDeviceId }) {
             SupportingText("所选设备当前未连接，可改为跟随系统。", Modifier.padding(horizontal = 18.dp))
         }
         CardDivider()
-        SettingsSwitch("请求 AAudio 独占", "需开启原始采样率优先。系统可能改用共享模式；实际模式显示在音频链路。", dsp.exclusive) {
+        SettingsSwitch("请求 AAudio 独占", "连续播放策略不请求独占。系统可能改用共享模式；实际模式显示在音频链路。", dsp.exclusive) {
             actions.editDsp { it.copy(exclusive = !it.exclusive) }
         }
         AudioChoice("缓冲区", dsp.bufferFrames.toString(), listOf("0" to "自动", "256" to "256 帧", "512" to "512 帧", "1024" to "1024 帧", "2048" to "2048 帧")) { selected ->
@@ -134,11 +129,8 @@ private fun PlaybackSettings(state: PlayerUiState, actions: PlayerActions) {
         }
     }
     val stage = dsp.outputStage
+    PcmRateSettings(state, actions)
     AudioCard("重采样与输出余量") {
-        AudioChoice("目标采样率", stage.targetSampleRate.toString(), listOf("0" to "自动", "44100" to "44.1k", "48000" to "48k", "88200" to "88.2k",
-            "96000" to "96k", "176400" to "176.4k", "192000" to "192k")) { selected ->
-            actions.editDsp { it.copy(outputStage = it.outputStage.copy(targetSampleRate = selected.toInt())) }
-        }
         AudioChoice("重采样质量", stage.resamplerQuality, listOf("native" to "默认", "high" to "高", "ultra" to "极高")) { selected ->
             actions.editDsp { it.copy(outputStage = it.outputStage.copy(resamplerQuality = selected)) }
         }
@@ -158,6 +150,97 @@ private fun PlaybackSettings(state: PlayerUiState, actions: PlayerActions) {
         CardDivider()
         SettingsSwitch("输出安全限幅", "防止处理后的 PCM 超出满刻度。", stage.safetyClamp) {
             actions.editDsp { it.copy(outputStage = it.outputStage.copy(safetyClamp = !it.outputStage.safetyClamp)) }
+        }
+    }
+}
+
+internal val PcmRateChoices = listOf(44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000)
+internal fun pcmRateLabel(rate: Int): String = "${(rate / 1000.0).let { if (it % 1 == 0.0) it.toInt().toString() else it.toString() }} kHz"
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+private fun PcmRateSettings(state: PlayerUiState, actions: PlayerActions) {
+    val config = state.eqConfig
+    val dsp = config.dsp
+    val mode = when {
+        dsp.sampleRateFamilySync -> "family"
+        !config.bitPerfect -> "continuity"
+        dsp.outputStage.targetSampleRate > 0 -> "fixed"
+        else -> "source"
+    }
+    val declared = if (dsp.outputDeviceId == "auto") state.activeOutputSampleRates
+        else state.audioDevices.firstOrNull { it.id == dsp.outputDeviceId }?.sampleRates.orEmpty()
+    val rates = declared.filter { it in 8000..384000 }.distinct().sorted()
+    val allowed = dsp.allowedSampleRates
+    val choices = if (rates.isEmpty()) (PcmRateChoices + allowed).distinct().sorted() else rates
+    val fixedChoices = choices.filter { allowed.isEmpty() || it in allowed }
+    var selectionError by remember(mode, allowed, rates, dsp.outputStage.targetSampleRate) { mutableStateOf<String?>(null) }
+    AudioCard("PCM 采样率", modifier = Modifier.testTag("pcmRateSettings")) {
+        Text("采样率策略", Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        FlowRow(Modifier.padding(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("source" to "跟随音源", "family" to "家族同步", "continuity" to "连续播放", "fixed" to "固定").forEach { (selected, label) ->
+                ChoicePill(label, mode == selected, Modifier.testTag("pcm-policy-$selected")) {
+                    if (selected == "fixed" && fixedChoices.isEmpty()) {
+                        selectionError = "先调整允许集合，再选择固定采样率。"
+                    } else actions.editAudio { current -> current.copy(bitPerfect = selected != "continuity", dsp = current.dsp.copy(
+                        sampleRateFamilySync = selected == "family",
+                        outputStage = current.dsp.outputStage.copy(targetSampleRate = if (selected == "fixed")
+                            fixedChoices.firstOrNull { it == current.dsp.outputStage.targetSampleRate } ?: fixedChoices.first() else 0))) }
+                }
+            }
+        }
+        if (mode == "family") SupportingText("优先保留音源采样率，再选同属 44.1 或 48 kHz 家族的可用采样率。",
+            Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
+        if (mode == "continuity") AudioChoice("连续播放采样率", dsp.continuitySampleRate.toString(),
+            listOf(44100, 48000, 96000).map { it.toString() to pcmRateLabel(it) }) { selected ->
+            actions.editDsp { it.copy(continuitySampleRate = selected.toInt()) }
+        }
+        if (mode == "fixed") {
+            AudioChoice("目标采样率", dsp.outputStage.targetSampleRate.toString(),
+                (fixedChoices + dsp.outputStage.targetSampleRate).distinct().map { it.toString() to pcmRateLabel(it) }, tag = "pcm-fixed") { selected ->
+                actions.editDsp { it.copy(outputStage = it.outputStage.copy(targetSampleRate = selected.toInt())) }
+            }
+        }
+        CardDivider()
+        SupportingText(if (rates.isEmpty()) "设备未声明采样率，仍可请求输出。" else
+            "设备声明：${rates.joinToString("、", transform = ::pcmRateLabel)}", Modifier.padding(horizontal = 18.dp).testTag("pcm-device-rates"))
+        AudioChoice("允许请求的采样率", if (allowed.isEmpty()) "all" else "custom",
+            listOf("all" to "不限制", "custom" to "自选集合"), tag = "pcm-allowed") { selected ->
+            if (selected == "custom" && mode == "fixed" && dsp.outputStage.targetSampleRate !in choices) {
+                selectionError = "固定目标不在设备声明中，请先更改目标采样率。"
+            } else {
+                selectionError = null
+                actions.editDsp { it.copy(allowedSampleRates = if (selected == "all") emptyList() else
+                    listOf((if (mode == "fixed") dsp.outputStage.targetSampleRate else 48000).takeIf { it in choices } ?: choices.first())) }
+            }
+        }
+        if (allowed.isNotEmpty()) {
+            FlowRow(Modifier.padding(horizontal = 18.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                (choices + allowed).distinct().sorted().forEach { rate ->
+                    ChoicePill(pcmRateLabel(rate), rate in allowed, Modifier.testTag("pcm-allow-$rate"), multiSelect = true) {
+                        val updated = if (rate in allowed) allowed - rate else (allowed + rate).sorted()
+                        when {
+                            updated.isEmpty() -> selectionError = "至少保留一个采样率，或选择“不限制”。"
+                            mode == "fixed" && dsp.outputStage.targetSampleRate !in updated ->
+                                selectionError = "先更改固定目标，再移除此采样率。"
+                            else -> actions.editDsp { it.copy(allowedSampleRates = updated) }
+                        }
+                    }
+                }
+            }
+            if (rates.isNotEmpty() && allowed.none { it in rates }) SupportingText("当前设备与允许集合没有交集，请调整集合。",
+                Modifier.padding(horizontal = 18.dp).testTag("pcm-rate-conflict"))
+        }
+        selectionError?.let { SupportingText(it, Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("pcm-selection-error")) }
+        val request = state.diagnostics.requestedSampleRateHz
+        val actual = state.diagnostics.actualSampleRateHz
+        if (request > 0 && actual > 0) FlowRow(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp)
+            .testTag("pcm-rate-result"), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SupportingText("引擎请求 ${pcmRateLabel(request)}", Modifier.testTag("pcm-rate-request"))
+            SupportingText("播放流 ${pcmRateLabel(actual)}", Modifier.testTag("pcm-rate-actual"))
         }
     }
 }
@@ -521,13 +604,14 @@ internal fun MiniAction(label: String, modifier: Modifier = Modifier, enabled: B
 }
 
 @Composable
-internal fun ChoicePill(text: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+internal fun ChoicePill(text: String, selected: Boolean, modifier: Modifier, multiSelect: Boolean = false, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val bg by animateColorAsState(if (selected) colors.primary else colors.onSurface.copy(alpha = 0.06f), label = "choiceBg")
     val fg by animateColorAsState(if (selected) colors.onPrimary else colors.onSurface.copy(alpha = 0.85f), label = "choiceFg")
     Box(modifier.heightIn(min = 40.dp).clip(RoundedCornerShape(50)).background(bg)
         .border(1.dp, if (selected) Color.Transparent else colors.onSurface.copy(alpha = 0.08f), RoundedCornerShape(50))
-        .selectable(selected, role = Role.RadioButton, onClick = onClick).padding(horizontal = 16.dp),
+        .then(if (multiSelect) Modifier.toggleable(selected, role = Role.Checkbox) { onClick() }
+            else Modifier.selectable(selected, role = Role.RadioButton, onClick = onClick)).padding(horizontal = 16.dp),
         contentAlignment = Alignment.Center) {
         Text(text, style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
     }
@@ -535,7 +619,7 @@ internal fun ChoicePill(text: String, selected: Boolean, modifier: Modifier, onC
 
 @Composable
 internal fun AudioChoice(label: String, selected: String, options: List<Pair<String, String>>, tag: String = "", onSelect: (String) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp).then(if (tag.isNotEmpty()) Modifier.testTag("$tag-row") else Modifier)) {
         Text(label, Modifier.padding(horizontal = 18.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp).padding(top = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {

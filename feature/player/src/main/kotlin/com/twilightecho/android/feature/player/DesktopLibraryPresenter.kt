@@ -108,14 +108,15 @@ internal class DesktopLibraryPresenter(private val scope: CoroutineScope, privat
         val refreshAlbums = refreshing && entity.kind == "artist" && (current.artistAlbums || current.albumsLoaded)
         mutable.update { it.copy(selected = entity, metadata = if (refreshing) it.metadata else null,
             sources = if (refreshing) it.sources else null, detailLoading = true, detailError = null,
-            artistAlbums = refreshing && it.artistAlbums, albums = emptyList(), albumsLoaded = false,
+            artistAlbums = refreshing && it.artistAlbums, albums = if (refreshing) it.albums else emptyList(),
+            albumsLoaded = refreshing && it.albumsLoaded,
             albumsLoading = false, albumsError = null) }
         detailJob = scope.launch {
             val metadata = async { client.metadata(entity.id) }
             val sources = async { client.sources(entity.id, offset) }
             val m = metadata.await(); val s = sources.await()
             if (origin != generation || request != detailRequest || mutable.value.selected?.id != entity.id) return@launch
-            mutable.update { it.copy(metadata = m.getOrNull(), sources = s.getOrNull(), detailLoading = false,
+            mutable.update { it.copy(metadata = m.getOrNull() ?: it.metadata, sources = s.getOrNull() ?: it.sources, detailLoading = false,
                 detailError = m.exceptionOrNull()?.message ?: s.exceptionOrNull()?.message) }
             if (refreshAlbums) loadArtistAlbums()
         }
@@ -145,26 +146,16 @@ internal class DesktopLibraryPresenter(private val scope: CoroutineScope, privat
         val selected = mutable.value.selected?.takeIf { it.kind == "artist" } ?: return
         val origin = generation; val request = ++albumRequest
         albumJob?.cancel()
+        val keepAlbums = mutable.value.albumsLoaded
         mutable.update { it.copy(albumsLoading = true, albumsError = null) }
         albumJob = scope.launch {
             try {
-                // Large discographies must not exhaust the desktop's shared 60-RPC/minute budget.
-                // Keep small pages immediate, pace bulk reads, and allow a busy window to clear once.
-                var reads = 0
-                suspend fun <T> read(block: suspend () -> Result<T>): T {
-                    currentCoroutineContext().ensureActive()
-                    if (reads++ >= 4) delay(1_250)
-                    val result = block()
-                    val error = result.exceptionOrNull() as? CoreRequestException
-                    if (error?.error?.code != CoreErrorCode.BUSY) return result.getOrThrow()
-                    delay(60_000)
-                    return block().getOrThrow()
-                }
+                // Pacing and rejected-read retries belong to the connection's shared RPC budget.
                 val ids = linkedSetOf<String>()
                 var offset = 0
                 var revision: Long? = null
                 do {
-                    val page = read { client.sources(selected.id, offset, revision) }
+                    val page = client.sources(selected.id, offset, revision).getOrThrow()
                     if (revision != null) check(page.revision == revision) { "电脑曲库已更新，请重新载入专辑" }
                     revision = page.revision
                     page.items.mapNotNullTo(ids) { it.releaseId }
@@ -173,10 +164,10 @@ internal class DesktopLibraryPresenter(private val scope: CoroutineScope, privat
                 } while (offset < page.total)
                 val albums = ArrayList<CatalogEntity>()
                 for (id in ids) {
-                    val detail = read { client.entity(id, revision!!) }
+                    val detail = client.entity(id, revision!!).getOrThrow()
                     check(detail.revision == revision) { "电脑曲库已更新，请重新载入专辑" }
                     albums += detail.entity ?: error("电脑专辑已更新，请重试")
-                    if (origin == generation && request == albumRequest && mutable.value.selected?.id == selected.id)
+                    if (!keepAlbums && origin == generation && request == albumRequest && mutable.value.selected?.id == selected.id)
                         mutable.update { it.copy(albums = albums.sortedBy { album -> album.title }) }
                 }
                 if (origin == generation && request == albumRequest && mutable.value.selected?.id == selected.id)
@@ -207,7 +198,8 @@ internal class DesktopLibraryPresenter(private val scope: CoroutineScope, privat
     fun refreshArtwork() {
         artworkRequest++
         artworkJob?.cancel(); pendingArtwork.clear(); attemptedArtwork.clear()
-        mutable.update { it.copy(artwork = emptyMap(), artworkRevision = it.artworkRevision + 1) }
+        // Keep the last cover until its replacement arrives, including an explicit null (cleared cover).
+        mutable.update { it.copy(artworkRevision = it.artworkRevision + 1) }
     }
 
     fun aliasArtwork(streamId: String, sessionId: String) {

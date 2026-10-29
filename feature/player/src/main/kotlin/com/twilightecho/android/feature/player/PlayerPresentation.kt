@@ -95,7 +95,12 @@ internal fun collectionTracks(ids: List<String>, tracks: List<CoreTrackView>): L
 
 internal fun mergeQueueEntries(
     previous: List<CoreQueueEntryView>, next: List<CoreQueueEntryView>
-): List<CoreQueueEntryView> = (previous + next).associateBy { it.occurrenceId }.values.sortedBy { it.index }
+): List<CoreQueueEntryView> {
+    // Playback-clock snapshots normally carry the same window. Keep the list (and its
+    // Compose row inputs) instead of rebuilding a map and sorting it on every clock tick.
+    if (previous == next || next.isEmpty()) return previous
+    return (previous + next).associateBy { it.occurrenceId }.values.sortedBy { it.index }
+}
 
 internal fun nextQueueOffset(items: List<CoreQueueEntryView>, total: Int): Int? {
     val indices = items.mapTo(HashSet()) { it.index }

@@ -31,11 +31,9 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.BlurredEdgeTreatment
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -58,7 +56,6 @@ import com.twilightecho.android.coreclient.CoreOperatingMode
 import com.twilightecho.android.coreclient.LyricsPreferences
 import com.twilightecho.android.ui.components.EmptyState
 import com.twilightecho.android.ui.components.TwilightIcons
-import com.twilightecho.android.ui.theme.LocalTwilightAccents
 import kotlinx.coroutines.flow.first
 import kotlin.math.abs
 import kotlin.math.cos
@@ -76,7 +73,6 @@ internal object LyricsMotionSpec {
     const val MaxStaggerRows = 7
     const val SettleSeconds = 1.1f
     const val FocusMillis = 320
-    const val GlowMillis = 360
     const val NeighborAlpha = 0.42f
     const val NearAlpha = 0.30f
     const val FarAlpha = 0.22f
@@ -163,13 +159,12 @@ internal data class LyricFocus(
     val alpha: Float,
     val scale: Float,
     val offsetDp: Float,
-    val blurDp: Float,
-    val glow: Float
+    val blurDp: Float
 )
 
 internal fun lyricFocus(index: Int, activeIndex: Int, synced: Boolean, following: Boolean,
     motionEnabled: Boolean, apiLevel: Int, blurStrengthDp: Float = LyricsMotionSpec.MaxBlurDp): LyricFocus {
-    if (!synced) return LyricFocus(0.86f, 1f, 0f, 0f, 0f)
+    if (!synced) return LyricFocus(0.86f, 1f, 0f, 0f)
     val focused = activeIndex >= 0 && index == activeIndex
     val distance = if (activeIndex < 0) 1 else abs(index - activeIndex)
     return LyricFocus(
@@ -180,8 +175,7 @@ internal fun lyricFocus(index: Int, activeIndex: Int, synced: Boolean, following
         // Depth of field: the further a line is from the one being sung, the softer it gets.
         blurDp = if (motionEnabled && following && apiLevel >= 31 && activeIndex >= 0 && !focused)
             minOf(distance * LyricsMotionSpec.BlurPerLineDp, LyricsMotionSpec.MaxBlurDp) *
-                (blurStrengthDp / LyricsMotionSpec.MaxBlurDp) else 0f,
-        glow = if (focused && motionEnabled) 0.18f else 0f
+                (blurStrengthDp / LyricsMotionSpec.MaxBlurDp) else 0f
     )
 }
 
@@ -247,7 +241,7 @@ internal fun LyricsStage(lyrics: CoreLyricsView?, activeIndex: Int, viewport: Ly
             val viewportHeight = maxHeight
             Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                 Box(Modifier.fillMaxWidth().heightIn(min = viewportHeight), contentAlignment = Alignment.Center) {
-                    EmptyState("暂无歌词", if (onImport != null) "导入这首歌的 LRC 文件，逐行跟随音乐。" else "当前电脑接口尚未提供歌词。",
+                    EmptyState("暂无歌词", if (onImport != null) "导入这首歌的 LRC 文件，逐行跟随音乐。" else "这首歌暂无可用歌词。",
                         actionLabel = if (onImport != null) "导入歌词" else null, onAction = { onImport?.invoke() })
                 }
             }
@@ -273,8 +267,10 @@ internal fun LyricsStage(lyrics: CoreLyricsView?, activeIndex: Int, viewport: Ly
     BoxWithConstraints(modifier.fillMaxSize().clipToBounds()) {
         // LazyList item offsets are relative to its content padding: offset=0 places the row here.
         val anchor = maxHeight / 3
+        // Content padding follows viewport resizing by itself. Restarting this effect on each chrome/inset
+        // animation frame would enqueue dozens of overlapping waves for a single line.
         LaunchedEffect(visible, current, synced, follow.following, follow.alignmentRequest,
-            maxHeight, maxWidth, density.density, density.fontScale, motionEnabled, preferences) {
+            density.density, density.fontScale, motionEnabled, preferences) {
             if (!visible || !synced || !follow.following) return@LaunchedEffect
             snapshotFlow { list.layoutInfo.visibleItemsInfo.isNotEmpty() }.first { it }
             val target = current.coerceAtLeast(0)
@@ -302,10 +298,13 @@ internal fun LyricsStage(lyrics: CoreLyricsView?, activeIndex: Int, viewport: Ly
             .semantics { stateDescription = if (!synced) "非同步歌词" else if (follow.following) "自动跟随" else "手动浏览" }
             .nestedScroll(input)
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-            .drawWithContent {
-                drawContent()
-                drawRect(Brush.verticalGradient(0f to Color.Transparent, 0.12f to Color.Black,
-                    0.78f to Color.Black, 1f to Color.Transparent), blendMode = BlendMode.DstIn)
+            .drawWithCache {
+                val fade = Brush.verticalGradient(0f to Color.Transparent, 0.12f to Color.Black,
+                    0.78f to Color.Black, 1f to Color.Transparent)
+                onDrawWithContent {
+                    drawContent()
+                    drawRect(fade, blendMode = BlendMode.DstIn)
+                }
             }, state = list,
             contentPadding = PaddingValues(top = anchor, bottom = maxHeight * 2 / 3),
             verticalArrangement = Arrangement.spacedBy(preferences.lineSpacingDp.dp)) {
@@ -342,13 +341,10 @@ private fun LyricsLine(line: CoreLyricLine, index: Int, activeIndex: Int, synced
         if (motionEnabled) spring(dampingRatio = 0.72f, stiffness = 220f) else snap(), label = "lyricScale")
     val opacity = animateFloatAsState(focus.alpha,
         if (motionEnabled) tween(LyricsMotionSpec.FocusMillis) else snap(), label = "lyricAlpha")
-    val blur by animateFloatAsState(focus.blurDp,
+    val blur = animateFloatAsState(focus.blurDp,
         if (motionEnabled) tween(LyricsMotionSpec.FocusMillis) else snap(), label = "lyricBlur")
-    val glow by animateFloatAsState(focus.glow,
-        if (motionEnabled) tween(LyricsMotionSpec.GlowMillis) else snap(), label = "lyricGlow")
     val density = LocalDensity.current
     val ink = MaterialTheme.colorScheme.onSurface
-    val halo = ink
     // Only the words take the tap, so the open stage beside them is free to toggle immersion.
     Column(Modifier.heightIn(min = 48.dp)
         .graphicsLayer {
@@ -362,11 +358,14 @@ private fun LyricsLine(line: CoreLyricLine, index: Int, activeIndex: Int, synced
         .clip(RoundedCornerShape(14.dp))
         .then(if (synced) Modifier.clickable(onClick = onClick) else Modifier)
         .padding(start = 4.dp, end = 16.dp, top = 6.dp, bottom = 6.dp)
-        .blur(blur.dp, BlurredEdgeTreatment.Unbounded)) {
+        .graphicsLayer {
+            // Layer-only invalidation: animating depth must not recompose or remeasure the words.
+            val radius = blur.value * density.density
+            renderEffect = if (Build.VERSION.SDK_INT >= 31 && radius > 0f) BlurEffect(radius, radius, TileMode.Decal) else null
+        }) {
         // White ink on every line; focus comes from opacity, size and depth of field, never a hue change.
         Text(line.text, color = ink, style = TextStyle(fontSize = preferences.fontSizeSp.sp, lineHeight = (preferences.fontSizeSp * 4 / 3).sp,
-            fontWeight = FontWeight(preferences.fontWeight), letterSpacing = (-0.6).sp,
-            shadow = Shadow(halo.copy(alpha = (glow * 3.5f).coerceAtMost(0.7f)), blurRadius = with(density) { 18.dp.toPx() })))
+            fontWeight = FontWeight(preferences.fontWeight), letterSpacing = (-0.6).sp))
         line.translation?.takeIf { preferences.showTranslation && it.isNotBlank() }?.let {
             Text(it, color = ink.copy(alpha = 0.62f), fontSize = preferences.translationSizeSp.sp, lineHeight = (preferences.translationSizeSp * 24 / 17).sp,
                 fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))

@@ -89,4 +89,56 @@ class DesktopLibraryPresenterTest {
         assertEquals(listOf(8, 2), batches.map { it.size })
         assertEquals(10, presenter.state.value.artwork.size)
     }
+
+    @Test fun aFailedBackgroundRefreshKeepsTheLoadedArtistAndSongs() = runTest {
+        var fail = false
+        val json = DefaultCoreClient.DefaultJson
+        val transport = object : CoreTransport {
+            override val stateEvents = MutableSharedFlow<CoreEventMessage>()
+            override suspend fun cancelRequest(envelope: CoreCancelEnvelope) {}
+            override suspend fun sendRequest(envelope: CoreRequestEnvelope): CoreResponseEnvelope {
+                if (fail) return CoreResponseEnvelope(requestId = envelope.requestId, epoch = "desktop", ok = false,
+                    error = CoreErrorView(CoreErrorCode.BUSY, "电脑请求较多，请稍后重试"))
+                val value = if (envelope.name == "metadata.entity.detail") json.encodeToJsonElement(
+                    EntityMetadataDetail("artist", 1, "北岸", MetadataIntroduction("已载入的简介")))
+                else json.encodeToJsonElement(CatalogSourcePage(1, 1, items = listOf(CatalogSource(
+                    "source", "local", "recording", track = CatalogSourceTrack("已载入的歌曲")))))
+                return CoreResponseEnvelope(requestId = envelope.requestId, epoch = "desktop", ok = true, value = value)
+            }
+        }
+        val presenter = DesktopLibraryPresenter(backgroundScope, DesktopLibraryClient(transport) { "desktop" })
+        val artist = CatalogEntity("artist", "artist", "北岸")
+        presenter.open(artist); runCurrent()
+        val before = presenter.state.value
+        fail = true; presenter.open(artist, refresh = true)
+        assertEquals(before.metadata, presenter.state.value.metadata)
+        assertEquals(before.sources, presenter.state.value.sources)
+        runCurrent()
+        assertEquals(before.metadata, presenter.state.value.metadata)
+        assertEquals(before.sources, presenter.state.value.sources)
+        assertNotNull(presenter.state.value.detailError)
+        assertFalse(presenter.state.value.detailLoading)
+    }
+
+    @Test fun artworkRefreshKeepsTheCoverUntilAReplacementOrExplicitClearArrives() = runTest {
+        var cover: String? = "data:image/jpeg;base64,existing"
+        val transport = object : CoreTransport {
+            override val stateEvents = MutableSharedFlow<CoreEventMessage>()
+            override suspend fun cancelRequest(envelope: CoreCancelEnvelope) {}
+            override suspend fun sendRequest(envelope: CoreRequestEnvelope) = error("Unused")
+        }
+        val presenter = DesktopLibraryPresenter(backgroundScope, DesktopLibraryClient(transport) { "desktop" }) {
+            Result.success(TrackArtworkPage(1, it.map { id -> TrackArtworkPreview(id, cover) }))
+        }
+        presenter.requestArtwork("remote-track:1"); advanceTimeBy(81); runCurrent()
+        presenter.aliasArtwork("stream:1", "remote-track:1")
+        presenter.refreshArtwork()
+        assertEquals(cover, presenter.state.value.artwork["remote-track:1"])
+        assertEquals(cover, presenter.state.value.artwork["stream:1"])
+        cover = null
+        presenter.requestArtwork("remote-track:1"); advanceTimeBy(81); runCurrent()
+        assertTrue(presenter.state.value.artwork.containsKey("remote-track:1"))
+        assertNull(presenter.state.value.artwork["remote-track:1"])
+        assertNull(presenter.state.value.artwork["stream:1"])
+    }
 }

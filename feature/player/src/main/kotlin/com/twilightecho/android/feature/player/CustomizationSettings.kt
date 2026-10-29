@@ -85,7 +85,7 @@ internal fun LazyListScope.lyricsSettings(state: PlayerUiState, actions: PlayerA
     val settings = state.preferences.lyrics
     fun edit(change: (LyricsPreferences) -> LyricsPreferences) = actions.editPreferences { it.copy(lyrics = change(it.lyrics)) }
     item {
-        val line = state.currentLyrics?.lines?.getOrNull(state.activeLyricIndex)
+        val line = state.currentLyrics?.lines?.getOrNull(LocalPlayerProgress.current.lyricIndex.value)
         GlassCard(Modifier.padding(horizontal = 20.dp, vertical = 8.dp).fillMaxWidth()) {
             Column(Modifier.padding(22.dp).testTag("lyricsStylePreview")) {
                 Text(line?.text ?: "让一首歌慢慢走远", fontSize = settings.fontSizeSp.sp,

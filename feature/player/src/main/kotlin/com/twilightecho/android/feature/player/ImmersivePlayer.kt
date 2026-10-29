@@ -124,7 +124,7 @@ internal fun ImmersiveNowPlayingScreen(state: PlayerUiState, actions: PlayerActi
             if (!LocalBackgroundVisuals.current.useCover) CustomBackgroundBackdrop(Modifier.fillMaxSize())
             else FlowingCoverBackdrop(artwork, Modifier.fillMaxSize()
                 .testTag(if (state.isLyricsMode) "lyricsBlurredBackdrop" else "immersiveCoverBackdrop"),
-                motionEnabled, dim)
+                motionEnabled && state.isPlaying && !lyricsViewport.list.isScrollInProgress, dim)
             Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 AnimatedVisibility(!immersive, enter = chromeEnter, exit = chromeExit) {
                     Column {
@@ -167,7 +167,7 @@ internal fun ImmersiveNowPlayingScreen(state: PlayerUiState, actions: PlayerActi
                 SheetAction(TwilightIcons.Plus, "加入歌单") { moreOpen = false; picking = true }
             SheetAction(TwilightIcons.Equalizer, "音频详情与 DSP") { moreOpen = false; openAudio() }
             if (state.operatingMode is CoreOperatingMode.StandaloneLocal) {
-                SheetAction(TwilightIcons.Bookmark, "添加当前位置书签", formatDurationSeconds(state.interpolatedPositionSec)) {
+                SheetAction(TwilightIcons.Bookmark, "添加当前位置书签", formatDurationSeconds(LocalPlayerProgress.current.positionSeconds.value)) {
                     actions.addBookmark(); moreOpen = false
                 }
                 SheetAction(TwilightIcons.Library, "导入 LRC 歌词") { moreOpen = false; actions.importLyrics() }
@@ -369,12 +369,12 @@ private fun PressableIcon(icon: ImageVector, label: String, onClick: () -> Unit,
 @Composable
 private fun PlayPauseButton(state: PlayerUiState, actions: PlayerActions, size: Dp) {
     val colors = MaterialTheme.colorScheme
-    if (state.playbackState in listOf("loading", "buffering")) {
+    if (state.requestedPlaying == null && state.playbackState in listOf("loading", "buffering")) {
         Box(Modifier.size(size).testTag("playerPlayPause"), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(Modifier.size(size * 0.42f), strokeWidth = 3.dp, color = colors.onSurface)
         }
-    } else PressableIcon(if (state.isPlaying) TwilightIcons.Pause else TwilightIcons.Play,
-        if (state.isPlaying) "暂停播放" else "开始播放", actions.togglePlayback,
+    } else PressableIcon(if (state.playbackButtonPlaying) TwilightIcons.Pause else TwilightIcons.Play,
+        if (state.playbackButtonPlaying) "暂停播放" else "开始播放", actions.togglePlayback,
         Modifier.testTag("playerPlayPause"), size = size, iconSize = size * 0.53f)
 }
 
@@ -385,17 +385,21 @@ private fun LyricsPlayerLayout(state: PlayerUiState, actions: PlayerActions,
     chromeEnter: EnterTransition, chromeExit: ExitTransition) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val density = LocalDensity.current
-    val inset by animateDpAsState(if (immersive) 12.dp else 0.dp, tween(if (motionEnabled) 420 else 0), label = "lyricsInset")
-    BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+    val targetInset = if (immersive) 12.dp else 0.dp
+    val inset = animateDpAsState(targetInset, tween(if (motionEnabled) 420 else 0), label = "lyricsInset")
+    BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 24.dp)
+        .then(if (immersive) Modifier.testTag("lyricsImmersive") else Modifier)) {
         val lyrics = lyricsSceneIdentity(state).lyrics
         val condensed = maxHeight < 600.dp || density.fontScale > 1.2f
         val import = actions.importLyrics.takeIf { state.operatingMode is CoreOperatingMode.StandaloneLocal }
-        val stage = Modifier.padding(start = inset).then(if (hasLyrics) Modifier.stageTaps(immersive, onStageTap) else Modifier)
+        // Reserve the final width once; animate placement without re-wrapping every line on every frame.
+        val stage = Modifier.padding(start = targetInset)
+            .graphicsLayer { translationX = (inset.value - targetInset).toPx() }
+            .then(if (hasLyrics) Modifier.stageTaps(immersive, onStageTap) else Modifier)
         if (landscape) {
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
                 Column(Modifier.weight(1.2f).fillMaxHeight()) {
-                    ImmersiveLyricsLabel(immersive, chromeEnter, chromeExit)
-                    LyricsStage(lyrics, state.activeLyricIndex, viewport, state.isLyricsMode, motionEnabled,
+                    LyricsStage(lyrics, LocalPlayerProgress.current.lyricIndex.value, viewport, state.isLyricsMode, motionEnabled,
                         actions.seek, import, stage.weight(1f), state.preferences.lyrics)
                 }
                 if (!immersive) Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
@@ -411,8 +415,7 @@ private fun LyricsPlayerLayout(state: PlayerUiState, actions: PlayerActions,
             AnimatedVisibility(!immersive, enter = chromeEnter, exit = chromeExit) {
                 LyricsTrackHeader(state, actions, artwork, condensed)
             }
-            ImmersiveLyricsLabel(immersive, chromeEnter, chromeExit)
-            LyricsStage(lyrics, state.activeLyricIndex, viewport, state.isLyricsMode, motionEnabled,
+            LyricsStage(lyrics, LocalPlayerProgress.current.lyricIndex.value, viewport, state.isLyricsMode, motionEnabled,
                 actions.seek, import, stage.weight(1f).fillMaxWidth(), state.preferences.lyrics)
             AnimatedVisibility(!immersive, enter = chromeEnter, exit = chromeExit) {
                 Column {
@@ -422,16 +425,6 @@ private fun LyricsPlayerLayout(state: PlayerUiState, actions: PlayerActions,
                 }
             }
         }
-    }
-}
-
-/** The one quiet word left on the fully immersive page. */
-@Composable
-private fun ColumnScope.ImmersiveLyricsLabel(immersive: Boolean, enter: EnterTransition, exit: ExitTransition) {
-    AnimatedVisibility(immersive, enter = enter, exit = exit) {
-        Text("歌词", Modifier.padding(start = 12.dp, top = 36.dp, bottom = 4.dp).testTag("lyricsImmersive"),
-            style = MaterialTheme.typography.labelLarge.copy(letterSpacing = 2.sp),
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
     }
 }
 
@@ -509,14 +502,35 @@ private fun PlayerModeButton(state: PlayerUiState, actions: PlayerActions) {
 private fun SeekControl(state: PlayerUiState, actions: PlayerActions) {
     val colors = MaterialTheme.colorScheme
     val duration = state.durationSeconds.coerceAtLeast(0.0)
-    val external = state.interpolatedPositionSec.coerceIn(0.0, duration).toFloat()
+    val external = LocalPlayerProgress.current.positionSeconds.value.coerceIn(0.0, duration).toFloat()
     var dragging by remember(state.currentTrack?.id) { mutableStateOf(false) }
     var draft by remember(state.currentTrack?.id) { mutableFloatStateOf(external) }
-    val position = if (dragging) draft else external
+    var pendingTarget by remember(state.currentTrack?.id) { mutableStateOf<Float?>(null) }
+    LaunchedEffect(external, pendingTarget) {
+        val target = pendingTarget ?: return@LaunchedEffect
+        if (kotlin.math.abs(external - target) <= 0.5f) {
+            pendingTarget = null
+        }
+    }
+    LaunchedEffect(pendingTarget) {
+        val target = pendingTarget ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(1500L)
+        if (pendingTarget == target) pendingTarget = null
+    }
+    val position = when {
+        dragging -> draft
+        pendingTarget != null -> pendingTarget!!
+        else -> external
+    }
     val thickness by animateDpAsState(if (dragging) 8.dp else 4.dp, spring(dampingRatio = 0.7f, stiffness = 500f), label = "seekThickness")
-    Slider(value = position, onValueChange = { draft = it; dragging = true },
+    Slider(value = position, onValueChange = { draft = it; pendingTarget = null; dragging = true },
         valueRange = 0f..duration.coerceAtLeast(1.0).toFloat(),
-        enabled = duration > 0, onValueChangeFinished = { actions.seek(draft.toDouble()); dragging = false },
+        enabled = duration > 0, onValueChangeFinished = {
+            val target = draft
+            pendingTarget = target
+            dragging = false
+            actions.seek(target.toDouble())
+        },
         thumb = {
             Box(Modifier.size(if (dragging) 18.dp else 12.dp).shadow(3.dp, CircleShape)
                 .clip(CircleShape).background(colors.onSurface))

@@ -9,14 +9,11 @@ import android.graphics.Paint
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.os.Trace
 import android.util.LruCache
 import android.util.Size
 import android.util.Base64
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -28,8 +25,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.unit.IntOffset
@@ -42,9 +37,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 
+@Immutable
 data class TrackArtworkVisual(
     val cacheKey: String,
     val imageBitmap: ImageBitmap,
@@ -56,21 +51,78 @@ data class TrackArtworkVisual(
 )
 
 private object ArtworkMemoryCache {
+    private val lock = Any()
     private val cache = object : LruCache<String, TrackArtworkVisual>(24 * 1024 * 1024) {
         override fun sizeOf(key: String, value: TrackArtworkVisual) =
-            value.imageBitmap.width * value.imageBitmap.height * 4
+            if (value.isRealEmbeddedArt) value.imageBitmap.width * value.imageBitmap.height * 4 else 256
     }
-    fun get(key: String): TrackArtworkVisual? = synchronized(cache) { cache.get(key) }
-    fun put(key: String, visual: TrackArtworkVisual) = synchronized(cache) { cache.put(key, visual) }
+    private class Pending(val result: Deferred<TrackArtworkVisual>, var users: Int = 0)
+    private val pending = mutableMapOf<String, Pending>()
+    private val scope = CoroutineScope(SupervisorJob() + ArtworkDecodeDispatcher)
+    fun get(key: String): TrackArtworkVisual? = synchronized(lock) { cache.get(key) }
+
+    /** A request belongs to all visible consumers, not whichever tile happened to start it first. */
+    suspend fun load(key: String, cacheMissing: Boolean, decode: suspend () -> TrackArtworkVisual): TrackArtworkVisual {
+        val request = synchronized(lock) {
+            cache.get(key)?.let { return it }
+            pending.getOrPut(key) {
+                Pending(scope.async(start = CoroutineStart.LAZY) {
+                    val visual = decode()
+                    ensureActive()
+                    if (visual.isRealEmbeddedArt || cacheMissing) synchronized(lock) { cache.put(key, visual) }
+                    visual
+                })
+            }.also { it.users++ }
+        }
+        return try { request.result.await() } finally {
+            synchronized(lock) {
+                if (--request.users == 0) {
+                    pending.remove(key)
+                    // Recycled tiles leave no queued decoder/palette work behind.
+                    request.result.cancel()
+                }
+            }
+        }
+    }
 }
+
+// A fling can compose many covers at once. Keep decoder/palette work from saturating CPU and allocating in parallel.
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+private val ArtworkDecodeDispatcher = Dispatchers.IO.limitedParallelism(2)
 
 /** [coverUri] is an image file beside the audio, used when the file holds no picture of its own. */
 @Composable
 fun rememberTrackArtwork(trackId: String?, title: String?, artist: String?, sourceUri: String?,
     albumId: String? = null, previewDataUrl: String? = null, previewOnly: Boolean = false,
-    cachePreview: Boolean = true, coverUri: String? = null): TrackArtworkVisual {
-    val context = LocalContext.current
-    val key = "${trackId.orEmpty()}|${sourceUri.orEmpty()}|${albumId.orEmpty()}|$previewOnly|${previewDataUrl?.hashCode()}|${coverUri.orEmpty()}"
+    cachePreview: Boolean = true, coverUri: String? = null, maxSize: Int = 1024,
+    extractColors: Boolean = true): TrackArtworkVisual {
+    val context = LocalContext.current.applicationContext
+    val sourceKey = "${trackId.orEmpty()}|${sourceUri.orEmpty()}|${albumId.orEmpty()}|$previewOnly|${previewDataUrl?.hashCode()}|${coverUri.orEmpty()}"
+    return rememberArtworkVisual(sourceKey, maxSize, extractColors, cachePreview, cacheMissing = true) {
+        if (previewOnly) decodeRemotePreview(previewDataUrl, maxSize)
+        else loadEmbeddedOrAlbumBitmap(context, sourceUri, albumId, coverUri, maxSize)
+    }
+}
+
+/** Native image bytes stay off the composition/main thread; identity does not change when a response arrives. */
+@Composable
+fun rememberByteArtwork(imageKey: String, maxSize: Int = 1024, extractColors: Boolean = true,
+    load: suspend () -> ByteArray?): TrackArtworkVisual =
+    rememberArtworkVisual("bytes|$imageKey", maxSize, extractColors, cachePreview = true, cacheMissing = false) {
+        val bytes = try { load() } catch (error: CancellationException) { throw error } catch (_: Exception) { null }
+        currentCoroutineContext().ensureActive()
+        bytes?.let { decodeCover(it, maxSize) }
+    }
+
+@Composable
+private fun rememberArtworkVisual(sourceKey: String, maxSize: Int, extractColors: Boolean,
+    cachePreview: Boolean, cacheMissing: Boolean, load: suspend () -> Bitmap?): TrackArtworkVisual {
+    require(maxSize in 64..2048)
+    val key = sourceKey + (if (maxSize == 1024) "" else "|size=$maxSize") + (if (extractColors) "" else "|imageOnly")
+    // The app's palette, backdrop, dock and full-screen cover share the current artwork.
+    // Reuse the parent's in-flight result as well as its cached image, instead of opening
+    // and decoding the same file separately at every call site during a track change.
+    LocalAmbientArtwork.current?.takeIf { it.cacheKey == key || maxSize < 1024 && it.cacheKey == sourceKey }?.let { return it }
     val placeholder = remember(key) {
         (if (cachePreview) ArtworkMemoryCache.get(key) else null) ?: placeholderCover(key)
     }
@@ -80,16 +132,29 @@ fun rememberTrackArtwork(trackId: String?, title: String?, artist: String?, sour
         if (cached != null) {
             visual = cached
         } else {
-            val result = withContext(Dispatchers.IO) {
-                (if (previewOnly) decodeRemotePreview(previewDataUrl)
-                    else loadEmbeddedOrAlbumBitmap(context, sourceUri, albumId, coverUri))?.let { bitmap ->
-                    val colors = artworkColors(bitmap)
-                    TrackArtworkVisual(key, bitmap.asImageBitmap(), colors.first, colors.second, true,
-                        com.twilightecho.android.ui.theme.Monet.seedFromBitmap(bitmap))
-                } ?: placeholder
+            val decode: suspend () -> TrackArtworkVisual = {
+                val bitmap = load()
+                if (bitmap != null) {
+                    try {
+                        currentCoroutineContext().ensureActive()
+                        val colors = if (extractColors) artworkColors(bitmap) else placeholder.dominantColor to placeholder.secondaryColor
+                        val seed = if (extractColors) artworkTrace("Artwork:palette") {
+                            com.twilightecho.android.ui.theme.Monet.seedFromBitmap(bitmap)
+                        } else null
+                        currentCoroutineContext().ensureActive()
+                        // Start the texture upload on the worker, before the image's first scrolling frame.
+                        artworkTrace("Artwork:prepare") { bitmap.prepareToDraw() }
+                        TrackArtworkVisual(key, bitmap.asImageBitmap(), colors.first, colors.second, true, seed)
+                    } catch (error: CancellationException) {
+                        // This bitmap has not been published or cached; do not wait for GC after a fast fling.
+                        bitmap.recycle()
+                        throw error
+                    }
+                } else placeholder
             }
-            if (cachePreview && result.isRealEmbeddedArt) ArtworkMemoryCache.put(key, result)
-            visual = result
+            // Missing embedded art is cached; transient network failures can be retried on the next visit.
+            visual = if (cachePreview) ArtworkMemoryCache.load(key, cacheMissing, decode)
+                else withContext(ArtworkDecodeDispatcher) { decode() }
         }
     }
     return visual
@@ -139,8 +204,23 @@ fun ImmersiveCoverBackdrop(artwork: TrackArtworkVisual, motionEnabled: Boolean =
 fun FlowingCoverBackdrop(artwork: TrackArtworkVisual, modifier: Modifier = Modifier,
     motionEnabled: Boolean = true, dim: Float = 0.30f) {
     val blurred = rememberBlurredArtwork(artwork, light = true)
-    val phase = if (motionEnabled) rememberInfiniteTransition(label = "flow")
-        .animateFloat(0f, 1f, infiniteRepeatable(tween(48_000, easing = LinearEasing)), label = "flowPhase") else null
+    val pieces by produceState<FlowingArtwork?>(null, blurred) {
+        value = blurred?.let { withContext(Dispatchers.Default) { prepareFlowingArtwork(it) } }
+    }
+    val phase = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(motionEnabled) {
+        if (!motionEnabled) return@LaunchedEffect
+        var previous = withFrameNanos { it }
+        while (true) {
+            // A 48-second colour drift needs at most 20 updates/s, not a full-screen render every vsync.
+            // Delay before requesting a frame so a quiet screen can actually stop between updates.
+            delay(50)
+            withFrameNanos { now ->
+                phase.floatValue = (phase.floatValue + (now - previous) / 48_000_000_000f) % 1f
+                previous = now
+            }
+        }
+    }
     val lum = artwork.dominantColor.luminance()
     val filter = remember(lum) {
         // Cap the average linear luminance near 0.22; the scale is applied to gamma-encoded channels.
@@ -152,36 +232,33 @@ fun FlowingCoverBackdrop(artwork: TrackArtworkVisual, modifier: Modifier = Modif
     }
     val strength = (dim / 0.26f).coerceIn(0f, 1f)
     val lift = (dim + lum * 0.34f * strength).coerceIn(0f, 0.78f)
-    Box(modifier.background(artwork.dominantColor)) {
-        Crossfade(blurred, Modifier.fillMaxSize(), tween(if (motionEnabled) 600 else 0), label = "flowArtwork") { image ->
-            if (image != null) Canvas(Modifier.fillMaxSize()) {
-                val t = (phase?.value ?: 0f) * 2f * PI.toFloat()
+    BoxWithConstraints(modifier.background(artwork.dominantColor)) {
+        // This is already a heavily blurred colour field. Rasterize at a bounded resolution, then
+        // upscale once, rather than shading four oversized cover textures at display resolution.
+        val rasterScale = (maxOf(constraints.maxWidth, constraints.maxHeight) / 384f).coerceAtLeast(1f)
+        val rasterSize = Modifier.requiredSize(maxWidth / rasterScale, maxHeight / rasterScale).graphicsLayer {
+            scaleX = rasterScale; scaleY = rasterScale
+            transformOrigin = TransformOrigin(0f, 0f)
+            compositingStrategy = CompositingStrategy.Offscreen
+        }
+        Crossfade(pieces, rasterSize, tween(if (motionEnabled) 600 else 0), label = "flowArtwork") { images ->
+            if (images != null) Canvas(Modifier.fillMaxSize()) {
+                val t = phase.floatValue * 2f * PI.toFloat()
                 val w = size.width; val h = size.height
                 val span = maxOf(w, h)
-                val half = IntSize(image.width / 2, image.height / 2)
-                val layer = androidx.compose.ui.graphics.Paint()
-                fun piece(src: IntOffset, srcSize: IntSize, cx: Float, cy: Float, extent: Float,
-                    turns: Float, alpha: Float, feather: Boolean) {
+                fun piece(image: ImageBitmap, cx: Float, cy: Float, extent: Float, turns: Float, alpha: Float) {
                     val side = span * extent
-                    if (feather) drawIntoCanvas { it.saveLayer(Rect(Offset.Zero, size), layer) }
                     withTransform({ rotate(t * turns * 57.29578f, Offset(cx, cy)) }) {
-                        drawImage(image, src, srcSize, IntOffset((cx - side / 2).toInt(), (cy - side / 2).toInt()),
+                        drawImage(image, IntOffset.Zero, IntSize(image.width, image.height),
+                            IntOffset((cx - side / 2).toInt(), (cy - side / 2).toInt()),
                             IntSize(side.toInt(), side.toInt()), alpha = alpha, colorFilter = filter)
-                    }
-                    if (feather) {
-                        // The inscribed circle never reaches the square's edge at any rotation.
-                        drawRect(Brush.radialGradient(0f to Color.Black, 0.55f to Color.Black, 1f to Color.Transparent,
-                            center = Offset(cx, cy), radius = side / 2), blendMode = BlendMode.DstIn)
-                        drawIntoCanvas { it.restore() }
                     }
                 }
                 // Whole cover underneath (large enough to cover every corner), then three quadrants orbiting at unrelated speeds.
-                piece(IntOffset.Zero, IntSize(image.width, image.height), w * 0.5f, h * 0.5f, 1.9f, 1f, 1f, false)
-                piece(IntOffset.Zero, half, w * (0.28f + 0.10f * cos(t)), h * (0.26f + 0.06f * sin(t)), 1.25f, -2f, 0.86f, true)
-                piece(IntOffset(half.width, half.height), half, w * (0.74f + 0.10f * sin(t)),
-                    h * (0.70f + 0.07f * cos(t)), 1.35f, 1f, 0.78f, true)
-                piece(IntOffset(half.width, 0), half, w * (0.78f + 0.08f * cos(t)), h * (0.30f + 0.08f * sin(t)),
-                    1.1f, -1f, 0.62f, true)
+                piece(images.base, w * 0.5f, h * 0.5f, 1.9f, 1f, 1f)
+                piece(images.topLeft, w * (0.28f + 0.10f * cos(t)), h * (0.26f + 0.06f * sin(t)), 1.25f, -2f, 0.86f)
+                piece(images.bottomRight, w * (0.74f + 0.10f * sin(t)), h * (0.70f + 0.07f * cos(t)), 1.35f, 1f, 0.78f)
+                piece(images.topRight, w * (0.78f + 0.08f * cos(t)), h * (0.30f + 0.08f * sin(t)), 1.1f, -1f, 0.62f)
             }
         }
         // One even veil: darkening towards the bottom would turn the cover into a colour-to-black gradient.
@@ -189,10 +266,39 @@ fun FlowingCoverBackdrop(artwork: TrackArtworkVisual, modifier: Modifier = Modif
     }
 }
 
+@Immutable
+private data class FlowingArtwork(val base: ImageBitmap, val topLeft: ImageBitmap,
+    val bottomRight: ImageBitmap, val topRight: ImageBitmap)
+
+/** Bake the rotationally symmetric mask once at thumbnail size, not into three screen-sized layers per frame. */
+private fun prepareFlowingArtwork(image: ImageBitmap): FlowingArtwork {
+    val source = image.asAndroidBitmap()
+    val halfWidth = (source.width / 2).coerceAtLeast(1)
+    val halfHeight = (source.height / 2).coerceAtLeast(1)
+    val side = 160
+    val bounds = android.graphics.Rect(0, 0, side, side)
+    val mask = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        shader = android.graphics.RadialGradient(side / 2f, side / 2f, side / 2f,
+            intArrayOf(android.graphics.Color.BLACK, android.graphics.Color.BLACK, android.graphics.Color.TRANSPARENT),
+            floatArrayOf(0f, 0.55f, 1f), android.graphics.Shader.TileMode.CLAMP)
+        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN)
+    }
+    val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    fun feather(left: Int, top: Int): ImageBitmap {
+        val tile = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+        Canvas(tile).apply {
+            drawBitmap(source, android.graphics.Rect(left, top, left + halfWidth, top + halfHeight), bounds, paint)
+            drawRect(0f, 0f, side.toFloat(), side.toFloat(), mask)
+        }
+        return tile.asImageBitmap()
+    }
+    return FlowingArtwork(image, feather(0, 0), feather(halfWidth, halfHeight), feather(halfWidth, 0))
+}
+
 /** [light] keeps more of the cover's shapes, for the moving player backdrop; the default is a deep, still blur. */
 @Composable
 internal fun rememberBlurredArtwork(artwork: TrackArtworkVisual, light: Boolean = false): ImageBitmap? {
-    val key = "${artwork.cacheKey}:${artwork.isRealEmbeddedArt}:$light"
+    val key = if (artwork.isRealEmbeddedArt) "${artwork.cacheKey}:true:$light" else "placeholder:$light"
     val blurred by produceState(BlurredArtworkCache.get(key), key, artwork.imageBitmap) {
         value = BlurredArtworkCache.get(key) ?: withContext(Dispatchers.Default) {
             val source = artwork.imageBitmap.asAndroidBitmap()
@@ -262,22 +368,27 @@ fun TrackCoverThumbnail(artwork: TrackArtworkVisual, size: Dp = 48.dp, cornerRad
     }
 }
 
-private fun decodeCover(bytes: ByteArray): Bitmap? {
+private inline fun <T> artworkTrace(name: String, block: () -> T): T {
+    Trace.beginSection(name)
+    return try { block() } finally { Trace.endSection() }
+}
+
+private fun decodeCover(bytes: ByteArray, maxSize: Int): Bitmap? = artworkTrace("Artwork:decode") {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1024) sample *= 2
-    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSize) sample *= 2
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
         BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 })
 }
 
-private fun decodeRemotePreview(value: String?): Bitmap? {
+private fun decodeRemotePreview(value: String?, maxSize: Int): Bitmap? {
     if (value == null || value.length > 6 * 1024 * 1024 ||
         !Regex("^data:image/(?:png|jpe?g|webp);base64,", RegexOption.IGNORE_CASE).containsMatchIn(value)) return null
-    return runCatching { decodeCover(Base64.decode(value.substringAfter(','), Base64.DEFAULT)) }.getOrNull()
+    return runCatching { decodeCover(Base64.decode(value.substringAfter(','), Base64.DEFAULT), maxSize) }.getOrNull()
 }
 
-private fun loadEmbeddedOrAlbumBitmap(context: Context, sourceUri: String?, albumId: String?, coverUri: String?): Bitmap? {
+private fun loadEmbeddedOrAlbumBitmap(context: Context, sourceUri: String?, albumId: String?, coverUri: String?, maxSize: Int): Bitmap? {
     if (!sourceUri.isNullOrBlank() && !sourceUri.startsWith("http", ignoreCase = true)) {
         runCatching {
             val retriever = MediaMetadataRetriever()
@@ -287,14 +398,14 @@ private fun loadEmbeddedOrAlbumBitmap(context: Context, sourceUri: String?, albu
                 } else {
                     retriever.setDataSource(sourceUri)
                 }
-                retriever.embeddedPicture?.let { decodeCover(it) }?.let { return it }
+                retriever.embeddedPicture?.let { decodeCover(it, maxSize) }?.let { return it }
             } finally {
                 retriever.release()
             }
         }
         if (Build.VERSION.SDK_INT >= 29 && sourceUri.startsWith("content://")) {
             runCatching {
-                context.contentResolver.loadThumbnail(Uri.parse(sourceUri), Size(640, 640), null)
+                context.contentResolver.loadThumbnail(Uri.parse(sourceUri), Size(minOf(maxSize, 640), minOf(maxSize, 640)), null)
             }.getOrNull()?.let { return it }
         }
     }
@@ -303,14 +414,14 @@ private fun loadEmbeddedOrAlbumBitmap(context: Context, sourceUri: String?, albu
             context.contentResolver.openInputStream(Uri.parse(coverUri))?.use { input ->
                 // A folder image can be a poster-sized scan; it is decoded only up to 8 MB.
                 val bytes = input.readBytes()
-                if (bytes.size <= 8 * 1024 * 1024) decodeCover(bytes) else null
+                if (bytes.size <= 8 * 1024 * 1024) decodeCover(bytes, maxSize) else null
             }
         }.getOrNull()?.let { return it }
     }
     albumId?.toLongOrNull()?.takeIf { it > 0 }?.let { id ->
         runCatching {
             val uri = ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), id)
-            context.contentResolver.openInputStream(uri)?.use { decodeCover(it.readBytes()) }
+            context.contentResolver.openInputStream(uri)?.use { decodeCover(it.readBytes(), maxSize) }
         }.getOrNull()?.let { return it }
     }
     return null
@@ -332,7 +443,7 @@ private fun artworkColors(bitmap: Bitmap): Pair<Color, Color> {
 }
 
 /** Placeholder art: a flat Apple-grey tile with a quiet note, so a song without a cover adds no colour of its own. */
-private fun placeholderCover(key: String): TrackArtworkVisual {
+private val PlaceholderImage: ImageBitmap by lazy {
     val tile = com.twilightecho.android.ui.theme.AppleGrey.Elevated
     val bitmap = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
@@ -346,5 +457,10 @@ private fun placeholderCover(key: String): TrackArtworkVisual {
     canvas.drawPath(android.graphics.Path().apply {
         moveTo(222f, 168f); lineTo(358f, 144f); lineTo(358f, 180f); lineTo(222f, 204f); close()
     }, paint)
-    return TrackArtworkVisual(key, bitmap.asImageBitmap(), tile, tile, false, seedColor = null)
+    bitmap.asImageBitmap()
+}
+
+private fun placeholderCover(key: String): TrackArtworkVisual {
+    val tile = com.twilightecho.android.ui.theme.AppleGrey.Elevated
+    return TrackArtworkVisual(key, PlaceholderImage, tile, tile, false, seedColor = null)
 }

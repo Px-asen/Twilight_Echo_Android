@@ -21,7 +21,11 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -40,7 +44,7 @@ import java.time.LocalTime
 @Composable
 internal fun TrackArt(track: CoreTrackView?, modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Fit) {
-    val art = rememberPlayerArtwork(track, size = 256)
+    val art = rememberPlayerArtwork(track, size = 256, extractColors = false)
     ArtworkImage(art, modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh)
         .then(if (art.isRealEmbeddedArt) Modifier.testTag("loadedTrackArtwork") else Modifier), contentScale)
 }
@@ -145,7 +149,7 @@ private fun PlaylistShelf(title: String, playlists: List<StreamingCollection>, a
     LazyRow(Modifier.padding(top = 8.dp).testTag(tag), contentPadding = PaddingValues(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         items(playlists.distinctBy { it.id }, key = { it.id }) { item ->
-            ArtworkTile(rememberStreamingArtwork(item), item.title, item.count.takeIf { it > 0 }?.let { "$it 首" },
+            ArtworkTile(rememberStreamingArtwork(item, size = 512, extractColors = false), item.title, item.count.takeIf { it > 0 }?.let { "$it 首" },
                 { actions.collection(item) }, Modifier.width(148.dp).testTag("home-playlist-${item.id}"))
         }
         if (create != null) item(key = "create") {
@@ -164,24 +168,34 @@ private fun PlaylistShelf(title: String, playlists: List<StreamingCollection>, a
 /** Three bars that bounce while playing and rest flat when paused. */
 @Composable
 internal fun PlayingBars(playing: Boolean, color: Color, modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "bars")
-    val phases = listOf(0, 180, 360).map { delay ->
-        transition.animateFloat(0.3f, 1f, infiniteRepeatable(tween(520, delay, FastOutSlowInEasing), RepeatMode.Reverse),
-            label = "bar$delay")
-    }
-    Row(modifier.size(14.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
-        phases.forEach { phase ->
-            Box(Modifier.weight(1f).fillMaxHeight(if (playing) phase.value else 0.3f).clip(RoundedCornerShape(1.dp))
-                .background(color))
+    val phases = if (playing) {
+        val transition = rememberInfiniteTransition(label = "bars")
+        listOf(0, 180, 360).map { delay ->
+            transition.animateFloat(0.3f, 1f, infiniteRepeatable(tween(520, delay, FastOutSlowInEasing), RepeatMode.Reverse),
+                label = "bar$delay")
+        }
+    } else emptyList()
+    Canvas(modifier.size(14.dp)) {
+        val gap = 2.dp.toPx()
+        val width = (size.width - gap * 2) / 3
+        repeat(3) { index ->
+            val height = size.height * (phases.getOrNull(index)?.value ?: 0.3f)
+            drawRoundRect(color, Offset(index * (width + gap), size.height - height), Size(width, height), CornerRadius(1.dp.toPx()))
         }
     }
 }
 
 /** Scrolls a list back to the top when [key] changes, but keeps its place when the page is only shown again. */
 @Composable
-private fun ScrollToTopOn(key: String, listState: LazyListState) {
+internal fun ScrollToTopOn(key: String, listState: LazyListState) {
     var shown by rememberSaveable { mutableStateOf(key) }
     LaunchedEffect(key) { if (shown != key) { shown = key; listState.scrollToItem(0) } }
+}
+
+@Composable
+private fun ScrollToTopOn(key: String, gridState: LazyGridState) {
+    var shown by rememberSaveable { mutableStateOf(key) }
+    LaunchedEffect(key) { if (shown != key) { shown = key; gridState.scrollToItem(0) } }
 }
 
 @Composable
@@ -195,37 +209,45 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
     // A connected computer shown on its own lists its own albums and artists, with their pictures and notes.
     val catalog = state.desktopCatalogMode && tab in DesktopCatalogTabs
     val computer = state.libraryDevices.find { it.id == state.libraryDevice && it.id != LIBRARY_ALL && it.id != LIBRARY_PHONE }
-    Column(Modifier.fillMaxSize().testTag("library")) {
+    val navigation = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberScrollHeaderState(libraryHeaderResetKey(state)))
+    val detailOpen = catalog && state.desktopLibrary.selected != null
+    Column(Modifier.fillMaxSize().testTag("library")
+        .then(if (!detailOpen) Modifier.nestedScroll(navigation.nestedScrollConnection) else Modifier)) {
         if (catalog && state.desktopLibrary.selected != null) {
             RemoteCatalogScreen(state, actions, Modifier.fillMaxSize())
             return@Column
         }
-        PageHeading("音乐库", when {
-            streamingTab -> "网易云音乐"
-            state.libraryError != null && state.libraryTracks.isEmpty() -> null
-            else -> "${state.libraryTrackCount} 首歌曲 · ${state.albums.size} 张专辑"
-        }, Modifier.padding(start = 20.dp, end = 12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!streamingTab && state.libraryDevices.isNotEmpty())
-                    LibraryDeviceMenu(state, actions.selectLibraryDevice, onConnectComputer)
-                when {
-                    streamingTab && state.streaming.access == StreamingAccess.READY ->
-                        GlassIconButton(TwilightIcons.Plus, "新建歌单", { streamingCreate = true })
-                    streamingTab -> GlassIconButton(TwilightIcons.Settings, "管理音源", actions.openPlugins)
-                    tab == LibrarySectionTab.PLAYLISTS -> GlassIconButton(TwilightIcons.Plus, "新建歌单", { createDialog = true })
-                    // Scanning reads this phone, so it is offered while the library shows the phone's songs.
-                    computer == null && !state.isScanningLocalMusic ->
-                        GlassIconButton(TwilightIcons.RadarScan, "扫描本地音乐", actions.scan)
+        ScrollAwayHeader(navigation.state, Modifier.testTag("libraryNavigation")) {
+            Column {
+                PageHeading("音乐库", when {
+                    streamingTab -> "网易云音乐"
+                    state.libraryError != null && state.libraryTracks.isEmpty() -> null
+                    else -> "${state.libraryTrackCount} 首歌曲 · ${state.albums.size} 张专辑"
+                }, Modifier.padding(start = 20.dp, end = 12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!streamingTab && state.libraryDevices.isNotEmpty())
+                            LibraryDeviceMenu(state, actions.selectLibraryDevice, onConnectComputer)
+                        when {
+                            streamingTab && state.streaming.access == StreamingAccess.READY ->
+                                GlassIconButton(TwilightIcons.Plus, "新建歌单", { streamingCreate = true })
+                            streamingTab -> GlassIconButton(TwilightIcons.Settings, "管理音源", actions.openPlugins)
+                            tab == LibrarySectionTab.PLAYLISTS -> GlassIconButton(TwilightIcons.Plus, "新建歌单", { createDialog = true })
+                            // Scanning reads this phone, so it is offered while the library shows the phone's songs.
+                            computer == null && !state.isScanningLocalMusic ->
+                                GlassIconButton(TwilightIcons.RadarScan, "扫描本地音乐", actions.scan)
+                        }
+                    }
                 }
+                if (!streamingTab) {
+                    if (state.isScanningLocalMusic) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest)
+                    state.scanStatusMessage?.let { SupportingText(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) }
+                }
+                PillTabs(LibrarySectionTab.entries, tab, { it.label }, actions.selectLibraryTab,
+                    Modifier.testTag("libraryTabs"), tag = { "libraryTab-${it.name}" })
+                Spacer(Modifier.height(16.dp))
             }
         }
-        if (!streamingTab) {
-            if (state.isScanningLocalMusic) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest)
-            state.scanStatusMessage?.let { SupportingText(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) }
-        }
-        PillTabs(LibrarySectionTab.entries, tab, { it.label }, actions.selectLibraryTab)
-        Spacer(Modifier.height(16.dp))
         if (streamingTab) {
             StreamingLibraryScreen(state.streaming, actions.streaming, Modifier.weight(1f))
             return@Column
@@ -274,20 +296,28 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
                     }
                 }
             }
-            LibrarySectionTab.ALBUMS -> LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.weight(1f).testTag("albumGrid"),
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = dock + 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                items(state.albums, key = { it.id }) { album ->
-                    ArtworkTile(rememberPlayerArtwork(cover(album.trackIds)), album.title,
-                        album.artist.ifBlank { "未知艺术家" }, { onOpenCollection("album", album.id) })
+            LibrarySectionTab.ALBUMS -> {
+                val gridState = rememberLazyGridState()
+                ScrollToTopOn(state.libraryDevice, gridState)
+                LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.weight(1f).testTag("albumGrid"), state = gridState,
+                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = dock + 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
+                    items(state.albums, key = { it.id }) { album ->
+                        ArtworkTile(rememberPlayerArtwork(cover(album.trackIds), size = 512, extractColors = false), album.title,
+                            album.artist.ifBlank { "未知艺术家" }, { onOpenCollection("album", album.id) })
+                    }
                 }
             }
-            LibrarySectionTab.ARTISTS -> LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f).testTag("artistGrid"),
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = dock + 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                items(state.artists, key = { it.id }) { artist ->
-                    ArtworkTile(rememberPlayerArtwork(cover(artist.trackIds)), artist.name, "${artist.trackCount} 首",
-                        { onOpenCollection("artist", artist.id) }, round = true, centered = true)
+            LibrarySectionTab.ARTISTS -> {
+                val gridState = rememberLazyGridState()
+                ScrollToTopOn(state.libraryDevice, gridState)
+                LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f).testTag("artistGrid"), state = gridState,
+                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = dock + 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
+                    items(state.artists, key = { it.id }) { artist ->
+                        ArtworkTile(rememberPlayerArtwork(cover(artist.trackIds), size = 512, extractColors = false), artist.name, "${artist.trackCount} 首",
+                            { onOpenCollection("artist", artist.id) }, round = true, centered = true)
+                    }
                 }
             }
             LibrarySectionTab.PLAYLISTS -> {

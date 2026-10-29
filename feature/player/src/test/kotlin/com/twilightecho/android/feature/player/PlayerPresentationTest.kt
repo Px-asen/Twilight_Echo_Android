@@ -16,6 +16,22 @@ class PlayerPresentationTest {
     private fun page(query: String, items: List<CoreTrackView>) =
         Result.success(CoreLibrarySearchPage(query, items.size, items))
 
+    @Test fun pendingButtonFeedbackDoesNotAdvanceThePlaybackClock() {
+        val paused = PlayerUiState(isPlaying = false, requestedPlaying = true)
+        assertTrue(paused.playbackButtonPlaying)
+        assertFalse(paused.isPlaying)
+        val playing = paused.copy(isPlaying = true, requestedPlaying = false)
+        assertFalse(playing.playbackButtonPlaying)
+        assertTrue(playing.isPlaying)
+        assertTrue(playing.copy(requestedPlaying = null).playbackButtonPlaying)
+    }
+
+    @Test fun unchangedQueueWindowKeepsItsRowInputs() {
+        val previous = listOf(CoreQueueEntryView("occ-0", 0, tracks.first()))
+        assertSame(previous, mergeQueueEntries(previous, previous.toList()))
+        assertSame(previous, mergeQueueEntries(previous, emptyList()))
+    }
+
     @Test fun searchDoesNotReplaceLibraryOrItsCount() = runTest {
         val loader = LibraryContentLoader(backgroundScope) { query ->
             page(query, if (query.isBlank()) tracks else tracks.take(1))

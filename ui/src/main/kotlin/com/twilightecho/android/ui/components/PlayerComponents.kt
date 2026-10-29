@@ -48,12 +48,12 @@ val LocalAmbientArtwork = compositionLocalOf<TrackArtworkVisual?> { null }
  */
 @Composable
 fun AmbientBackground(modifier: Modifier = Modifier, artwork: TrackArtworkVisual? = LocalAmbientArtwork.current,
-    content: @Composable BoxScope.() -> Unit) {
+    showBackdrop: Boolean = true, content: @Composable BoxScope.() -> Unit) {
     val base = MaterialTheme.colorScheme.background
     val cover = artwork?.takeIf { it.isRealEmbeddedArt }
     Box(modifier.background(base)) {
-        if (!LocalBackgroundVisuals.current.useCover) CustomBackgroundBackdrop(Modifier.matchParentSize())
-        else Crossfade(cover?.let { rememberBlurredArtwork(it) }, Modifier.matchParentSize(), tween(700), label = "ambientCover") { image ->
+        if (showBackdrop && !LocalBackgroundVisuals.current.useCover) CustomBackgroundBackdrop(Modifier.matchParentSize())
+        else if (showBackdrop) Crossfade(cover?.let { rememberBlurredArtwork(it) }, Modifier.matchParentSize(), tween(700), label = "ambientCover") { image ->
             if (image != null) Box(Modifier.fillMaxSize()) {
                 Image(image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 Box(Modifier.fillMaxSize().background(base.copy(alpha = 0.80f)))
