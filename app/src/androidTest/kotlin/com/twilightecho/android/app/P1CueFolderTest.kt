@@ -3,6 +3,7 @@ package com.twilightecho.android.app
 import android.Manifest
 import android.content.ContentUris
 import android.content.pm.PackageManager
+import android.media.MediaScannerConnection
 import android.provider.MediaStore
 import android.util.Log
 import androidx.compose.ui.semantics.SemanticsActions
@@ -27,6 +28,8 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.nio.charset.Charset
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 import kotlin.concurrent.thread
 
@@ -72,11 +75,21 @@ class P1CueFolderTest {
         shell("rm -rf $FOLDER")
         shell("mkdir -p $FOLDER")
         staging.listFiles()!!.forEach { shell("cp ${it.absolutePath} $FOLDER/${it.name}") }
+        scanFixtureAudio()
+    }
+
+    private fun scanFixtureAudio() {
+        val paths = arrayOf("$FOLDER/Album.wav", "$FOLDER/Solo.wav")
+        val scanned = CountDownLatch(paths.size)
+        // Shell copies do not consistently trigger MediaStore indexing on every emulator.
+        MediaScannerConnection.scanFile(context, paths, arrayOf("audio/wav", "audio/wav")) { _, _ -> scanned.countDown() }
+        assertTrue("MediaStore must finish indexing the owned fixture paths", scanned.await(15, TimeUnit.SECONDS))
     }
 
     private fun releaseTestFolder() = host.musicFolders.value.filter { it.label == "Music/CueTest" }.forEach { host.removeMusicFolder(it.uri) }
 
-    private fun scanStatus(): String? = rule.onAllNodesWithTag("scanStatus").fetchSemanticsNodes().firstOrNull()
+    private fun scanStatus(): String? = rule.onAllNodesWithTag("scanStatus")
+        .fetchSemanticsNodes(atLeastOneRootRequired = false).firstOrNull()
         ?.config?.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text }
 
     private fun awaitStatus(expected: (String) -> Boolean): String {
@@ -121,6 +134,7 @@ class P1CueFolderTest {
         }
         releaseTestFolder()
         shell("rm -rf $FOLDER")
+        scanFixtureAudio()
         staging.deleteRecursively()
         // The library forgets the fixture files again.
         runBlocking {
@@ -130,14 +144,27 @@ class P1CueFolderTest {
     }
 
     @Test fun pickedFolderSplitsItsCueImageAndPlaysTheSongsSeamlessly() {
-        rule.waitUntil(15000) { client.snapshot.value != null }
+        // Startup snapshots arrive before session/audio restoration has finished. A read-only queue query
+        // verifies that the embedded host is accepting requests before we save or change the user's state.
+        rule.waitUntil(15000) {
+            if (client.snapshot.value == null) false else {
+                when (val result = runBlocking { client.queryQueueWindow(0, 1) }) {
+                    is CoreResult.Success -> true
+                    is CoreResult.Failure -> {
+                        assertEquals(result.error.message, CoreErrorCode.NOT_READY, result.error.code)
+                        false
+                    }
+                }
+            }
+        }
+        check(runBlocking { client.reconcileState() }.isSuccess)
         original = client.snapshot.value!!.also { snapshot ->
             for (offset in 0 until (snapshot.queue?.total ?: 0) step 50) {
                 savedQueue += runBlocking { client.queryQueueWindow(offset, 50) }.getOrNull()!!.items.mapNotNull { it.track }
             }
         }
         // Seamless playback is a setting; the test turns it on and puts the setting back afterwards.
-        val audio = runBlocking { client.getEqConfig() }.getOrNull()!!.also { savedAudio = it }
+        val audio = runBlocking { client.getEqConfig() }.getOrThrow().also { savedAudio = it }
         if (!audio.gapless || audio.dsp.crossfadeSeconds > 0) {
             runBlocking { client.setEqConfig(audio.copy(gapless = true, dsp = audio.dsp.copy(crossfadeSeconds = 0.0))) }.getOrThrow()
         }
@@ -157,9 +184,13 @@ class P1CueFolderTest {
 
         if (withoutPermission) {
             // Refusing Android's music permission still syncs the picked folder, whose access Android granted apart.
-            val deny = device.wait(Until.findObject(By.res(Pattern.compile("com.android.permissioncontroller:id/permission_deny(_and_dont_ask_again)?_button"))), 10000)
+            val denyButton = By.res(Pattern.compile("com.android.permissioncontroller:id/permission_deny(_and_dont_ask_again)?_button"))
+            val deny = device.wait(Until.findObject(denyButton), 10000)
             assertNotNull("Adding a folder asks for the music permission first", deny)
-            deny!!.click()
+            // A node can appear while the picker/permission window is still animating and blocks touches.
+            device.waitForIdle()
+            device.findObject(denyButton)!!.click()
+            assertTrue("The music permission dialog must close after refusal", device.wait(Until.gone(denyButton), 10000))
             assertEquals("未获得音乐访问权限，只同步了音乐文件夹中的 4 首歌曲，其中 3 首来自 CUE 分轨，1 个 CUE 未分轨",
                 awaitStatus { it.startsWith("未获得音乐访问权限，只同步了") })
             assertEquals(cueIds, album()!!.trackIds)
@@ -192,13 +223,14 @@ class P1CueFolderTest {
         assertEquals(listOf(1, 2, 3), songs.map { it.trackNumber })
         CUE_ALBUM_RANGES.zip(songs).forEach { (range, song) ->
             assertEquals(range.durationSeconds, song.duration, 0.001)
-            val (audio, cue) = CueSource.decode(song.source!!)
+            val audio = song.source!!
+            val cue = song.cueRange
             assertTrue(audio, audio.endsWith("/document/primary%3AMusic%2FCueTest%2FAlbum.wav"))
             assertEquals(range.startSeconds, cue!!.startSeconds, 0.0001)
             assertEquals(range.endSeconds, cue.endSeconds, 0.0001)
             assertTrue(song.cover!!.endsWith("/document/primary%3AMusic%2FCueTest%2Fcover.jpg"))
         }
-        assertEquals(songs[0].source!!.substringAfter("#cue=").split(',')[1], songs[1].source!!.substringAfter("#cue=").split(',')[0])
+        assertEquals(songs[0].cueRange!!.endSeconds, songs[1].cueRange!!.startSeconds, 0.0)
         assertTrue(library("Album").none { it.id == albumRow })
         val solo = library("Solo").single { it.id == soloRow || it.id == soloFolderId }
         assertEquals("MediaStore keeps the plain file it already lists", soloRow, solo.id)
@@ -234,7 +266,8 @@ class P1CueFolderTest {
             rule.onNodeWithTag("miniPlayer").performClick()
             rule.onNodeWithTag("seek").performSemanticsAction(SemanticsActions.SetProgress) { it(6.5f) }
             rule.waitUntil(15000) { client.snapshot.value?.track?.id == cueIds[1] && (client.snapshot.value?.playback?.position ?: 0.0) > 0.3 }
-            rule.onNodeWithText("午后").assertExists()
+            rule.onNode(hasText("午后") and hasAnyAncestor(hasTestTag("immersivePlayer")),
+                useUnmergedTree = true).assertIsDisplayed()
             shot("p1-cue-05-now-playing")
             runBlocking { client.executeCommand(CoreTypedCommand.Seek(30.0)) }
             rule.waitUntil(15000) { client.snapshot.value?.track?.id == cueIds[2] && (client.snapshot.value?.playback?.position ?: 0.0) > 0.3 }

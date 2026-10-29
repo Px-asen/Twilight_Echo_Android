@@ -156,6 +156,45 @@ class ImmersiveLyricsTest {
         shot("02-lyrics-retarget")
     }
 
+    @Test fun progressOnlyTicksReachTheSeekBarAndLyricsWithoutResettingBrowsing() {
+        start()
+        rule.onNodeWithText("0:24").assertIsDisplayed()
+        rule.runOnIdle { ui.value = ui.value.copy(sequence = ui.value.sequence + 1,
+            displayedPositionSeconds = 25.0) }
+        rule.onNodeWithText("0:25").assertIsDisplayed()
+        assertAnchor(4)
+        browse()
+        val position = scrollPosition()
+        rule.runOnIdle { ui.value = ui.value.copy(sequence = ui.value.sequence + 1,
+            displayedPositionSeconds = 36.0, activeLyricIndex = 6) }
+        rule.onNodeWithText("0:36").assertIsDisplayed()
+        assertEquals(position, scrollPosition(), 0.01f)
+        rule.onNodeWithTag("resumeLyrics").performClick()
+        assertAnchor(6)
+        rule.onNodeWithContentDescription("更多播放操作").performClick()
+        rule.onNode(hasText("添加当前位置书签") and hasText("0:36")).assertIsDisplayed()
+    }
+
+    @Test fun libraryScrollSurvivesTheOpaquePlayerAndPlaybackTicks() {
+        start { state ->
+            val tracks = listOf(state.currentTrack!!) + List(500) { CoreTrackView("scroll-qa-$it", title = "歌曲 $it") }
+            state.copy(activeMainTab = MainDestinationTab.LIBRARY, isImmersivePlayerOpen = false,
+                libraryTracks = tracks, allTracks = tracks, libraryTrackCount = tracks.size)
+        }
+        rule.onNodeWithTag("librarySongs").performScrollToIndex(80)
+        fun position() = rule.onNodeWithTag("librarySongs").fetchSemanticsNode()
+            .config[SemanticsProperties.VerticalScrollAxisRange].value()
+        val before = position()
+        rule.onNodeWithTag("miniPlayer").performClick()
+        assertAnchor(4)
+        rule.runOnIdle { ui.value = ui.value.copy(sequence = ui.value.sequence + 1,
+            displayedPositionSeconds = 30.0, activeLyricIndex = 5) }
+        assertAnchor(5)
+        rule.onNodeWithContentDescription("收起播放器").performClick()
+        assertEquals(before, position(), 0.01f)
+        rule.onNodeWithTag("track-scroll-qa-80").assertIsDisplayed()
+    }
+
     @Test fun manualBrowsingSurvivesModeAndPlayerRoundTripsAndExplicitSeeksResume() {
         start()
         browse()
@@ -517,6 +556,7 @@ class ImmersiveLyricsTest {
         val row = rule.onNodeWithTag("lyric-line-5").fetchSemanticsNode().boundsInRoot
         rule.onRoot().performTouchInput { click(Offset(stage.right - 8f, row.center.y)) }
         rule.onNodeWithTag("lyricsImmersive").assertIsDisplayed()
+        rule.onNodeWithText("歌词", useUnmergedTree = true).assertDoesNotExist()
         rule.onNodeWithContentDescription("收起播放器").assertDoesNotExist()
         rule.onNodeWithTag("playerPlayPause").assertDoesNotExist()
         assertNull(lastSeek)

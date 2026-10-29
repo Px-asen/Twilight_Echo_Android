@@ -5,7 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.twilightecho.android.coreclient.CoreEqConfigView
 import com.twilightecho.android.coreclient.CoreTrackView
-import com.twilightecho.android.coreclient.CueSource
+import com.twilightecho.android.coreclient.CueRange
 import com.twilightecho.android.coreclient.DefaultCoreClient
 import com.twilightecho.android.nativeintegration.NativeAudioEngineAdapter
 import com.twilightecho.android.runtimehost.AudioSnapshot
@@ -42,7 +42,7 @@ class P1CueEngineTest {
         fun since(mark: Int) = samples.toList().drop(mark)
         try {
             val tracks = CUE_ALBUM_RANGES.mapIndexed { index, range ->
-                CoreTrackView("cue-${index + 1}", title = "Part ${index + 1}", source = CueSource.encode(file.absolutePath, range),
+                CoreTrackView("cue-${index + 1}", title = "Part ${index + 1}", source = file.absolutePath, cueRange = range,
                     duration = range.durationSeconds)
             }
             adapter.setDspConfig(DefaultCoreClient.DefaultJson.encodeToString(CoreEqConfigView.serializer(), CoreEqConfigView()))
@@ -52,6 +52,11 @@ class P1CueEngineTest {
             await { it.state == "playing" && it.positionMs > 300 }
             assertEquals(0, adapter.getSnapshot().queueIndex)
             assertEquals(8000.0, adapter.getSnapshot().durationMs!!.toDouble(), 30.0)
+
+            val invalid = tracks.toMutableList().apply { this[0] = first().copy(cueRange = CueRange(8.0, 1.0)) }
+            assertTrue(runCatching { adapter.loadQueue(invalid, 0) }.exceptionOrNull() is IllegalArgumentException)
+            assertEquals("Invalid segment metadata keeps the current decoder running", "playing", adapter.getSnapshot().state)
+            assertEquals(0, adapter.getSnapshot().queueIndex)
 
             // Near the end of the first song the second is ready, and playback runs into it without stopping.
             adapter.seek(6500)
@@ -66,10 +71,10 @@ class P1CueEngineTest {
             assertTrue("The second song starts at its beginning", first.first { it.index == 1 }.positionMs < 1500)
             assertEquals(CUE_ALBUM_RANGES[1].durationSeconds * 1000, adapter.getSnapshot().durationMs!!.toDouble(), 30.0)
 
-            // A seek past a song's end plays the song's last moment, not the rest of the file, and the next song starts.
+            // A seek past the segment clamps to its exact end and advances, without a 300 ms replay.
             val beforeClamp = samples.size
             adapter.seek(30_000)
-            adapter.getSnapshot().let { assertTrue("Seeking past the end lands at the song's last moment: $it", it.queueIndex == 2 || it.positionMs in 8150..8493) }
+            adapter.getSnapshot().let { assertTrue("Seeking past the end lands at the segment boundary: $it", it.queueIndex == 2 || it.positionMs in 8480..8493) }
             await { it.queueIndex == 2 && it.positionMs > 300 }
             val clamped = since(beforeClamp)
             assertTrue(clamped.filter { it.index == 1 }.all { it.positionMs <= 8560 })
@@ -85,9 +90,18 @@ class P1CueEngineTest {
             await { it.queueIndex == 1 && it.state == "playing" && it.positionMs >= 4000 }
             assertTrue(adapter.getSnapshot().positionMs < 5500)
 
-            // A seek to the very end moves on the same way.
+            // A paused seek keeps the exact requested last 125 ms, and EOF
+            // advances only after the user resumes.
+            adapter.pause()
+            val secondDuration = adapter.getSnapshot().durationMs!!
+            adapter.seek(secondDuration - 125)
+            assertEquals(secondDuration - 125.0, adapter.getSnapshot().positionMs.toDouble(), 2.0)
+            adapter.seek(secondDuration)
+            assertEquals("paused", adapter.getSnapshot().state)
+            assertEquals(1, adapter.getSnapshot().queueIndex)
+            assertEquals(secondDuration.toDouble(), adapter.getSnapshot().positionMs.toDouble(), 2.0)
             val beforeEndSeek = samples.size
-            adapter.seek(adapter.getSnapshot().durationMs!!)
+            adapter.play(null)
             await { it.queueIndex == 2 && it.positionMs > 300 }
             assertTrue(since(beforeEndSeek).first { it.index == 2 }.positionMs < 1500)
 

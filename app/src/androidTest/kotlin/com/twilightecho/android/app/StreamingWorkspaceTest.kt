@@ -74,7 +74,8 @@ class StreamingWorkspaceTest {
         rule.onNodeWithTag("streamingHome").assertIsDisplayed()
         screenshot("streaming-home-fixture.png")
         StreamingRecommendation.entries.forEach { kind ->
-            rule.onNodeWithTag("streaming-rec-${kind.name}").performScrollTo().performClick()
+            rule.onNodeWithTag("home-recommendations").performScrollToNode(hasTestTag("streaming-rec-${kind.name}"))
+            rule.onNodeWithTag("streaming-rec-${kind.name}").performClick()
             rule.onNodeWithTag("streamingDetail").assertIsDisplayed()
             rule.onNodeWithTag("streaming-track-1").performClick()
             assertEquals("second", played!!.queueEntryId)

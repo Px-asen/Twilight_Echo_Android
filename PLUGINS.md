@@ -31,12 +31,26 @@ Android 13 及以上首次打开更新后的应用时，会请求系统通知权
 ## 仓库和安装
 
 - 默认读取桌面同一个 `https://plugins.aaapi.fun/plugins.json`（Cloudflare R2 + CDN），也可配置 HTTPS 索引。与桌面端一样先显示缓存或随应用分发的目录，启动和打开“插件与音源”时在后台重新获取（每个进程 10 分钟内最多一次，下载不占用音源调用锁）；失败时保留当前列表，“刷新仓库”会报告错误。索引／包下载允许有限次公共 HTTPS CDN 重定向，禁止内网地址。
-- 音源页只列出 Provider 插件；索引中尚无 `androidRuntime` 的音源显示“尚未发布 Android 版本”。
+- 列表显示索引中的全部插件：已安装的在前，其次是可安装的音源。只有带 `androidRuntime` 的音源插件能在手机上安装；其他插件（灵动岛、歌单桥接、主题等）和尚无安卓版本的音源显示“移动端不适配 · 请在桌面端使用”，不显示安装按钮。
 - 使用现有 `plugins.json` 和 ZIP 格式的 `.tep`。Android 入口通过 `androidRuntime` 声明；没有入口或依赖桌面能力的插件显示不兼容原因。
-- 安装前展示权限和网络主机；下载后验证索引声明的 SHA-256、包内 ID、版本和 Android 权限。不把 `verified: true` 当成签名认证；自定义仓库的信任来自用户选择的 HTTPS 来源，尚未接入桌面的发布者签名信任库。
+- 安装前展示授权：网络主机、图片与音频 CDN（`mediaHosts`，只有这里允许 `*.域名`）、允许 HTTP 明文的精确主机（`cleartextHosts`），以及 `userServer` 音源登录时填写的服务器。下载后验证索引声明的 SHA-256、包内 ID、版本和 Android 权限。不把 `verified: true` 当成签名认证；自定义仓库的信任来自用户选择的 HTTPS 来源，尚未接入桌面的发布者签名信任库。
 - 限制压缩包／解压大小、文件数量与路径，拒绝目录穿越。新版本在暂存区校验，激活成功后原子切换；激活失败恢复原版本及原设置。
 - 已安装插件固定来源，更换来源需要先卸载。支持停用、启用、更新和卸载；安装状态保存在应用私有目录。
 - NCM 随 APK 提供，远程索引不能覆盖这个内置身份。桌面插件仓库原有的“排除内置 NCM”规则保持不变。
+
+## 插件仓库音源（ABI v2）
+
+酷狗、QQ 音乐、汽水音乐、YouTube Music、哔哩哔哩、Navidrome 和 Jellyfin 在桌面插件仓库（`Twilight-Echo-plugins`）里同时维护安卓版本：同一个插件 ID、同一个 `.tep`，包内多一个由桌面源码构建的 `android.mjs`，`plugin.json` 用 `androidRuntime`（`apiVersion: 2`）声明入口和授权主机。构建方法与宿主接口见插件仓库的 `sdk/android/README.md`。
+
+“打开音源”按插件注册的 `ui` 声明生成页面，规则与桌面在线首页相同：
+
+- **栏目**：`ui.streamingSections` 中插件实现了的方法。未登录时只在 `streamingHome.requiresLogin === false` 时显示，且跳过需要登录的栏目；登录后追加“我的歌单”（`fetchUserLibrary`，“我喜欢”排第一）。打开音源、登录和退出后自动加载第一个栏目。
+- **搜索**：能力含 `search` 且实现 `searchSongs` 时才显示，按插件返回的 `total` 翻页。歌单优先用 `fetchPlaylistTracksPage` 分页，其次 `readPlaylistImportPage`，都没有时一次读取整张歌单。
+- **登录**：`authType: 'qr'` 显示宿主生成的二维码，每 5 秒按插件的 `qrStatusCodes` 自动检查，最长 10 分钟；过期、被拒绝或失败时提示刷新。`oauth`（YouTube Music）另有“在浏览器中授权”，只打开 HTTPS 地址。`settings`（Navidrome、Jellyfin）填写服务器地址和账号后调用 `loginWithServer`，只授权这一台服务器，局域网和 HTTP 地址也可以。账号输入只留在内存。
+- **插件设置**：插件注册的设置面板列在账号页下方。表单规则与桌面一致：最多 40 个字段，支持文本、密码、网址、选择和开关，提示必填项，已保存的密码不回显。保存后重新检查账号。
+- **播放**：歌曲以 `provider://<音源 ID>/<歌曲 ID>?t=…` 进入队列，播放时再由插件解析地址；需要登录或会员的歌曲由插件报告原因。`twilight.ui.notify()` 的提示显示在当前页面。
+
+二维码显示在手机上，需要用另一台设备上的 App 扫描，或截图后在 App 的扫一扫里从相册识别（是否支持取决于该 App），与网易云相同。YouTube Music 可直接在本机浏览器完成授权。
 
 ## 运行边界
 
@@ -47,6 +61,8 @@ Android 13 及以上首次打开更新后的应用时，会请求系统通知权
 账户 Cookie 与插件设置使用 Android Keystore AES-GCM 加密，并以插件 ID 绑定；不参与云备份或设备迁移。卸载删除这些设置。账号输入不保存到 Compose 的状态恢复数据。
 
 移动 ABI v1 使用串行宿主 IO：插件需预先打包为 ES2015 IIFE，通过 `globalThis.__TWILIGHT_PLUGIN__` 暴露 `activate()`、`call({method,args})`。`activate()` 返回 Provider ID、名称、能力和允许调用的方法。异步语法由 esbuild 降级，使用随包的 serial Promise 适配；不支持 Node、动态模块下载、Electron UI、原生 DSP 插件或桌面主题注入。
+
+ABI v2（插件仓库音源）通过同一个全局对象的 `invoke()` 处理 `activate`、`call`、`command`、`resolveMedia`、`deactivate` 和 `ping` 请求，返回 `{ok, value, notices}`。`activate` 额外返回 `ui` 声明和设置面板。
 
 ## NCM 复用与音频链路
 
@@ -103,3 +119,9 @@ node --experimental-strip-types --test src/core/plugins/mobileRepository.test.ts
 插件宿主与播放器共 74 项单测通过，包含首页自动加载、FM 批次复用、账号边界、封面尺寸参数替换与高清／缩略图缓存区分。API 36 模拟器验证了首次通知授权、拒绝后不重复请求、设置入口、本地与网易云 MediaSession 封面更新、无图歌曲清除旧封面，以及实际播放器高清图片显示。公开网易云 CDN 实测为缩略图 256×256、播放器 1024×1024；已检查通知栏和锁屏截图中的封面及应用图标。
 
 安装包、截图、设备日志和单测结果在 `build/deliverables/cover-notifications/`。首页启动请求以受控 Provider 数据验证；真实私人账号的推荐内容需在登录后的手机验收。
+
+### 2026-10-29 插件仓库音源
+
+单测全部通过：插件宿主 47 项、播放器模块 96 项（新增 9 项，覆盖栏目与登录规则、二维码状态码、曲目与歌单解析、账号名称和设置表单规则）、播放宿主 11 项。`assembleDebug` 通过；`emulator-5554` 上 `PluginUiFlowTest` 2 项通过，覆盖插件列表（其他插件显示“移动端不适配”）、网易云搜索与二维码登录。插件仓库的 `sdk/android` 测试 8 项通过。
+
+ABI v2 音源页尚未在设备上做端到端验收：双运行时 `.tep` 发布到 CDN 后，需要逐个安装、登录并播放。

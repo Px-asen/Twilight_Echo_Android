@@ -27,7 +27,7 @@ class DesktopArtistInteropTest {
         assumeTrue("Requires tools/desktop-bridge-fixture.ts", !address.isNullOrBlank())
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val host = AndroidPlaybackHost.getInstance(context)
-        rule.waitUntil(15_000) { host.primaryCoreClient.snapshot.value != null }
+        rule.waitUntil(15_000) { host.primaryCoreClient.snapshot.value?.phase == CorePhase.READY }
         lateinit var vm: PlayerViewModel
         rule.runOnUiThread { vm = ViewModelProvider(rule.activity, PlayerViewModel.Factory(host))[PlayerViewModel::class.java] }
         val queue = host.primaryCoreClient.snapshot.value!!.queue
@@ -40,8 +40,9 @@ class DesktopArtistInteropTest {
                 vm.onSelectMainTab(MainDestinationTab.LIBRARY)
                 vm.onSelectLibraryTab(LibrarySectionTab.ARTISTS)
             }
-            rule.waitUntil(10_000) { rule.onAllNodesWithText("共享艺术家", substring = false).fetchSemanticsNodes().isNotEmpty() }
-            rule.onNodeWithText("共享艺术家", substring = false).performClick()
+            val artistTile = hasText("共享艺术家", substring = false) and hasAnyAncestor(hasTestTag("library"))
+            rule.waitUntil(10_000) { rule.onAllNodes(artistTile).fetchSemanticsNodes().isNotEmpty() }
+            rule.onNode(artistTile).performClick()
             rule.waitUntil(15_000) { vm.uiState.value.libraryArtist.metadata?.entityId == "artist-1" }
             rule.onNodeWithText("这段简介来自电脑已整理的音乐资料。").performScrollTo().assertIsDisplayed()
             if (InstrumentationRegistry.getArguments().getString("expectMetadataRefresh") == "true") {

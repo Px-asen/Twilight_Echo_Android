@@ -186,6 +186,27 @@ class UiDesignTest {
         rule.onNodeWithText("标准播放").assertDoesNotExist()
     }
 
+    @Test fun p1BluetoothOutputNamesItsLinkWithoutGuessingTheCodec() {
+        start { it.copy(homeAvailable = false, activeMainTab = MainDestinationTab.SETTINGS,
+            diagnostics = AudioDiagnosticsUiModel(codec = "FLAC", sourceSampleRateHz = 96000, sourceBitDepth = 24,
+                actualSampleRateHz = 48000, actualBitDepth = 16, actualSampleFormat = "int16", actualChannels = 2,
+                deviceName = "蓝牙耳机", bluetoothProfile = "a2dp")) }
+        rule.onNodeWithText("音频与 DSP", substring = false).performScrollTo().performClick()
+        rule.onNodeWithText("蓝牙编码").assertDoesNotExist()
+        rule.onNodeWithTag("audioOutputDetails").performScrollTo().performClick()
+        rule.onNodeWithText("A2DP").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("仅系统应用可读取").performScrollTo().assertIsDisplayed()
+        // No codec is named: neither the headset's name nor the phone's codec list says which one plays.
+        listOf("SBC", "AAC", "LDAC", "aptX", "LC3").forEach {
+            rule.onNode(hasAnyAncestor(hasTestTag("audioSignalSummary")) and hasText(it, substring = true)).assertDoesNotExist()
+        }
+        shot("p1-bluetooth-output")
+        rule.runOnIdle { ui.value = ui.value.copy(diagnostics = ui.value.diagnostics.copy(bluetoothProfile = "call")) }
+        rule.onNodeWithText("通话线路").performScrollTo().assertIsDisplayed()
+        rule.runOnIdle { ui.value = ui.value.copy(diagnostics = ui.value.diagnostics.copy(bluetoothProfile = "", deviceName = "手机扬声器")) }
+        rule.onNodeWithText("蓝牙编码").assertDoesNotExist()
+    }
+
     @Test fun browseCollectionPlayerLyricsAndAudio() {
         start()
         shot("01-home")

@@ -147,14 +147,29 @@ class CustomizationSettingsTest {
         rule.onNodeWithTag("customImageBackground").assertIsDisplayed()
         shot("06-image-settings")
         rule.runOnIdle { ui.value = ui.value.copy(isImmersivePlayerOpen = true) }
-        rule.onAllNodesWithTag("customImageBackground").assertCountEquals(2)
+        // Only the visible player renders a backdrop; the covered settings retain their state, not a second image.
+        rule.onAllNodesWithTag("customImageBackground").assertCountEquals(1)
+        rule.onNode(hasTestTag("customImageBackground") and hasAnyAncestor(hasTestTag("immersivePlayer")))
+            .assertIsDisplayed()
         rule.onNodeWithTag("immersiveCoverBackdrop").assertDoesNotExist()
         shot("07-image-player")
+        rule.onNodeWithContentDescription("收起播放器").performClick()
+        rule.onNodeWithTag("immersivePlayer").assertDoesNotExist()
+        rule.onNodeWithTag("settings-APPEARANCE").assertIsDisplayed()
+        rule.onNodeWithTag("customImageBackground").assertIsDisplayed()
+        rule.onNodeWithTag("miniPlayer").performClick()
         rule.runOnIdle { ui.value = ui.value.copy(preferences = ui.value.preferences.copy(appearance = ui.value.preferences.appearance.copy(
             backgroundStyle = BackgroundStyle.SOLID, backgroundArgb = 0xFF17302A.toInt()))) }
-        rule.onAllNodesWithTag("solidBackground").assertCountEquals(2)
+        rule.onAllNodesWithTag("solidBackground").assertCountEquals(1)
+        rule.onNode(hasTestTag("solidBackground") and hasAnyAncestor(hasTestTag("immersivePlayer")))
+            .assertIsDisplayed()
         rule.onNodeWithTag("customImageBackground").assertDoesNotExist()
         shot("08-solid-player")
+        rule.onNodeWithContentDescription("收起播放器").performClick()
+        rule.onNodeWithTag("immersivePlayer").assertDoesNotExist()
+        rule.onNodeWithTag("settings-APPEARANCE").assertIsDisplayed()
+        rule.onNodeWithTag("solidBackground").assertIsDisplayed()
+        rule.onNodeWithTag("customImageBackground").assertDoesNotExist()
     }
 
     @Test fun qualitySelectionUsesAllProviderValues() {

@@ -17,6 +17,22 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+        }
+        // Non-debuggable, optimized and installable over the development APK; keeps APIs used by device tests.
+        create("performance") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+            proguardFiles("performance-rules.pro")
+        }
+    }
+    testBuildType = providers.gradleProperty("twilightTestBuildType").getOrElse("debug")
+
     buildFeatures {
         compose = true
     }
@@ -61,4 +77,5 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+    "performanceImplementation"("androidx.compose.ui:ui-test-manifest")
 }

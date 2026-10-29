@@ -103,3 +103,44 @@ AAudio 实际设备 ID 决定当前路由。引擎请求、播放流和系统硬
 焦点中断按序处理，临时衰减使用独立增益，保留用户音量。Android 输出丢失后以暂停状态重新准备。会话恢复队列、位置、音量、播放模式和音频设置，用户点播放后继续；暂停及显式 Seek 保存准确位置。
 
 本轮 90 项 Android／JVM 单测、4 项实际 bundle 测试、2 个共享 C++ 测试目标及 6 项设备用例通过。具体日志与真机外设验收项见 `POWERAMP_HIFI_COMPARISON.md` 第 6 节，安装包与截图见 `build/deliverables/p0/`。
+
+## 2026-10-29 P1：CUE 分轨、无缝衔接与蓝牙线路
+
+CUE 分轨使用原始音频 URI 加共享 `cueRange` 字段。分段范围贯通 Kotlin DTO、QuickJS 嵌入宿主、核心曲库／队列与会话恢复、原生队列：时长和位置相对分轨起点，Seek 限制在分段内，相邻分轨经预加载衔接。旧版 `<音频>#cue=<起点>,<终点>[,<前间隙>,<源前间隙>]`（`CueSource`）仍可读取；加载旧会话时迁移曲库、队列快照和当前选择，同时迁移书签身份。共享核心本已有分段支持；此前漏传发生在 Android／QuickJS 边界。投屏现可识别并明确拒绝尚不支持的分轨，不会误播整轨。
+
+共享引擎 `AudioPipeline::seek` 在 Seek 期间输出静音，等待已开始的回调退出，再修改解码、预加载和时钟；完成或失败后恢复原播放／暂停状态。回调不等待解码或网络 IO。这样不会在慢速预加载重开期间先耗尽、随后又清掉结束标记。Android 的 300 ms 提前量已移除：曲末前 125 ms 可准确定位，暂停时跳到终点仍保持暂停，用户继续播放后再推进或结束队列。
+
+核心先加载 `[当前]`，再用普通 `loadQueue` 交接 `[当前, 下一首]`，而引擎的 `loadQueue` 不预加载，所以经应用播放时此前从未无缝衔接。适配器现在在不换音源的 `loadQueue` 之后重发播放模式；`TwilightAudioEngine::setPlayMode` 总会预加载下一首，普通曲目与分轨都受益。暂停且输出已释放时同样会预加载，资源占用待真机确认。
+
+音乐文件夹经 SAF 扫描 CUE、APE 和 WavPack。`AudioHeaderProbe` 从 FLAC、WAV、APE、WavPack 文件头读取精确长度，因为 MediaStore 跳过 APE／WavPack 且长度取整到毫秒，而整轨最后一首止于文件末尾。WavPack 位深不填，不探测 DSD WavPack；dsf／dff 不作为 CUE 目标；路径含 `#` 时沿用原有 `Uri.parse` 问题。
+
+输出详情按 `AudioDeviceInfo` 类型标出蓝牙 A2DP、LE Audio 或通话线路。支持的编码列表需要 `BLUETOOTH_PRIVILEGED`，当前协商编码没有公开接口，普通应用都读不到，界面不推测。
+
+首轮 217 项 Android／JVM 单测和 6 项 P1 设备用例通过；原有设备回归 13 项中 12 项通过，`NativePlayerSmokeTest` 需在全新安装状态下单独运行。首轮记录见 `POWERAMP_HIFI_COMPARISON.md` 第 7 节，后续修正与验证见第 8 节；首轮安装包与截图见 `build/deliverables/p1/`。
+
+本轮后续修正通过 245 项 Android／JVM 单测、29 项嵌入核心测试、18 项 CUE／书签／投屏边界测试、完整共享 C++ 队列／路由测试目标及 7 项模拟器设备用例。新增真实 QuickJS 重建验证 22 秒分轨、12.75 秒相对位置与暂停恢复；CUE 引擎验证曲末前 125 ms 和终点准确 Seek。安装包、日志、XML 报告和本轮截图见 `build/deliverables/p1-followup/`。共享核心来自 `0eaa570` 加未提交源码（`sourceDirty=true`），正式发布前需提交上游修正并重建。
+
+## 2026-10-29 P2：PCM 请求策略与实时设备能力
+
+设置 → 音频与 DSP → 播放与输出 → PCM 采样率提供四种策略。旧的跟随音源／固定目标仍用 `bitPerfect=true` 表示原样优先请求，连续播放仍用 `bitPerfect=false`；该配置位不代表实际逐位输出。
+
+新配置位于 `CoreEqConfigView.dsp`：
+
+```json
+{
+  "sampleRateFamilySync": true,
+  "allowedSampleRates": [44100, 48000, 96000]
+}
+```
+
+家族同步要求原样优先且 `outputStage.targetSampleRate=0`。允许集合为空表示不另加限制；非空时最多 32 个不同整数，范围为 8000–384000 Hz。新字段有旧会话默认值，随共享核心、场景和 `.tedsp` 的 `android` 扩展保存。导入时不合法的扩展只拒绝对应场景。
+
+`AndroidAudioDeviceAdapter.sampleRatesForOutput` 从显式设备或系统媒体路由读取声明。`NativeAudioEngineAdapter` 在应用设置、加载／恢复播放以及宿主路由变化时，将当前声明作为 `deviceSampleRates` 注入原生输出配置；该列表不进入 Android 保存的 EQ 配置。空列表表示未声明，播放不会因此禁用。原请求没有启用家族同步且允许集合为空时，设备声明不成为旧自动／固定请求的新前置条件。
+
+共享 `PcmSampleRatePolicy.h` 对新请求取非空允许集合与设备声明的交集。家族同步依次选择源采样率、同家族向上最小值／最高较低值、最近值（等距取高）；两组均为空时保持原请求。未开启家族同步的自动／连续请求取距既有首选值最近的候选；显式固定目标必须在所配置的允许交集中。
+
+`TAE_ApplyDspState` 现在接受可选的 `outputConfig` 对象，其字段与 `TAE_SetOutputConfig` 相同。Android 随 `processing`、`graph` 一起发送，让固定目标和允许集合共同切换；原有 `processing`／`graph` 载荷仍可用。约束先验证，DSP 图准备失败时恢复候选前的输出配置。独立能力刷新继续使用 `TAE_SetOutputConfig`，重开保持播放／暂停状态与位置；集合冲突则暂停并发送可恢复错误，用户可调整允许集合或恢复兼容输出。
+
+预加载比较相邻曲目的**选率请求**：选中相同请求速率的 PCM 可转换到同一实际流，选中不同速率时正常重开。FFmpeg 根据后端实际协商格式配置解码；界面单列设备声明、引擎请求和播放流，不把实际流限制等同于请求集合，也不由独占／格式相同推导 Bit-Perfect。
+
+交付、250 项 JVM／30 项嵌入核心测试、4 个 C++ PCM 专项、9 个模拟器设备用例，以及宿主全量目标的 DSF 夹具写入缺口，见 `POWERAMP_HIFI_COMPARISON.md` 第 9 节。调试包和证据集中于 `build/deliverables/p2/`。相位算法、SoX、超过 384 kHz、物理外设与 USB／DSD 按后续切片继续。

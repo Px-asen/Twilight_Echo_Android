@@ -89,6 +89,55 @@ class P0SessionRecoveryTest {
         } finally { directory.deleteRecursively() }
     }
 
+    @Test fun realQuickJsRestoresCueRangeAndRelativeClockPaused() = runBlocking {
+        val directory = File(context.cacheDir, "p1-cue-session-${System.nanoTime()}").apply { mkdirs() }
+        val file = File(directory, "source.flac")
+        val ranges = listOf(CueRange(0.0, 20.0), CueRange(20.0, 40.0, virtualPregapSeconds = 2.0))
+        val tracks = ranges.mapIndexed { index, range -> CoreTrackView("cue-session-$index", title = "Part $index",
+            source = file.absolutePath, duration = range.durationSeconds, cueRange = range) }
+        instrumentation.context.assets.open("music/01-Golden-Hour.flac").use { input -> file.outputStream().use { input.copyTo(it) } }
+        try {
+            Session(directory).use { first ->
+                first.start()
+                first.command(CoreTypedCommand.ReplaceQueue(tracks = tracks, startIndex = 1, play = false))
+                first.command(CoreTypedCommand.Play(12.75))
+                await { first.audio.getSnapshot().positionMs > 13000 }
+                assertEquals(22000L, first.audio.getSnapshot().durationMs)
+                first.command(CoreTypedCommand.Pause)
+                first.command(CoreTypedCommand.Seek(12.75))
+                first.client.reconcileState()
+                assertEquals(ranges[1], first.client.snapshot.value!!.track!!.cueRange)
+            }
+            Session(directory).use { restored ->
+                restored.start()
+                val snapshot = restored.client.snapshot.value!!
+                assertEquals("cue-session-1", snapshot.track!!.id)
+                assertEquals(file.absolutePath, snapshot.track!!.source)
+                assertEquals(ranges[1], snapshot.track!!.cueRange)
+                assertEquals("paused", snapshot.playback!!.state)
+                assertEquals(12.75, snapshot.playback!!.position, 0.025)
+                val window = restored.client.queryQueueWindow(0, 10)
+                check(window is CoreResult.Success)
+                assertEquals(ranges, window.value.items.map { it.track!!.cueRange })
+                restored.command(CoreTypedCommand.Play(null))
+                await { restored.audio.getSnapshot().positionMs > 13000 }
+                assertEquals(22000L, restored.audio.getSnapshot().durationMs)
+                restored.command(CoreTypedCommand.Pause)
+                restored.command(CoreTypedCommand.Seek(21.875))
+                assertEquals(21875.0, restored.audio.getSnapshot().positionMs.toDouble(), 2.0)
+                restored.command(CoreTypedCommand.Seek(22.0))
+                assertEquals("paused", restored.audio.getSnapshot().state)
+                assertEquals(22000.0, restored.audio.getSnapshot().positionMs.toDouble(), 2.0)
+                restored.command(CoreTypedCommand.Play(null))
+                try { await { restored.audio.getSnapshot().state == "idle" } }
+                catch (error: TimeoutCancellationException) {
+                    throw AssertionError("CUE queue did not end: ${restored.audio.getSnapshot()}; core=${restored.client.snapshot.value}", error)
+                }
+                assertEquals(22000.0, restored.audio.getSnapshot().positionMs.toDouble(), 2.0)
+            }
+        } finally { directory.deleteRecursively() }
+    }
+
     private suspend fun await(condition: suspend () -> Boolean) {
         withTimeout(15000) { while (!condition()) delay(50) }
     }
