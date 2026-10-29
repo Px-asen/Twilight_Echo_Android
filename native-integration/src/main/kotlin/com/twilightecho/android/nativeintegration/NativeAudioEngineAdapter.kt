@@ -67,7 +67,8 @@ class NativeAudioEngineAdapter(
     private val json: Json = DefaultCoreClient.DefaultJson,
     private val desktopStream: ((String) -> MediaDataSource)? = null,
     private val providerStream: ((String) -> MediaDataSource)? = null,
-    private val onUserPause: () -> Unit = {}
+    private val onUserPause: () -> Unit = {},
+    private val deviceSampleRates: (String) -> List<Int> = { emptyList() }
 ) : AudioEnginePort {
 
     private val closed = AtomicBoolean(false)
@@ -81,9 +82,16 @@ class NativeAudioEngineAdapter(
     private val controlDispatcher = controlExecutor.asCoroutineDispatcher()
     private val controlScope = CoroutineScope(SupervisorJob() + controlDispatcher)
 
-    private data class RawNativeEvent(val eventType: String, val payloadJson: String, val fromNative: Boolean = false)
+    private data class RawNativeEvent(val eventType: String, val payloadJson: String, val fromNative: Boolean = false) {
+        val refreshesSnapshot: Boolean get() = fromNative && when (eventType) {
+            "property-change", "playback-info", "start-file", "queue-change", "config-applied" -> true
+            else -> false
+        }
+    }
 
     private val nonRtEventQueue = Channel<RawNativeEvent>(capacity = 256)
+    private val nativeSnapshotRefreshPending = AtomicBoolean(false)
+    private var lastBroadcastSnapshot: AudioSnapshot? = null
 
     @Volatile
     private var engineHandle: Long = 0L
@@ -120,6 +128,7 @@ class NativeAudioEngineAdapter(
     private var lastResolvedNativePath: String? = null
     private var lastDspConfigJson: String = "{}"
     private var lastAppliedConfig: CoreEqConfigView? = null
+    private var lastOutputConfigJson: String? = null
     private var dspRevision = 0L
     @Volatile private var preparingNative = false
     @Volatile private var nativePlaybackEventsEnabled = false
@@ -177,7 +186,14 @@ class NativeAudioEngineAdapter(
     }
 
     private val jniEventListener = TwilightAudioEventListener { eventType, payloadJson ->
-        nonRtEventQueue.trySend(RawNativeEvent(eventType, payloadJson, fromNative = true))
+        val event = RawNativeEvent(eventType, payloadJson, fromNative = true)
+        // Several native notifications describe the same completed transport operation.
+        // Read its latest state once; error and end-of-track edges remain separate events.
+        if (!event.refreshesSnapshot || nativeSnapshotRefreshPending.compareAndSet(false, true)) {
+            if (nonRtEventQueue.trySend(event).isFailure && event.refreshesSnapshot) {
+                nativeSnapshotRefreshPending.set(false)
+            }
+        }
     }
 
     init {
@@ -225,6 +241,7 @@ class NativeAudioEngineAdapter(
 
     override suspend fun load(source: AudioSourceDescriptor) = withContext(controlDispatcher) {
         requireNativeAvailable()
+        refreshOutputCapabilities()
         nativeSourceLoaded = false
         cachedSnapshot = cachedSnapshot.withoutOutputFacts()
         val playablePath = resolveAndLeasePlayablePath(CueSource.audio(source.resourceId.ifBlank { source.nativeUri }))
@@ -247,9 +264,27 @@ class NativeAudioEngineAdapter(
 
     override suspend fun play(startTimeSeconds: Double?) = withContext(controlDispatcher) {
         requireNativeAvailable()
+        refreshOutputCapabilities()
         inputProvider.resume()
         nativePlaybackEventsEnabled = true
         val handle = engineHandle
+        // Play is also the Core's resume operation. Reopening the source here discards the
+        // decoder, stream connection and lookahead on every pause/play tap.
+        if (nativeSourceLoaded && jni.isNativeLibraryLoaded && handle != 0L) {
+            val prepared = nativeSnapshot()
+            if (prepared?.state == "paused" || prepared?.state == "playing") {
+                if (startTimeSeconds != null) {
+                    val targetMs = (startTimeSeconds * 1000.0).toLong().coerceAtLeast(0L)
+                    if (targetMs != prepared.positionMs) {
+                        requireNativeSuccess(jni.nativeSeek(handle, targetMs / 1000.0))
+                    }
+                }
+                requireNativeSuccess(jni.nativeSetPaused(handle, false))
+                cachedSnapshot = nativeSnapshot() ?: prepared.copy(state = "playing")
+                broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
+                return@withContext
+            }
+        }
         val currentTrack = queuedTracks.getOrNull(cachedSnapshot.queueIndex.coerceAtLeast(0))
         val rawUri = currentTrack?.let { CueSource.audio(it.source ?: it.id) } ?: activeResourceId ?: ""
         val playablePath = if (rawUri.isNotBlank()) nativeSource(resolveAndLeasePlayablePath(rawUri), currentTrack) else ""
@@ -355,7 +390,7 @@ class NativeAudioEngineAdapter(
         val clampedMs = positionMs.coerceAtLeast(0L)
         val handle = engineHandle
         if (nativeSourceLoaded && jni.isNativeLibraryLoaded && handle != 0L) {
-            requireNativeSuccess(jni.nativeSeek(handle, nativeSeekTargetMs(clampedMs, nativeSnapshot()?.durationMs) / 1000.0))
+            requireNativeSuccess(jni.nativeSeek(handle, clampedMs / 1000.0))
         }
         runCatching {
             platformMediaPlayer?.seekTo(clampedMs.toInt())
@@ -412,18 +447,21 @@ class NativeAudioEngineAdapter(
     override suspend fun loadQueue(tracks: List<CoreTrackView>, startIndex: Int) =
         withContext(controlDispatcher) {
             val previous = queuedTracks.getOrNull(cachedSnapshot.queueIndex)
-            val selected = tracks.getOrNull(if (tracks.isEmpty()) -1 else startIndex.coerceIn(0, tracks.lastIndex))
-            val changedSource = previous?.id != selected?.id || previous?.source != selected?.source ||
-                previous?.queueEntryId != selected?.queueEntryId
-            queuedTracks = tracks
             val safeIndex = if (tracks.isEmpty()) -1 else startIndex.coerceIn(0, tracks.lastIndex)
+            val selected = tracks.getOrNull(safeIndex)
+            val changedSource = previous?.id != selected?.id || previous?.source != selected?.source ||
+                previous?.queueEntryId != selected?.queueEntryId || previous?.cueRange != selected?.cueRange
+            val unchangedQueue = queuedTracks == tracks && cachedSnapshot.queueIndex == safeIndex
             val handle = engineHandle
-            if (jni.isNativeLibraryLoaded && handle != 0L) {
+            // Validate segment metadata before replacing the queue or stopping its decoder.
+            val queueJson = if (!unchangedQueue && jni.isNativeLibraryLoaded && handle != 0L)
+                nativeQueueJson(tracks, ::nativeSource) else null
+            queuedTracks = tracks
+            if (queueJson != null) {
                 if (changedSource) {
-                    jni.nativeStop(handle)
+                    if (nativeSourceLoaded) jni.nativeStop(handle)
                     nativeSourceLoaded = false
                 }
-                val queueJson = nativeQueueJson(tracks, ::nativeSource)
                 jni.nativeLoadQueue(handle, queueJson, safeIndex.coerceAtLeast(0))
                 // A new queue leaves the engine's lookahead as it was. Sending the play mode again makes the engine
                 // preload the new next song, as its own queue handoff does, so the current song runs into it.
@@ -461,9 +499,11 @@ class NativeAudioEngineAdapter(
         if (jni.isNativeLibraryLoaded && handle != 0L) {
             if (!wasPlaying) {
                 jni.nativeStop(handle)
-                nativeSourceLoaded = false
             }
             requireNativeSuccess(jni.nativeSelectQueueIndex(handle, index))
+            // Selecting changes the native cursor, not the decoder. The next Play must load
+            // this occurrence even when its file is the same as the previous CUE song's.
+            nativeSourceLoaded = false
         }
         loadedMediaSourceKey = null
         cachedSnapshot = cachedSnapshot.withoutOutputFacts().copy(
@@ -485,12 +525,15 @@ class NativeAudioEngineAdapter(
         // Existing native JSON entry points remain usable for hosts without phone EQ controls.
         val phoneConfig = if ("bandsDb" in obj || "bitPerfect" in obj || "dsp" in obj)
             json.decodeFromJsonElement<CoreEqConfigView>(obj) else null
-        if (phoneConfig != null && lastAppliedConfig?.copy(scenes = emptyList()) == phoneConfig.copy(scenes = emptyList())) {
+        // Validate request constraints before applying DSP or replacing the current output.
+        val outputConfig = phoneConfig?.let { nativeOutputConfig(it, deviceSampleRates(it.dsp.outputDeviceId)) }
+        if (phoneConfig != null && lastAppliedConfig?.copy(scenes = emptyList()) == phoneConfig.copy(scenes = emptyList()) &&
+            lastOutputConfigJson == outputConfig) {
             lastDspConfigJson = configJson
             lastAppliedConfig = phoneConfig
             return@withContext
         }
-        val state = phoneConfig?.let { nativeDspState(it, json, dspRevision + 1L) }
+        val state = phoneConfig?.let { nativeDspState(it, json, dspRevision + 1L, outputConfig) }
         val handle = engineHandle
         if (jni.isNativeLibraryLoaded && handle != 0L) {
             fun applied(result: Int) {
@@ -502,15 +545,15 @@ class NativeAudioEngineAdapter(
             if (phoneConfig != null && state != null) {
                 applied(jni.nativeApplyDspState(handle, ++dspRevision, state))
                 val previous = lastAppliedConfig
-                if (previous == null || nativeOutputConfig(previous) != nativeOutputConfig(phoneConfig))
-                    applied(jni.nativeSetOutputConfig(handle, nativeOutputConfig(phoneConfig)))
+                lastOutputConfigJson = outputConfig
                 if (previous == null || previous.dsp.outputDeviceId != phoneConfig.dsp.outputDeviceId || previous.dsp.exclusive != phoneConfig.dsp.exclusive)
                     applied(jni.nativeSetOutputDevice(handle, phoneConfig.dsp.outputDeviceId + if (phoneConfig.dsp.exclusive) ":exclusive" else ""))
                 if (previous == null || previous.dsp.playbackRate != phoneConfig.dsp.playbackRate)
                     applied(jni.nativeSetPlaybackRate(handle, phoneConfig.dsp.playbackRate))
             } else applied(jni.nativeSetDspConfig(handle, configJson))
         } else if (phoneConfig != null && (phoneConfig.dsp.nodes.any { it.enabled } || phoneConfig.dsp.eqMode != "graphic" ||
-                phoneConfig.dsp.playbackRate != 1.0 || phoneConfig.dsp.outputStage.targetSampleRate != 0 || phoneConfig.dsp.crossfadeSeconds > 0)) {
+                phoneConfig.dsp.playbackRate != 1.0 || phoneConfig.dsp.outputStage.targetSampleRate != 0 || phoneConfig.dsp.crossfadeSeconds > 0 ||
+                phoneConfig.dsp.sampleRateFamilySync || phoneConfig.dsp.allowedSampleRates.isNotEmpty())) {
             throw java.io.IOException("这些 DSP 功能需要包含共享原生引擎的版本")
         }
         lastDspConfigJson = configJson
@@ -523,6 +566,30 @@ class NativeAudioEngineAdapter(
     suspend fun getDspStatus(): CoreDspStatus = withContext(controlDispatcher) {
         if (engineHandle == 0L) CoreDspStatus() else
             json.decodeFromString<CoreDspStatus>(jni.nativeGetDspGraphStatusJson(engineHandle))
+    }
+
+    /** Route capabilities are live host facts, never saved into an EQ scene or session. */
+    suspend fun refreshOutputCapabilities() = withContext(controlDispatcher) {
+        val config = lastAppliedConfig ?: return@withContext
+        val output = try { nativeOutputConfig(config, deviceSampleRates(config.dsp.outputDeviceId)) }
+        catch (error: IllegalArgumentException) {
+            // A new route cannot silently drop a saved constraint. Keep its clock
+            // paused and give the user a way to repair the set in audio settings.
+            if (nativeSourceLoaded && jni.isNativeLibraryLoaded && engineHandle != 0L) {
+                requireNativeSuccess(jni.nativeSetPaused(engineHandle, true))
+                nativeSnapshot()?.let { cachedSnapshot = it }
+                broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
+            }
+            val message = error.message ?: "当前设备不支持允许的采样率，请调整音频设置"
+            broadcastEvent(AudioEvent.EngineError("PCM_SAMPLE_RATE_UNAVAILABLE", message, true))
+            throw java.io.IOException(message, error)
+        }
+        if (output != lastOutputConfigJson && jni.isNativeLibraryLoaded && engineHandle != 0L) {
+            requireNativeSuccess(jni.nativeSetOutputConfig(engineHandle, output))
+            lastOutputConfigJson = output
+            nativeSnapshot()?.let { cachedSnapshot = it }
+            broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
+        }
     }
 
     suspend fun setVisualizationDemand(enabled: Boolean) = withContext(controlDispatcher) {
@@ -592,7 +659,7 @@ class NativeAudioEngineAdapter(
         startTimeSeconds: Double?
     ): Pair<Long, Long>? = runCatching {
         // MediaPlayer cannot stop at a CUE song's end; playing the whole file instead would be wrong.
-        if (track?.source?.let { CueSource.decode(it).second } != null) {
+        if (track?.cueRange != null || track?.source?.let { CueSource.decode(it).second } != null) {
             throw java.io.IOException("这个版本没有原生音频引擎，无法播放 CUE 分轨")
         }
         val sourceKey = "${track?.id ?: rawUri}|$playablePath"
@@ -787,6 +854,8 @@ class NativeAudioEngineAdapter(
     }
 
     private fun processNativeEventOnControlThread(raw: RawNativeEvent) {
+        // Clear before reading so a notification arriving during the read schedules another.
+        if (raw.refreshesSnapshot) nativeSnapshotRefreshPending.set(false)
         if (raw.fromNative && platformMediaPlayer != null) return
         when (raw.eventType) {
             "safety-brake" -> {
@@ -854,7 +923,10 @@ class NativeAudioEngineAdapter(
 
     private fun broadcastEvent(raw: AudioEvent) {
         val event = if (raw is AudioEvent.SnapshotUpdated) {
-            AudioEvent.SnapshotUpdated(raw.snapshot.copy(queueGeneration = queueGeneration))
+            val snapshot = raw.snapshot.copy(queueGeneration = queueGeneration)
+            if (snapshot == lastBroadcastSnapshot) return
+            lastBroadcastSnapshot = snapshot
+            AudioEvent.SnapshotUpdated(snapshot)
         } else raw
         for (listener in listeners) {
             runCatching { listener(event) }
@@ -925,27 +997,18 @@ class NativeAudioEngineAdapter(
     }
 }
 
-/** How far before a song's end a seek into its last moment lands. */
-internal const val SEEK_END_LEAD_MS = 300L
-
 /**
- * Where a seek sends the engine. One into a song's last [SEEK_END_LEAD_MS] lands that far before the end, so the
- * engine plays the end and moves on as at any song's end; a CUE song's seek past its end lands there too. Sent to
- * the end itself, the engine can miss the song's end while it seeks and stay playing at the end.
- */
-internal fun nativeSeekTargetMs(positionMs: Long, durationMs: Long?): Long =
-    if (durationMs == null || durationMs <= 2 * SEEK_END_LEAD_MS) positionMs
-    else minOf(positionMs, durationMs - SEEK_END_LEAD_MS)
-
-/**
- * The engine's queue. A CUE song's source names the whole file plus its range ([CueSource]); the engine gets
- * the file as the source and the range as `cueRange`, so positions, seeking and the end follow the song, and
- * songs that continue each other in one file play without a gap.
+ * Shared queue format, with legacy fragment sources accepted for saved P1 sessions.
  */
 internal fun nativeQueueJson(tracks: List<CoreTrackView>, source: (String, CoreTrackView) -> String): String =
     buildJsonArray {
         tracks.forEachIndexed { index, track ->
-            val (audio, range) = CueSource.decode(track.source ?: track.id)
+            val (audio, legacyRange) = CueSource.decode(track.source ?: track.id)
+            val range = track.cueRange ?: legacyRange
+            require(range == null || range.isValid) { "CUE 分轨范围无效：${track.id}" }
+            require(track.cueRange == null || legacyRange == null || track.cueRange == legacyRange) {
+                "CUE 分轨范围与音源不一致：${track.id}"
+            }
             add(buildJsonObject {
                 put("id", JsonPrimitive(track.id))
                 put("queueEntryId", JsonPrimitive(track.queueEntryId ?: "occ-$index"))

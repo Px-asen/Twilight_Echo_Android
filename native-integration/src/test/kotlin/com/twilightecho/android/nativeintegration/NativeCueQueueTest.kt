@@ -16,6 +16,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.InputStream
@@ -46,13 +47,22 @@ class NativeCueQueueTest {
     }
 
     @Test
-    fun `a seek into a song's last moment lands just before its end`() {
-        assertEquals(4000, nativeSeekTargetMs(4000, 8493))
-        assertEquals(8193, nativeSeekTargetMs(8193, 8493))
-        assertEquals(8193, nativeSeekTargetMs(8493, 8493))
-        assertEquals("Past a CUE song's end", 8193, nativeSeekTargetMs(30_000, 8493))
-        assertEquals("Length unknown", 30_000, nativeSeekTargetMs(30_000, null))
-        assertEquals("Too short to keep a lead", 600, nativeSeekTargetMs(600, 600))
+    fun `shared cueRange reaches the native queue without changing its source`() {
+        val track = tracks[1].copy(source = "content://doc/a.flac", cueRange = second)
+        val row = Json.parseToJsonElement(nativeQueueJson(listOf(track)) { source, _ -> source }).jsonArray.single().jsonObject
+        assertEquals(track.source, row["source"]!!.jsonPrimitive.content)
+        assertEquals(second.startSeconds, row["cueRange"]!!.jsonObject["startSeconds"]!!.jsonPrimitive.double, 0.0)
+        assertEquals(second.sourcePregapSeconds, row["cueRange"]!!.jsonObject["sourcePregapSeconds"]!!.jsonPrimitive.double, 0.0)
+    }
+
+    @Test fun `invalid or conflicting segment metadata never plays the whole file`() {
+        val source = tracks[1]
+        assertThrows(IllegalArgumentException::class.java) {
+            nativeQueueJson(listOf(source.copy(cueRange = CueRange(20.0, 10.0)))) { audio, _ -> audio }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            nativeQueueJson(listOf(source.copy(cueRange = CueRange(20.0, 40.0)))) { audio, _ -> audio }
+        }
     }
 
     @Test

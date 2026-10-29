@@ -29,7 +29,7 @@ internal fun nativeDspConfig(config: String, json: Json): String {
 }
 
 /** Compile phone controls into the same serial graph consumed by the desktop engine. */
-internal fun nativeDspState(config: CoreEqConfigView, json: Json, revision: Long): String {
+internal fun nativeDspState(config: CoreEqConfigView, json: Json, revision: Long, outputConfig: String? = null): String {
     val dsp = config.dsp
     require(dsp.eqMode in setOf("graphic", "parametric")) { "均衡器模式无效" }
     require(dsp.parametricBands.size <= 32 && dsp.parametricBands.all {
@@ -46,6 +46,7 @@ internal fun nativeDspState(config: CoreEqConfigView, json: Json, revision: Long
     val bands = if (dsp.eqMode == "parametric") json.encodeToJsonElement(dsp.parametricBands) else legacy.getValue("eqBands")
     return buildJsonObject {
         put("revision", revision)
+        outputConfig?.let { put("outputConfig", json.parseToJsonElement(it)) }
         put("processing", buildJsonObject {
             legacy.forEach { (k, v) -> put(k, v) }
             put("dspEnabled", dsp.enabled)
@@ -76,8 +77,26 @@ internal fun nativeDspState(config: CoreEqConfigView, json: Json, revision: Long
     }.toString()
 }
 
-internal fun nativeOutputConfig(config: CoreEqConfigView): String = buildJsonObject {
-    put("playbackPolicy", if (config.bitPerfect) "bit-perfect-first" else "continuity-first")
-    put("continuitySampleRate", config.dsp.continuitySampleRate)
-    put("preferredBufferSize", config.dsp.bufferFrames)
-}.toString()
+internal fun nativeOutputConfig(config: CoreEqConfigView, deviceSampleRates: List<Int> = emptyList()): String {
+    val dsp = config.dsp
+    require(dsp.allowedSampleRates.size <= 32 && dsp.allowedSampleRates.all { it in 8000..384000 } &&
+        dsp.allowedSampleRates.distinct().size == dsp.allowedSampleRates.size) { "允许采样率集合无效" }
+    require(!dsp.sampleRateFamilySync || (config.bitPerfect && dsp.outputStage.targetSampleRate == 0)) {
+        "家族同步不能与固定采样率或连续播放策略同时启用"
+    }
+    val rates = deviceSampleRates.filter { it in 8000..384000 }.distinct().sorted()
+    require(dsp.allowedSampleRates.isEmpty() || rates.isEmpty() || dsp.allowedSampleRates.any { it in rates }) {
+        "允许采样率与当前设备没有交集，请调整允许集合或切换输出设备"
+    }
+    require(config.bitPerfect.not() || dsp.sampleRateFamilySync || dsp.outputStage.targetSampleRate == 0 ||
+        dsp.allowedSampleRates.isEmpty() || (dsp.outputStage.targetSampleRate in dsp.allowedSampleRates &&
+        (rates.isEmpty() || dsp.outputStage.targetSampleRate in rates))) { "固定采样率不在设备支持的允许集合中" }
+    return buildJsonObject {
+        put("playbackPolicy", if (config.bitPerfect) "bit-perfect-first" else "continuity-first")
+        put("continuitySampleRate", dsp.continuitySampleRate)
+        put("preferredBufferSize", dsp.bufferFrames)
+        put("sampleRateFamilySync", dsp.sampleRateFamilySync)
+        put("allowedSampleRates", JsonArray(dsp.allowedSampleRates.sorted().map(::JsonPrimitive)))
+        put("deviceSampleRates", JsonArray(rates.map(::JsonPrimitive)))
+    }.toString()
+}

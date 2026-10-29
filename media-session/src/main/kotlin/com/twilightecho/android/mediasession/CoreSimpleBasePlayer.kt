@@ -59,6 +59,10 @@ class CoreSimpleBasePlayer(
     private var artworkKey: ArtworkKey? = null
     private var artworkData: ByteArray? = null
     private var artworkJob: Job? = null
+    private data class TimelineKey(val entries: List<CoreQueueEntryView>, val activeIndex: Int?,
+        val duration: Double?, val artwork: ByteArray?)
+    private var timelineKey: TimelineKey? = null
+    private var timelineItems: List<MediaItemData> = emptyList()
 
     init {
         mainScope.launch {
@@ -253,7 +257,10 @@ class CoreSimpleBasePlayer(
         snapshot: CoreSnapshot?,
         entries: List<CoreQueueEntryView>
     ): List<MediaItemData> {
-        return entries.map { entry ->
+        val key = TimelineKey(entries, snapshot?.queue?.index ?: snapshot?.playback?.queueIndex,
+            snapshot?.playback?.duration, artworkData)
+        if (key == timelineKey) return timelineItems
+        val items = entries.map { entry ->
             val track = entry.track!!
             val metadata = MediaMetadata.Builder()
                 .setTitle(track.title)
@@ -287,6 +294,9 @@ class CoreSimpleBasePlayer(
                 .setIsSeekable(true)
                 .build()
         }
+        timelineKey = key
+        timelineItems = items
+        return items
     }
 }
 

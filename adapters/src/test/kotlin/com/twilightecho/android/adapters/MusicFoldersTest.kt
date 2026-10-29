@@ -3,7 +3,6 @@ package com.twilightecho.android.adapters
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.CueRange
 import com.twilightecho.android.coreclient.CueSkip
-import com.twilightecho.android.coreclient.CueSource
 import com.twilightecho.android.coreclient.cueTrackId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -71,7 +70,7 @@ class MusicFoldersTest {
         assertEquals(listOf("第一首", "第二首"), listOf(first.title, second.title))
         // The file's header length, not MediaStore's rounded one, ends the last song.
         assertEquals("content://tree/document/primary:Music/CueTest/Album.flac" to CueRange(240.0, 600.0),
-            CueSource.decode(second.source!!))
+            second.source!! to second.cueRange)
         assertEquals("content://tree/document/primary:Music/CueTest/Album.jpg", second.cover)
         assertNull("The sheet's title names the album, not MediaStore's", second.albumId)
 

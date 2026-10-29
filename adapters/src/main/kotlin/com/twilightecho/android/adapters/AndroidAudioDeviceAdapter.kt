@@ -79,6 +79,15 @@ class AndroidAudioDeviceAdapter(
         return rawDevices.map { mapDeviceInfo(it) }
     }
 
+    /** Explicit output, otherwise the current media route. An unknown route declares no rate limits. */
+    fun sampleRatesForOutput(deviceId: String): List<Int> {
+        val devices = outputDevices()
+        val explicit = deviceId.substringBefore(':').toIntOrNull()
+        val selected = if (explicit != null) devices.firstOrNull { it.id == explicit }
+            else mediaRouteDevice(devices) ?: devices.firstOrNull { it.id == playbackOutput?.actualDeviceId?.toIntOrNull() }
+        return selected?.sampleRates?.filter { it in 8000..384000 }?.distinct()?.sorted().orEmpty()
+    }
+
     /**
      * The persistent identity of the routed output, for presets. Kept out of [AudioDeviceRouteInfo] so
      * product names stay on the phone; null while nothing plays or once the device is gone.
