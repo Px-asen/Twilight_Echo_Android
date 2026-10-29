@@ -34,7 +34,8 @@ data class CoreTrackView(
     val addedAt: Long? = null,
     val bpm: Double? = null,
     val isrc: String? = null,
-    val catalog: CatalogTrackReferences? = null
+    val catalog: CatalogTrackReferences? = null,
+    val cueRange: CueRange? = null
 )
 
 @Serializable
@@ -44,7 +45,8 @@ data class CoreUpcomingTrack(
     val title: String,
     val artist: String = "",
     val album: String = "",
-    val duration: Double = 0.0
+    val duration: Double = 0.0,
+    val cueRange: CueRange? = null
 )
 
 @Serializable

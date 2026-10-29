@@ -100,6 +100,10 @@ class DesktopLibraryClient(private val transport: CoreTransport, private val epo
         reference.sourceVersion?.let { put("sourceVersion", it) }
     })
 
+    suspend fun resolveLyrics(reference: DesktopMediaReference): Result<CoreLyricsView> = query("media.lyrics", buildJsonObject {
+        put("libraryId", reference.libraryId); put("sourceId", reference.sourceId)
+    })
+
     suspend fun catalog(kind: String, offset: Int = 0, revision: Long? = null): Result<CatalogPage> = query(
         "catalog.query", buildJsonObject {
             put("kind", JsonPrimitive(kind)); put("offset", JsonPrimitive(offset)); put("limit", JsonPrimitive(100))

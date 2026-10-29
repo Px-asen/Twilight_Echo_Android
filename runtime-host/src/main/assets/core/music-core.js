@@ -818,7 +818,7 @@ var TwilightPortableCore = function (exports) {
       };
     }
     if (typeof g.TextDecoder !== "function") {
-      g.TextDecoder = function TextDecoder() {
+      g.TextDecoder = function TextDecoder2() {
         this.encoding = "utf-8";
         this.decode = function (input) {
           if (!input) return "";
@@ -8541,7 +8541,9 @@ var TwilightPortableCore = function (exports) {
       exclusive: false,
       bufferFrames: 0,
       continuitySampleRate: 48e3,
-      playbackRate: 1
+      playbackRate: 1,
+      sampleRateFamilySync: false,
+      allowedSampleRates: []
     };
   }
   var mobileNodeTypes = /* @__PURE__ */new Set(["replayGain", "dynamicEqualizer", "convolver", "crossfeed", "channelMatrix", "channelStrip", "bassManagement", "gate", "compressor", "multibandCompressor", "stereoField", "loudnessContour", "truePeakLimiter", "meter"]);
@@ -8550,6 +8552,7 @@ var TwilightPortableCore = function (exports) {
     var _a, _b, _c, _d;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid DSP settings");
     var v = __spreadValues(__spreadValues({}, defaultPortableDspSettings()), value);
+    if (typeof v.sampleRateFamilySync !== "boolean" || !Array.isArray(v.allowedSampleRates) || v.allowedSampleRates.length > 32 || v.allowedSampleRates.some(rate => !Number.isInteger(rate) || !finite(rate, 8e3, 384e3)) || new Set(v.allowedSampleRates).size !== v.allowedSampleRates.length) throw new Error("Invalid PCM sample-rate settings");
     if (!Array.isArray(v.nodes) || v.nodes.length > 14 || v.nodes.some(n => !n || !mobileNodeTypes.has(n.type) || typeof n.id !== "string" || !n.id || n.id === "phone-eq") || new Set(v.nodes.map(n => n.id)).size !== v.nodes.length || new Set(v.nodes.map(n => n.type)).size !== v.nodes.length) throw new Error("Invalid or duplicate DSP node");
     if (!Array.isArray(v.parametricBands) || v.parametricBands.length > 32 || v.parametricBands.some(b => !b || !finite(b.frequency, 10, 96e3) || !finite(b.gain, -24, 24) || !finite(b.q, 0.1, 30) || !["peak", "lowShelf", "highShelf", "lowPass", "highPass", "bandPass", "allPass", "notch"].includes(b.filterType) || typeof b.enabled !== "boolean" || !Number.isInteger(b.channelMask) || !finite(b.channelMask, 0, 4294967295))) throw new Error("Invalid parametric EQ band");
     if (!finite(v.crossfadeSeconds, 0, 12) || !finite(v.playbackRate, 0.5, 2) || !Number.isInteger(v.bufferFrames) || !finite(v.bufferFrames, 0, 32768) || ![44100, 48e3, 96e3].includes(v.continuitySampleRate) || !["linear", "equal-power"].includes(v.crossfadeCurve) || !["conservative", "all", "live"].includes(v.crossfadeContent) || !["graphic", "parametric"].includes(v.eqMode) || typeof v.enabled !== "boolean" || typeof v.exclusive !== "boolean" || !/^(auto|[1-9][0-9]*)$/.test(v.outputDeviceId)) throw new Error("Invalid audio output settings");
@@ -8559,7 +8562,9 @@ var TwilightPortableCore = function (exports) {
         targetSampleRate: ((_a = v.outputStage) == null ? void 0 : _a.targetSampleRate) || "device"
       })
     });
+    if (v.sampleRateFamilySync && typeof graph.outputStage.targetSampleRate === "number") throw new Error("Family sync cannot use a fixed sample rate");
     return __spreadProps(__spreadValues({}, v), {
+      allowedSampleRates: [...v.allowedSampleRates].sort((a, b) => a - b),
       nodes: graph.nodes,
       outputStage: {
         targetSampleRate: typeof graph.outputStage.targetSampleRate === "number" ? graph.outputStage.targetSampleRate : 0,
@@ -10515,6 +10520,148 @@ var TwilightPortableCore = function (exports) {
     search(current2, signal) {
       return this.options.search(this.fenceCurrent(current2), signal);
     }
+    resolveTrack(_0) {
+      return __async$t(this, arguments, /*#__PURE__*/_regenerator().m(function _callee43(track, options = {}) {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, signal, override, requestedSource, automatic2, layerSource, originalSource, translationSource, romanizationSource, resolverTrack, source, hasOriginal, canLoadLocal, canLoadOnline, amlId, resolved, automatic, _t63;
+        return _regenerator().w(function (_context43) {
+          while (1) switch (_context43.p = _context43.n) {
+            case 0:
+              _context43.p = 0;
+              _context43.n = 1;
+              return this.management.ensureLoaded();
+            case 1:
+              _context43.n = 3;
+              break;
+            case 2:
+              _context43.p = 2;
+              _t63 = _context43.v;
+            case 3:
+              signal = (_a = options.signal) != null ? _a : new AbortController().signal;
+              override = this.management.entryFor(track.id);
+              requestedSource = (_b = override == null ? void 0 : override.source) != null ? _b : "auto";
+              if (!(requestedSource === "manual")) {
+                _context43.n = 4;
+                break;
+              }
+              automatic2 = {
+                original: (_c = track.lyrics) != null ? _c : "",
+                translation: (_d = track.translatedLyrics) != null ? _d : null,
+                romanization: (_e = track.romanizedLyrics) != null ? _e : null,
+                originalSource: (_f = track.lyricsSource) != null ? _f : null,
+                translationSource: (_g = track.translatedLyricsSource) != null ? _g : null,
+                romanizationSource: (_h = track.romanizedLyricsSource) != null ? _h : null
+              };
+              return _context43.a(2, {
+                revision: this.getRevision(),
+                contentRevision: this.contentRevision,
+                current: {
+                  trackId: track.id,
+                  occurrenceId: (_i = track.queueEntryId) != null ? _i : null
+                },
+                automatic: automatic2,
+                effective: projectManagedLyrics(automatic2, override),
+                override: override ? __spreadValues({}, override) : null,
+                offsetSeconds: this.management.effectiveOffsetSeconds(track.id)
+              });
+            case 4:
+              layerSource = key => {
+                var selection = override == null ? void 0 : override[key];
+                if (selection === "local" || selection === "amll" || selection === "provider") return selection;
+                if (requestedSource === "local" || requestedSource === "amll" || requestedSource === "provider") return requestedSource;
+                return "automatic";
+              };
+              originalSource = layerSource("originalSelection");
+              translationSource = layerSource("translationSelection");
+              romanizationSource = layerSource("romanizationSelection");
+              resolverTrack = resolverLyricsInput(track, void 0, requestedSource);
+              source = getTrackSource(resolverTrack);
+              hasOriginal = typeof resolverTrack.lyrics === "string" && resolverTrack.lyrics.trim().length > 0;
+              canLoadLocal = source === "local" && (!!resolverTrack.dir || !!resolverTrack.filePath) && !!resolverTrack.fileName;
+              canLoadOnline = originalSource === "automatic" && (options.allowOnlineFallback === true || ((_j = this.options.sources.getAppSettings().value) == null ? void 0 : _j.onlineLyricsFallback) === true) && !!((_k = resolverTrack.title) == null ? void 0 : _k.trim()) && !!((_l = resolverTrack.artist) == null ? void 0 : _l.trim()) && !hasOriginal;
+              amlId = (() => {
+                var _a2;
+                var direct = getNcmSongId(resolverTrack);
+                if (direct != null && (resolverTrack.source === "ncm" || resolverTrack.id.startsWith("ncm:"))) return direct;
+                return Number((_a2 = resolverTrack.metadataMatch) == null ? void 0 : _a2.trackId);
+              })();
+              _context43.n = 5;
+              return resolveLyricsWithSources({
+                track: resolverTrack,
+                originalSource,
+                translationSource,
+                romanizationSource,
+                loadLocalLyrics: canLoadLocal && (originalSource === "local" || originalSource === "automatic" && shouldLoadAutomaticOriginal(resolverTrack, "local")) ? () => this.options.sources.loadLocalLyrics(resolverTrack, "original", signal).catch(() => null) : void 0,
+                loadLocalTranslatedLyrics: canLoadLocal ? () => this.options.sources.loadLocalLyrics(resolverTrack, "translated", signal).catch(() => null) : void 0,
+                loadLocalRomanizedLyrics: canLoadLocal ? () => this.options.sources.loadLocalLyrics(resolverTrack, "romanized", signal).catch(() => null) : void 0,
+                loadAmlTtml: eligibleForAml(resolverTrack) && Number.isFinite(amlId) && amlId > 0 ? () => this.options.sources.loadAmlTtml(amlId, signal) : void 0,
+                loadProviderLyrics: () => this.options.sources.resolveProviderLyrics(resolverTrack, signal),
+                loadOnlineLyrics: canLoadOnline ? () => this.options.sources.loadOnlineLyrics({
+                  title: resolverTrack.title,
+                  artist: resolverTrack.artist,
+                  album: resolverTrack.album || void 0,
+                  durationSeconds: Number.isFinite(resolverTrack.duration) ? resolverTrack.duration : void 0
+                }, signal) : void 0,
+                loadOnlineTranslation: canLoadOnline ? () => __async$t(this, null, /*#__PURE__*/_regenerator().m(function _callee42() {
+                  var _a2, _b2, _t59, _t60, _t61, _t62;
+                  return _regenerator().w(function (_context42) {
+                    while (1) switch (_context42.n) {
+                      case 0:
+                        _context42.n = 1;
+                        return this.options.sources.resolveProviderLyrics(resolverTrack, signal);
+                      case 1:
+                        _t59 = _a2 = _context42.v;
+                        if (!(_t59 == null)) {
+                          _context42.n = 2;
+                          break;
+                        }
+                        _t60 = void 0;
+                        _context42.n = 3;
+                        break;
+                      case 2:
+                        _t60 = _a2.translatedLyrics;
+                      case 3:
+                        _t61 = _b2 = _t60;
+                        if (!(_t61 != null)) {
+                          _context42.n = 4;
+                          break;
+                        }
+                        _t62 = _b2;
+                        _context42.n = 5;
+                        break;
+                      case 4:
+                        _t62 = null;
+                      case 5:
+                        return _context42.a(2, _t62);
+                    }
+                  }, _callee42, this);
+                })) : void 0
+              });
+            case 5:
+              resolved = _context43.v;
+              automatic = {
+                original: (_m = resolved.lyrics) != null ? _m : "",
+                translation: resolved.translatedLyrics,
+                romanization: resolved.romanizedLyrics,
+                originalSource: resolved.lyricsSource,
+                translationSource: resolved.translatedLyricsSource,
+                romanizationSource: resolved.romanizedLyricsSource
+              };
+              return _context43.a(2, {
+                revision: this.getRevision(),
+                contentRevision: this.contentRevision,
+                current: {
+                  trackId: track.id,
+                  occurrenceId: (_n = track.queueEntryId) != null ? _n : null
+                },
+                automatic,
+                effective: projectManagedLyrics(automatic, override),
+                override: override ? __spreadValues({}, override) : null,
+                offsetSeconds: this.management.effectiveOffsetSeconds(track.id)
+              });
+          }
+        }, _callee43, this, [[0, 2]]);
+      }));
+    }
     importDraft(signal) {
       return this.options.importDraft(signal);
     }
@@ -10522,33 +10669,33 @@ var TwilightPortableCore = function (exports) {
       return this.options.exportDraft(contents, signal);
     }
     flush() {
-      return __async$t(this, null, /*#__PURE__*/_regenerator().m(function _callee42() {
-        return _regenerator().w(function (_context42) {
-          while (1) switch (_context42.n) {
+      return __async$t(this, null, /*#__PURE__*/_regenerator().m(function _callee44() {
+        return _regenerator().w(function (_context44) {
+          while (1) switch (_context44.n) {
             case 0:
-              _context42.n = 1;
+              _context44.n = 1;
               return this.tail.catch(() => void 0);
             case 1:
-              return _context42.a(2);
+              return _context44.a(2);
           }
-        }, _callee42, this);
+        }, _callee44, this);
       }));
     }
     shutdown() {
-      return __async$t(this, null, /*#__PURE__*/_regenerator().m(function _callee43() {
-        return _regenerator().w(function (_context43) {
-          while (1) switch (_context43.n) {
+      return __async$t(this, null, /*#__PURE__*/_regenerator().m(function _callee45() {
+        return _regenerator().w(function (_context45) {
+          while (1) switch (_context45.n) {
             case 0:
               this.stopped = true;
-              _context43.n = 1;
+              _context45.n = 1;
               return this.loader.shutdown();
             case 1:
-              _context43.n = 2;
+              _context45.n = 2;
               return this.flush();
             case 2:
-              return _context43.a(2);
+              return _context45.a(2);
           }
-        }, _callee43, this);
+        }, _callee45, this);
       }));
     }
   }
@@ -10688,13 +10835,13 @@ var TwilightPortableCore = function (exports) {
       this.readWork = Promise.all([artwork, favorite]).then(() => void 0);
     }
     toggleFavorite(expected, signal) {
-      var work = this.writes.catch(() => void 0).then(() => __async$s(this, null, /*#__PURE__*/_regenerator().m(function _callee44() {
-        var assertCurrent, track, provider, failed, liked, result, _t59;
-        return _regenerator().w(function (_context44) {
-          while (1) switch (_context44.p = _context44.n) {
+      var work = this.writes.catch(() => void 0).then(() => __async$s(this, null, /*#__PURE__*/_regenerator().m(function _callee46() {
+        var assertCurrent, track, provider, failed, liked, result, _t64;
+        return _regenerator().w(function (_context46) {
+          while (1) switch (_context46.p = _context46.n) {
             case 0:
               if (!this.stopped) {
-                _context44.n = 1;
+                _context46.n = 1;
                 break;
               }
               throw new Error("Player presentation is shutting down");
@@ -10706,14 +10853,14 @@ var TwilightPortableCore = function (exports) {
                 });
               };
               assertCurrent();
-              _context44.n = 2;
+              _context46.n = 2;
               return this.favoriteRead;
             case 2:
               assertCurrent();
               track = this.track;
               provider = providerIdentity(track);
               if (this.state.favorite.available) {
-                _context44.n = 3;
+                _context46.n = 3;
                 break;
               }
               throw new Error("当前音源不支持收藏");
@@ -10722,67 +10869,67 @@ var TwilightPortableCore = function (exports) {
               this.state.favorite.loading = true;
               this.changed();
               failed = false;
-              _context44.p = 4;
+              _context46.p = 4;
               liked = !this.state.favorite.liked;
               if (!provider) {
-                _context44.n = 6;
+                _context46.n = 6;
                 break;
               }
               assertCurrent();
-              _context44.n = 5;
+              _context46.n = 5;
               return this.options.callProvider(provider.providerId, "likeTrack", [provider.trackId, liked]);
             case 5:
               if (this.current(expected)) this.state.favorite.liked = liked;
-              _context44.n = 8;
+              _context46.n = 8;
               break;
             case 6:
-              _context44.n = 7;
+              _context46.n = 7;
               return this.options.playlists.toggleFavorite(track, assertCurrent);
             case 7:
-              result = _context44.v;
+              result = _context46.v;
               if (this.current(expected)) this.state.favorite.liked = result;
             case 8:
-              _context44.n = 10;
+              _context46.n = 10;
               break;
             case 9:
-              _context44.p = 9;
-              _t59 = _context44.v;
+              _context46.p = 9;
+              _t64 = _context46.v;
               failed = true;
-              throw _t59;
+              throw _t64;
             case 10:
-              _context44.p = 10;
+              _context46.p = 10;
               this.writing = false;
               if (this.current(expected)) {
                 this.state.favorite.loading = false;
                 this.changed();
               }
               if (failed || !this.current(expected)) this.refresh();
-              return _context44.f(10);
+              return _context46.f(10);
             case 11:
-              return _context44.a(2, this.snapshot());
+              return _context46.a(2, this.snapshot());
           }
-        }, _callee44, this, [[4, 9, 10, 11]]);
+        }, _callee46, this, [[4, 9, 10, 11]]);
       })));
       this.writes = work;
       return work;
     }
     shutdown() {
-      return __async$s(this, null, /*#__PURE__*/_regenerator().m(function _callee45() {
+      return __async$s(this, null, /*#__PURE__*/_regenerator().m(function _callee47() {
         var _a;
-        return _regenerator().w(function (_context45) {
-          while (1) switch (_context45.n) {
+        return _regenerator().w(function (_context47) {
+          while (1) switch (_context47.n) {
             case 0:
               this.stopped = true;
               (_a = this.currentRequest) == null ? void 0 : _a.abort();
-              _context45.n = 1;
+              _context47.n = 1;
               return this.writes.catch(() => void 0);
             case 1:
-              _context45.n = 2;
+              _context47.n = 2;
               return this.readWork;
             case 2:
-              return _context45.a(2);
+              return _context47.a(2);
           }
-        }, _callee45, this);
+        }, _callee47, this);
       }));
     }
   }
@@ -10886,73 +11033,6 @@ var TwilightPortableCore = function (exports) {
     }
     create(query2, selectedId) {
       var input = structuredClone(query2);
-      if (this.disposed || this.pendingControls >= 8) return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee46() {
-        return _regenerator().w(function (_context46) {
-          while (1) switch (_context46.n) {
-            case 0:
-              return _context46.a(2, null);
-          }
-        }, _callee46);
-      })));
-      this.detach();
-      var attachment = this.attachment;
-      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee47() {
-        var queue, _t60;
-        return _regenerator().w(function (_context47) {
-          while (1) switch (_context47.p = _context47.n) {
-            case 0:
-              if (this.current(attachment)) {
-                _context47.n = 1;
-                break;
-              }
-              return _context47.a(2, null);
-            case 1:
-              _context47.n = 2;
-              return this.api.createQueue(input, selectedId);
-            case 2:
-              queue = _context47.v;
-              if (this.current(attachment)) {
-                _context47.n = 4;
-                break;
-              }
-              _context47.n = 3;
-              return this.api.deleteQueue(queue.id, queue.revision);
-            case 3:
-              return _context47.a(2, null);
-            case 4:
-              _context47.p = 4;
-              _context47.n = 5;
-              return this.syncReference([queue.id]);
-            case 5:
-              _context47.n = 8;
-              break;
-            case 6:
-              _context47.p = 6;
-              _t60 = _context47.v;
-              _context47.n = 7;
-              return this.api.deleteQueue(queue.id, queue.revision).catch(() => {});
-            case 7:
-              throw _t60;
-            case 8:
-              if (this.current(attachment)) {
-                _context47.n = 11;
-                break;
-              }
-              _context47.n = 9;
-              return this.syncReference([]).catch(() => {});
-            case 9:
-              _context47.n = 10;
-              return this.api.deleteQueue(queue.id, queue.revision).catch(() => {});
-            case 10:
-              return _context47.a(2, null);
-            case 11:
-              this.queue = queue;
-              return _context47.a(2, __spreadValues({}, queue));
-          }
-        }, _callee47, this, [[4, 6]]);
-      })));
-    }
-    restore(id2) {
       if (this.disposed || this.pendingControls >= 8) return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee48() {
         return _regenerator().w(function (_context48) {
           while (1) switch (_context48.n) {
@@ -10964,9 +11044,9 @@ var TwilightPortableCore = function (exports) {
       this.detach();
       var attachment = this.attachment;
       return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee49() {
-        var queue;
+        var queue, _t65;
         return _regenerator().w(function (_context49) {
-          while (1) switch (_context49.n) {
+          while (1) switch (_context49.p = _context49.n) {
             case 0:
               if (this.current(attachment)) {
                 _context49.n = 1;
@@ -10975,95 +11055,162 @@ var TwilightPortableCore = function (exports) {
               return _context49.a(2, null);
             case 1:
               _context49.n = 2;
-              return this.api.getQueue(id2);
+              return this.api.createQueue(input, selectedId);
             case 2:
               queue = _context49.v;
               if (this.current(attachment)) {
-                _context49.n = 3;
+                _context49.n = 4;
                 break;
               }
-              return _context49.a(2, null);
+              _context49.n = 3;
+              return this.api.deleteQueue(queue.id, queue.revision);
             case 3:
-              _context49.n = 4;
-              return this.syncReference([queue.id]);
+              return _context49.a(2, null);
             case 4:
+              _context49.p = 4;
+              _context49.n = 5;
+              return this.syncReference([queue.id]);
+            case 5:
+              _context49.n = 8;
+              break;
+            case 6:
+              _context49.p = 6;
+              _t65 = _context49.v;
+              _context49.n = 7;
+              return this.api.deleteQueue(queue.id, queue.revision).catch(() => {});
+            case 7:
+              throw _t65;
+            case 8:
               if (this.current(attachment)) {
-                _context49.n = 6;
+                _context49.n = 11;
                 break;
               }
-              _context49.n = 5;
+              _context49.n = 9;
               return this.syncReference([]).catch(() => {});
-            case 5:
+            case 9:
+              _context49.n = 10;
+              return this.api.deleteQueue(queue.id, queue.revision).catch(() => {});
+            case 10:
               return _context49.a(2, null);
-            case 6:
+            case 11:
               this.queue = queue;
               return _context49.a(2, __spreadValues({}, queue));
           }
-        }, _callee49, this);
+        }, _callee49, this, [[4, 6]]);
       })));
     }
-    refresh() {
-      var attachment = this.attachment;
-      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee50() {
-        var queue;
+    restore(id2) {
+      if (this.disposed || this.pendingControls >= 8) return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee50() {
         return _regenerator().w(function (_context50) {
           while (1) switch (_context50.n) {
             case 0:
-              if (!(!this.current(attachment) || !this.queue)) {
-                _context50.n = 1;
-                break;
-              }
               return _context50.a(2, null);
-            case 1:
-              _context50.n = 2;
-              return this.api.getQueue(this.queue.id);
-            case 2:
-              queue = _context50.v;
-              if (this.current(attachment)) {
-                _context50.n = 3;
-                break;
-              }
-              return _context50.a(2, null);
-            case 3:
-              this.queue = queue;
-              this.requiresRefresh = false;
-              this.resetPages();
-              return _context50.a(2, __spreadValues({}, queue));
           }
-        }, _callee50, this);
+        }, _callee50);
       })));
-    }
-    edit(edit2, options = {}) {
-      var input = structuredClone(edit2),
-        attachment = this.attachment;
+      this.detach();
+      var attachment = this.attachment;
       return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee51() {
-        var previous, result, _t61;
+        var queue;
         return _regenerator().w(function (_context51) {
-          while (1) switch (_context51.p = _context51.n) {
+          while (1) switch (_context51.n) {
             case 0:
-              if (!(!this.current(attachment) || !this.queue)) {
+              if (this.current(attachment)) {
                 _context51.n = 1;
                 break;
               }
               return _context51.a(2, null);
             case 1:
+              _context51.n = 2;
+              return this.api.getQueue(id2);
+            case 2:
+              queue = _context51.v;
+              if (this.current(attachment)) {
+                _context51.n = 3;
+                break;
+              }
+              return _context51.a(2, null);
+            case 3:
+              _context51.n = 4;
+              return this.syncReference([queue.id]);
+            case 4:
+              if (this.current(attachment)) {
+                _context51.n = 6;
+                break;
+              }
+              _context51.n = 5;
+              return this.syncReference([]).catch(() => {});
+            case 5:
+              return _context51.a(2, null);
+            case 6:
+              this.queue = queue;
+              return _context51.a(2, __spreadValues({}, queue));
+          }
+        }, _callee51, this);
+      })));
+    }
+    refresh() {
+      var attachment = this.attachment;
+      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee52() {
+        var queue;
+        return _regenerator().w(function (_context52) {
+          while (1) switch (_context52.n) {
+            case 0:
+              if (!(!this.current(attachment) || !this.queue)) {
+                _context52.n = 1;
+                break;
+              }
+              return _context52.a(2, null);
+            case 1:
+              _context52.n = 2;
+              return this.api.getQueue(this.queue.id);
+            case 2:
+              queue = _context52.v;
+              if (this.current(attachment)) {
+                _context52.n = 3;
+                break;
+              }
+              return _context52.a(2, null);
+            case 3:
+              this.queue = queue;
+              this.requiresRefresh = false;
+              this.resetPages();
+              return _context52.a(2, __spreadValues({}, queue));
+          }
+        }, _callee52, this);
+      })));
+    }
+    edit(edit2, options = {}) {
+      var input = structuredClone(edit2),
+        attachment = this.attachment;
+      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee53() {
+        var previous, result, _t66;
+        return _regenerator().w(function (_context53) {
+          while (1) switch (_context53.p = _context53.n) {
+            case 0:
+              if (!(!this.current(attachment) || !this.queue)) {
+                _context53.n = 1;
+                break;
+              }
+              return _context53.a(2, null);
+            case 1:
               if (!this.requiresRefresh) {
-                _context51.n = 2;
+                _context53.n = 2;
                 break;
               }
               throw new Error("Refresh the library queue before editing it");
             case 2:
               previous = this.queue;
-              _context51.p = 3;
-              _context51.n = 4;
+              _context53.p = 3;
+              _context53.n = 4;
               return this.api.editQueue(previous.id, previous.revision, input);
             case 4:
-              result = _context51.v;
+              result = _context53.v;
               if (this.current(attachment)) {
-                _context51.n = 5;
+                _context53.n = 5;
                 break;
               }
-              return _context51.a(2, null);
+              return _context53.a(2, null);
             case 5:
               this.queue = result.queue;
               if (previous.revision !== result.queue.revision) this.resetPages();
@@ -11075,21 +11222,21 @@ var TwilightPortableCore = function (exports) {
                   }].slice(-20);else this.undoStack = [];
                 } else this.undoStack = [];
               }
-              return _context51.a(2, __spreadProps(__spreadValues({}, result), {
+              return _context53.a(2, __spreadProps(__spreadValues({}, result), {
                 queue: __spreadValues({}, result.queue)
               }));
             case 6:
-              _context51.p = 6;
-              _t61 = _context51.v;
+              _context53.p = 6;
+              _t66 = _context53.v;
               if (this.current(attachment)) {
                 this.requiresRefresh = true;
                 this.resetPages();
               }
-              throw _t61;
+              throw _t66;
             case 7:
-              return _context51.a(2);
+              return _context53.a(2);
           }
-        }, _callee51, this, [[3, 6]]);
+        }, _callee53, this, [[3, 6]]);
       })));
     }
     get canUndo() {
@@ -11100,118 +11247,118 @@ var TwilightPortableCore = function (exports) {
      * Retain a valid undo chain, but never resurrect an already invalid one. */
     replaceSource(command) {
       var attachment = this.attachment;
-      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee52() {
-        var repaired, undo, _t62;
-        return _regenerator().w(function (_context52) {
-          while (1) switch (_context52.p = _context52.n) {
+      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee54() {
+        var repaired, undo, _t67;
+        return _regenerator().w(function (_context54) {
+          while (1) switch (_context54.p = _context54.n) {
             case 0:
               if (!(!this.current(attachment) || !this.queue)) {
-                _context52.n = 1;
+                _context54.n = 1;
                 break;
               }
-              return _context52.a(2, null);
+              return _context54.a(2, null);
             case 1:
               if (this.api.replaceSource) {
-                _context52.n = 2;
+                _context54.n = 2;
                 break;
               }
               throw new Error("Playback source repair is unavailable");
             case 2:
               if (!this.requiresRefresh) {
-                _context52.n = 3;
+                _context54.n = 3;
                 break;
               }
               throw new Error("Refresh the library queue before repairing it");
             case 3:
               if (!(this.queue.id !== command.queue.id || this.queue.revision !== command.queue.revision)) {
-                _context52.n = 4;
+                _context54.n = 4;
                 break;
               }
               throw new Error("Playback queue changed during source preparation");
             case 4:
-              _context52.p = 4;
-              _context52.n = 5;
+              _context54.p = 4;
+              _context54.n = 5;
               return this.api.replaceSource(command);
             case 5:
-              repaired = _context52.v;
+              repaired = _context54.v;
               if (this.current(attachment)) {
-                _context52.n = 6;
+                _context54.n = 6;
                 break;
               }
-              return _context52.a(2, null);
+              return _context54.a(2, null);
             case 6:
               undo = this.undoStack.at(-1);
               if ((undo == null ? void 0 : undo.revision) === command.queue.revision) undo.revision = repaired.revision;
               this.queue = repaired;
               this.resetPages();
-              return _context52.a(2, __spreadValues({}, repaired));
+              return _context54.a(2, __spreadValues({}, repaired));
             case 7:
-              _context52.p = 7;
-              _t62 = _context52.v;
+              _context54.p = 7;
+              _t67 = _context54.v;
               if (this.current(attachment)) {
                 this.requiresRefresh = true;
                 this.resetPages();
               }
-              throw _t62;
+              throw _t67;
             case 8:
-              return _context52.a(2);
+              return _context54.a(2);
           }
-        }, _callee52, this, [[4, 7]]);
+        }, _callee54, this, [[4, 7]]);
       })));
     }
     extend(items) {
       var input = structuredClone(items),
         attachment = this.attachment;
-      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee53() {
-        var result, _t63;
-        return _regenerator().w(function (_context53) {
-          while (1) switch (_context53.p = _context53.n) {
+      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee55() {
+        var result, _t68;
+        return _regenerator().w(function (_context55) {
+          while (1) switch (_context55.p = _context55.n) {
             case 0:
               if (!(!this.current(attachment) || !this.queue)) {
-                _context53.n = 1;
+                _context55.n = 1;
                 break;
               }
-              return _context53.a(2, null);
+              return _context55.a(2, null);
             case 1:
               if (this.api.extendQueue) {
-                _context53.n = 2;
+                _context55.n = 2;
                 break;
               }
               throw new Error("Automatic queue extensions are unavailable");
             case 2:
               if (!this.requiresRefresh) {
-                _context53.n = 3;
+                _context55.n = 3;
                 break;
               }
               throw new Error("Refresh the library queue before extending it");
             case 3:
-              _context53.p = 3;
-              _context53.n = 4;
+              _context55.p = 3;
+              _context55.n = 4;
               return this.api.extendQueue(this.queue.id, this.queue.revision, input);
             case 4:
-              result = _context53.v;
+              result = _context55.v;
               if (this.current(attachment)) {
-                _context53.n = 5;
+                _context55.n = 5;
                 break;
               }
-              return _context53.a(2, null);
+              return _context55.a(2, null);
             case 5:
               this.queue = result.queue;
               this.undoStack = [];
               this.resetPages();
-              return _context53.a(2, result);
+              return _context55.a(2, result);
             case 6:
-              _context53.p = 6;
-              _t63 = _context53.v;
+              _context55.p = 6;
+              _t68 = _context55.v;
               if (this.current(attachment)) {
                 this.requiresRefresh = true;
                 this.resetPages();
               }
-              throw _t63;
+              throw _t68;
             case 7:
-              return _context53.a(2);
+              return _context55.a(2);
           }
-        }, _callee53, this, [[3, 6]]);
+        }, _callee55, this, [[3, 6]]);
       })));
     }
     get undoLabel() {
@@ -11235,50 +11382,50 @@ var TwilightPortableCore = function (exports) {
     /** Call only after the replacement session has durably stopped referencing it. */
     delete() {
       var attachment = this.attachment;
-      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee54() {
-        var _t64;
-        return _regenerator().w(function (_context54) {
-          while (1) switch (_context54.p = _context54.n) {
+      return this.control(() => __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee56() {
+        var _t69;
+        return _regenerator().w(function (_context56) {
+          while (1) switch (_context56.p = _context56.n) {
             case 0:
               if (!(!this.current(attachment) || !this.queue)) {
-                _context54.n = 1;
+                _context56.n = 1;
                 break;
               }
-              return _context54.a(2, false);
+              return _context56.a(2, false);
             case 1:
               if (!this.requiresRefresh) {
-                _context54.n = 2;
+                _context56.n = 2;
                 break;
               }
               throw new Error("Refresh the library queue before deleting it");
             case 2:
-              _context54.p = 2;
-              _context54.n = 3;
+              _context56.p = 2;
+              _context56.n = 3;
               return this.syncReference([]);
             case 3:
-              _context54.n = 4;
+              _context56.n = 4;
               return this.api.deleteQueue(this.queue.id, this.queue.revision);
             case 4:
               if (this.current(attachment)) this.detach();
-              return _context54.a(2, true);
+              return _context56.a(2, true);
             case 5:
-              _context54.p = 5;
-              _t64 = _context54.v;
+              _context56.p = 5;
+              _t69 = _context56.v;
               if (!this.current(attachment)) {
-                _context54.n = 7;
+                _context56.n = 7;
                 break;
               }
-              _context54.n = 6;
+              _context56.n = 6;
               return this.syncReference(this.queue ? [this.queue.id] : []).catch(() => {});
             case 6:
               this.requiresRefresh = true;
               this.resetPages();
             case 7:
-              throw _t64;
+              throw _t69;
             case 8:
-              return _context54.a(2);
+              return _context56.a(2);
           }
-        }, _callee54, this, [[2, 5]]);
+        }, _callee56, this, [[2, 5]]);
       })));
     }
     invalidateLibrary(revision2) {
@@ -11328,25 +11475,25 @@ var TwilightPortableCore = function (exports) {
       }
     }
     fetch(request) {
-      return __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee55() {
-        var _a, page2, offset, _t65;
-        return _regenerator().w(function (_context55) {
-          while (1) switch (_context55.p = _context55.n) {
+      return __async$r(this, null, /*#__PURE__*/_regenerator().m(function _callee57() {
+        var _a, page2, offset, _t70;
+        return _regenerator().w(function (_context57) {
+          while (1) switch (_context57.p = _context57.n) {
             case 0:
-              _context55.p = 0;
-              _context55.n = 1;
+              _context57.p = 0;
+              _context57.n = 1;
               return this.api.readQueue(request.queue.id, request.page * LIBRARY_PAGE_SIZE, LIBRARY_PAGE_SIZE);
             case 1:
-              page2 = _context55.v;
+              page2 = _context57.v;
               if (!(this.disposed || request.epoch !== this.epoch)) {
-                _context55.n = 2;
+                _context57.n = 2;
                 break;
               }
               request.resolve(null);
-              return _context55.a(2);
+              return _context57.a(2);
             case 2:
               if (!(page2.revision !== request.queue.revision)) {
-                _context55.n = 3;
+                _context57.n = 3;
                 break;
               }
               if (page2.revision > request.queue.revision) {
@@ -11354,18 +11501,18 @@ var TwilightPortableCore = function (exports) {
                 this.resetPages();
               }
               request.resolve(null);
-              return _context55.a(2);
+              return _context57.a(2);
             case 3:
               if (!(page2.libraryRevision < Math.max(this.minimumLibraryRevision, (_a = this.libraryRevision) != null ? _a : 0))) {
-                _context55.n = 4;
+                _context57.n = 4;
                 break;
               }
               request.resolve(null);
-              return _context55.a(2);
+              return _context57.a(2);
             case 4:
               offset = request.page * LIBRARY_PAGE_SIZE;
               if (!(page2.offset !== offset || page2.total !== request.queue.total || page2.items.length !== Math.max(0, Math.min(LIBRARY_PAGE_SIZE, page2.total - offset)) || page2.items.some((item, i) => item.position !== offset + i))) {
-                _context55.n = 5;
+                _context57.n = 5;
                 break;
               }
               throw new Error("Database returned an invalid library queue page");
@@ -11375,99 +11522,99 @@ var TwilightPortableCore = function (exports) {
               this.pages.set(request.page, page2);
               while (this.pages.size > LIBRARY_CACHE_PAGES) this.pages.delete(this.pages.keys().next().value);
               request.resolve(page2);
-              _context55.n = 7;
+              _context57.n = 7;
               break;
             case 6:
-              _context55.p = 6;
-              _t65 = _context55.v;
-              if (request.epoch !== this.epoch || this.disposed) request.resolve(null);else request.reject(_t65);
+              _context57.p = 6;
+              _t70 = _context57.v;
+              if (request.epoch !== this.epoch || this.disposed) request.resolve(null);else request.reject(_t70);
             case 7:
-              return _context55.a(2);
+              return _context57.a(2);
           }
-        }, _callee55, this, [[0, 6]]);
+        }, _callee57, this, [[0, 6]]);
       }));
     }
     /** Fetch the selected occurrence plus an immediate successor for native CUE
      * handoff. Holes stay in the queue; navigation skips them inside SQL. At most
      * two detail pages are read, never a walk over an arbitrarily large hole. */
     playbackWindow() {
-      return __async$r(this, arguments, /*#__PURE__*/_regenerator().m(function _callee56(options = {}) {
-        var _a, _b, queue, attachment, pageNumber, first, current2, next, libraryRevision, nextPage, page2, _t66;
-        return _regenerator().w(function (_context56) {
-          while (1) switch (_context56.n) {
+      return __async$r(this, arguments, /*#__PURE__*/_regenerator().m(function _callee58(options = {}) {
+        var _a, _b, queue, attachment, pageNumber, first, current2, next, libraryRevision, nextPage, page2, _t71;
+        return _regenerator().w(function (_context58) {
+          while (1) switch (_context58.n) {
             case 0:
               queue = this.queue ? __spreadValues({}, this.queue) : null, attachment = this.attachment;
               if (!(!queue || queue.index < 0)) {
-                _context56.n = 1;
+                _context58.n = 1;
                 break;
               }
-              return _context56.a(2, null);
+              return _context58.a(2, null);
             case 1:
               pageNumber = Math.floor(queue.index / LIBRARY_PAGE_SIZE);
-              _context56.n = 2;
+              _context58.n = 2;
               return this.loadPage(pageNumber);
             case 2:
-              first = _context56.v;
+              first = _context58.v;
               if (!(!first || !this.current(attachment) || ((_a = this.queue) == null ? void 0 : _a.revision) !== queue.revision)) {
-                _context56.n = 3;
+                _context58.n = 3;
                 break;
               }
-              return _context56.a(2, null);
+              return _context58.a(2, null);
             case 3:
               current2 = first.items[queue.index % LIBRARY_PAGE_SIZE];
               if (!(!(current2 == null ? void 0 : current2.track) || current2.queueEntryId !== queue.selectedEntryId)) {
-                _context56.n = 4;
+                _context58.n = 4;
                 break;
               }
-              return _context56.a(2, null);
+              return _context58.a(2, null);
             case 4:
               next = !options.repeat ? first.items.find(item => item.position > queue.index && item.track) : void 0;
               libraryRevision = first.libraryRevision;
               if (!(!options.repeat && !next)) {
-                _context56.n = 9;
+                _context58.n = 9;
                 break;
               }
               nextPage = (pageNumber + 1) * LIBRARY_PAGE_SIZE < queue.total ? pageNumber + 1 : options.wrap ? 0 : -1;
               if (!(nextPage >= 0)) {
-                _context56.n = 9;
+                _context58.n = 9;
                 break;
               }
               if (!(nextPage === pageNumber)) {
-                _context56.n = 5;
+                _context58.n = 5;
                 break;
               }
-              _t66 = first;
-              _context56.n = 7;
+              _t71 = first;
+              _context58.n = 7;
               break;
             case 5:
-              _context56.n = 6;
+              _context58.n = 6;
               return this.loadPage(nextPage);
             case 6:
-              _t66 = _context56.v;
+              _t71 = _context58.v;
             case 7:
-              page2 = _t66;
+              page2 = _t71;
               if (!(!page2 || page2.libraryRevision !== libraryRevision)) {
-                _context56.n = 8;
+                _context58.n = 8;
                 break;
               }
-              return _context56.a(2, null);
+              return _context58.a(2, null);
             case 8:
               next = page2.items.find(item => item.queueEntryId !== current2.queueEntryId && item.track);
             case 9:
               if (!(!this.current(attachment) || ((_b = this.queue) == null ? void 0 : _b.revision) !== queue.revision || libraryRevision < this.minimumLibraryRevision || libraryRevision !== this.libraryRevision)) {
-                _context56.n = 10;
+                _context58.n = 10;
                 break;
               }
-              return _context56.a(2, null);
+              return _context58.a(2, null);
             case 10:
-              return _context56.a(2, {
+              return _context58.a(2, {
                 queue,
                 libraryRevision,
                 lastPlayablePosition: first.lastPlayablePosition,
                 items: next ? [current2, next] : [current2]
               });
           }
-        }, _callee56, this);
+        }, _callee58, this);
       }));
     }
     dispose() {
@@ -11496,10 +11643,10 @@ var TwilightPortableCore = function (exports) {
     });
   };
   function buildLibraryQueuePages(_0, _1, _2) {
-    return __async$q(this, arguments, /*#__PURE__*/_regenerator().m(function _callee58(api, produce, start, options = {}) {
-      var _a, _b, _c, id2, accepting, failed, failure2, sequence, total, ready, state, reject, check, append, opened, selectedIndex, reply, _t67, _t68;
-      return _regenerator().w(function (_context58) {
-        while (1) switch (_context58.p = _context58.n) {
+    return __async$q(this, arguments, /*#__PURE__*/_regenerator().m(function _callee60(api, produce, start, options = {}) {
+      var _a, _b, _c, id2, accepting, failed, failure2, sequence, total, ready, state, reject, check, append, opened, selectedIndex, reply, _t72, _t73;
+      return _regenerator().w(function (_context60) {
+        while (1) switch (_context60.p = _context60.n) {
           case 0:
             start = __spreadValues({}, start);
             id2 = (_a = start.id) != null ? _a : crypto.randomUUID();
@@ -11530,12 +11677,12 @@ var TwilightPortableCore = function (exports) {
                 if (!Array.isArray(items) || items.length > LIBRARY_PAGE_SIZE) throw new Error("每批最多构建 200 首");
                 if (!items.length) return Promise.resolve();
                 var batch = structuredClone([...items]);
-                request = (() => __async$q(null, null, /*#__PURE__*/_regenerator().m(function _callee57() {
+                request = (() => __async$q(null, null, /*#__PURE__*/_regenerator().m(function _callee59() {
                   var reply;
-                  return _regenerator().w(function (_context57) {
-                    while (1) switch (_context57.n) {
+                  return _regenerator().w(function (_context59) {
+                    while (1) switch (_context59.n) {
                       case 0:
-                        _context57.n = 1;
+                        _context59.n = 1;
                         return api.buildQueue({
                           kind: "append",
                           id: id2,
@@ -11543,9 +11690,9 @@ var TwilightPortableCore = function (exports) {
                           items: batch
                         });
                       case 1:
-                        reply = _context57.v;
+                        reply = _context59.v;
                         if (!(reply.kind !== "building" || reply.id !== id2 || reply.sequence !== sequence || reply.total !== total + batch.length)) {
-                          _context57.n = 2;
+                          _context59.n = 2;
                           break;
                         }
                         throw new Error("队列批次回复无效，请重新开始，不要重放批次");
@@ -11553,9 +11700,9 @@ var TwilightPortableCore = function (exports) {
                         total = reply.total;
                         check();
                       case 3:
-                        return _context57.a(2);
+                        return _context59.a(2);
                     }
-                  }, _callee57);
+                  }, _callee59);
                 })))().catch(reject);
                 state.inFlight = request;
                 void request.then(() => {
@@ -11574,8 +11721,8 @@ var TwilightPortableCore = function (exports) {
               return request;
             };
             check();
-            _context58.p = 1;
-            _context58.n = 2;
+            _context60.p = 1;
+            _context60.n = 2;
             return api.buildQueue({
               kind: "begin",
               id: id2,
@@ -11583,45 +11730,45 @@ var TwilightPortableCore = function (exports) {
               order: start.order
             });
           case 2:
-            opened = _context58.v;
+            opened = _context60.v;
             if (!(opened.kind !== "building" || opened.id !== id2 || opened.sequence !== 0 || opened.total !== 0)) {
-              _context58.n = 3;
+              _context60.n = 3;
               break;
             }
             throw new Error("队列构建回复无效");
           case 3:
             check();
             accepting = true;
-            _context58.p = 4;
-            _context58.n = 5;
+            _context60.p = 4;
+            _context60.n = 5;
             return produce(append);
           case 5:
             if (!state.inFlight) {
-              _context58.n = 6;
+              _context60.n = 6;
               break;
             }
             throw new Error("请等待每批队列构建完成后结束数据源");
           case 6:
-            _context58.n = 8;
+            _context60.n = 8;
             break;
           case 7:
-            _context58.p = 7;
-            _t67 = _context58.v;
+            _context60.p = 7;
+            _t72 = _context60.v;
             if (!failed) {
               failed = true;
-              failure2 = _t67;
+              failure2 = _t72;
             }
           case 8:
-            _context58.p = 8;
+            _context60.p = 8;
             accepting = false;
-            _context58.n = 9;
+            _context60.n = 9;
             return (_b = state.inFlight) == null ? void 0 : _b.catch(() => {});
           case 9:
-            return _context58.f(8);
+            return _context60.f(8);
           case 10:
             check();
             selectedIndex = (_c = typeof start.selectedIndex === "function" ? start.selectedIndex() : start.selectedIndex) != null ? _c : total ? 0 : -1;
-            _context58.n = 11;
+            _context60.n = 11;
             return api.buildQueue({
               kind: "commit",
               id: id2,
@@ -11629,44 +11776,44 @@ var TwilightPortableCore = function (exports) {
               selectedIndex
             });
           case 11:
-            reply = _context58.v;
+            reply = _context60.v;
             if (reply.kind === "ready") ready = reply.queue;
             check();
             if (!(reply.kind !== "ready" || reply.id !== id2 || reply.queue.total !== total || reply.queue.index !== selectedIndex || reply.queue.order !== start.order)) {
-              _context58.n = 12;
+              _context60.n = 12;
               break;
             }
             throw new Error("队列发布回复无效，未切换播放来源");
           case 12:
-            return _context58.a(2, reply.queue);
+            return _context60.a(2, reply.queue);
           case 13:
-            _context58.p = 13;
-            _t68 = _context58.v;
+            _context60.p = 13;
+            _t73 = _context60.v;
             if (!ready) {
-              _context58.n = 15;
+              _context60.n = 15;
               break;
             }
-            _context58.n = 14;
+            _context60.n = 14;
             return api.deleteQueue(ready.id, ready.revision).catch(() => {});
           case 14:
-            _context58.n = 16;
+            _context60.n = 16;
             break;
           case 15:
-            _context58.n = 16;
+            _context60.n = 16;
             return api.buildQueue({
               kind: "abort",
               id: id2
             }).catch(() => {});
           case 16:
-            throw _t68;
+            throw _t73;
           case 17:
-            _context58.p = 17;
+            _context60.p = 17;
             accepting = false;
-            return _context58.f(17);
+            return _context60.f(17);
           case 18:
-            return _context58.a(2);
+            return _context60.a(2);
         }
-      }, _callee58, null, [[4, 7, 8, 10], [1, 13, 17, 18]]);
+      }, _callee60, null, [[4, 7, 8, 10], [1, 13, 17, 18]]);
     }));
   }
   var __async$p = (__this, __arguments, generator) => {
@@ -11728,13 +11875,13 @@ var TwilightPortableCore = function (exports) {
     function stagePages(produce, start, mode, adopt, options = {}) {
       var generation = epoch;
       start = __spreadValues({}, start);
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee59() {
-        var _a, ready, adopted, retained, accepting, check, restored, bound, result, _t69;
-        return _regenerator().w(function (_context59) {
-          while (1) switch (_context59.p = _context59.n) {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee61() {
+        var _a, ready, adopted, retained, accepting, check, restored, bound, result, _t74;
+        return _regenerator().w(function (_context61) {
+          while (1) switch (_context61.p = _context61.n) {
             case 0:
               if (api.buildQueue) {
-                _context59.n = 1;
+                _context61.n = 1;
                 break;
               }
               throw new Error("数据库流式队列尚未接入");
@@ -11747,8 +11894,8 @@ var TwilightPortableCore = function (exports) {
                 if (contentRevision.value > start.contentRevision) throw new Error("曲库已变化，未切换播放来源");
                 (_b = options.guard) == null ? void 0 : _b.call(options);
               };
-              _context59.p = 2;
-              _context59.n = 3;
+              _context61.p = 2;
+              _context61.n = 3;
               return buildLibraryQueuePages({
                 buildQueue: command => api.buildQueue(command),
                 deleteQueue: api.deleteQueue
@@ -11756,70 +11903,70 @@ var TwilightPortableCore = function (exports) {
                 guard: check
               }));
             case 3:
-              ready = _context59.v;
+              ready = _context61.v;
               check();
-              _context59.n = 4;
+              _context61.n = 4;
               return source.restore(ready.id);
             case 4:
-              restored = _context59.v;
+              restored = _context61.v;
               check();
               if (!(!restored || restored.revision !== ready.revision)) {
-                _context59.n = 5;
+                _context61.n = 5;
                 break;
               }
               throw new Error("暂存队列已变化，未切换播放来源");
             case 5:
               if (restored.total) {
-                _context59.n = 6;
+                _context61.n = 6;
                 break;
               }
-              return _context59.a(2, null);
+              return _context61.a(2, null);
             case 6:
               if (!(ready.playMode === mode)) {
-                _context59.n = 7;
+                _context61.n = 7;
                 break;
               }
-              _t69 = {
+              _t74 = {
                 queue: ready
               };
-              _context59.n = 9;
+              _context61.n = 9;
               break;
             case 7:
-              _context59.n = 8;
+              _context61.n = 8;
               return source.edit({
                 kind: "mode",
                 mode: mode === "heart" ? "sequential" : mode
               });
             case 8:
-              _t69 = _context59.v;
+              _t74 = _context61.v;
             case 9:
-              bound = _t69;
+              bound = _t74;
               check();
               if (bound) {
-                _context59.n = 10;
+                _context61.n = 10;
                 break;
               }
               throw new Error("暂存队列已变化，未切换播放来源");
             case 10:
               ready = bound.queue;
-              _context59.n = 11;
+              _context61.n = 11;
               return source.playbackWindow(windowOptions(mode));
             case 11:
-              result = _context59.v;
+              result = _context61.v;
               check();
               if (!(result && result.libraryRevision !== start.contentRevision)) {
-                _context59.n = 12;
+                _context61.n = 12;
                 break;
               }
               throw new Error("曲库已变化，未切换播放来源");
             case 12:
               if (!(!result || ((_a = result.items[0]) == null ? void 0 : _a.queueEntryId) !== ready.selectedEntryId)) {
-                _context59.n = 13;
+                _context61.n = 13;
                 break;
               }
               throw new Error("未能读取原选中歌曲，未切换播放来源");
             case 13:
-              _context59.n = 14;
+              _context61.n = 14;
               return adopt(result, () => {
                 check();
                 adopted = true;
@@ -11830,47 +11977,47 @@ var TwilightPortableCore = function (exports) {
               });
             case 14:
               if (adopted) {
-                _context59.n = 15;
+                _context61.n = 15;
                 break;
               }
               throw new Error("队列尚未接管，未切换播放来源");
             case 15:
-              return _context59.a(2, result);
+              return _context61.a(2, result);
             case 16:
-              _context59.p = 16;
+              _context61.p = 16;
               accepting = false;
               if (adopted) {
-                _context59.n = 17;
+                _context61.n = 17;
                 break;
               }
               if (generation === epoch && !active.value) source.detach();
               if (!(ready && !retained)) {
-                _context59.n = 17;
+                _context61.n = 17;
                 break;
               }
-              _context59.n = 17;
+              _context61.n = 17;
               return api.deleteQueue(ready.id, ready.revision).catch(() => {});
             case 17:
-              return _context59.f(16);
+              return _context61.f(16);
             case 18:
-              return _context59.a(2);
+              return _context61.a(2);
           }
-        }, _callee59, null, [[2,, 16, 18]]);
+        }, _callee61, null, [[2,, 16, 18]]);
       })), false);
     }
     function readSelection(mode, isCurrent) {
-      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee60() {
+      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee62() {
         var result;
-        return _regenerator().w(function (_context60) {
-          while (1) switch (_context60.n) {
+        return _regenerator().w(function (_context62) {
+          while (1) switch (_context62.n) {
             case 0:
-              _context60.n = 1;
+              _context62.n = 1;
               return source.playbackWindow(windowOptions(mode));
             case 1:
-              result = _context60.v;
-              return _context60.a(2, isCurrent() ? result : null);
+              result = _context62.v;
+              return _context62.a(2, isCurrent() ? result : null);
           }
-        }, _callee60);
+        }, _callee62);
       }));
     }
     function publish(result) {
@@ -11886,159 +12033,159 @@ var TwilightPortableCore = function (exports) {
       if (expected && ((queue == null ? void 0 : queue.id) !== expected.id || queue.revision !== expected.revision)) throw new Error("播放队列已变化，请刷新后重试");
     }
     function commit(edit22, options) {
-      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee61() {
+      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee63() {
         var generation, result;
-        return _regenerator().w(function (_context61) {
-          while (1) switch (_context61.n) {
+        return _regenerator().w(function (_context63) {
+          while (1) switch (_context63.n) {
             case 0:
               generation = epoch;
-              _context61.n = 1;
+              _context63.n = 1;
               return source.edit(edit22, options);
             case 1:
-              result = _context61.v;
+              result = _context63.v;
               if (result && generation === epoch && active.value) snapshot.value = result.queue;
-              return _context61.a(2, result);
+              return _context63.a(2, result);
           }
-        }, _callee61);
+        }, _callee63);
       }));
     }
     function firstPlayable(mode, isCurrent, check) {
-      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee62() {
+      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee64() {
         var _a, result, selected, page2, next;
-        return _regenerator().w(function (_context62) {
-          while (1) switch (_context62.n) {
+        return _regenerator().w(function (_context64) {
+          while (1) switch (_context64.n) {
             case 0:
-              _context62.n = 1;
+              _context64.n = 1;
               return readSelection(mode, isCurrent);
             case 1:
-              result = _context62.v;
+              result = _context64.v;
               check == null ? void 0 : check();
               selected = source.state.queue;
               if (!(!result && isCurrent() && (selected == null ? void 0 : selected.selectedEntryId))) {
-                _context62.n = 9;
+                _context64.n = 9;
                 break;
               }
-              _context62.n = 2;
+              _context64.n = 2;
               return source.loadPage(Math.floor(selected.index / LIBRARY_PAGE_SIZE));
             case 2:
-              page2 = _context62.v;
+              page2 = _context64.v;
               check == null ? void 0 : check();
               if (!(!page2 || !isCurrent())) {
-                _context62.n = 3;
+                _context64.n = 3;
                 break;
               }
-              return _context62.a(2, null);
+              return _context64.a(2, null);
             case 3:
               if (!((_a = page2.items[selected.index % LIBRARY_PAGE_SIZE]) == null ? void 0 : _a.track)) {
-                _context62.n = 6;
+                _context64.n = 6;
                 break;
               }
-              _context62.n = 4;
+              _context64.n = 4;
               return readSelection(mode, isCurrent);
             case 4:
-              result = _context62.v;
+              result = _context64.v;
               if (!(!result && isCurrent())) {
-                _context62.n = 5;
+                _context64.n = 5;
                 break;
               }
               throw new Error("曲库正在更新，请重试读取播放队列");
             case 5:
               check == null ? void 0 : check();
-              return _context62.a(2, publish(result));
+              return _context64.a(2, publish(result));
             case 6:
-              _context62.n = 7;
+              _context64.n = 7;
               return commit({
                 kind: "step",
                 direction: 1,
                 wrap: true
               });
             case 7:
-              next = _context62.v;
+              next = _context64.v;
               check == null ? void 0 : check();
               if (!(next && !next.reachedEnd && isCurrent())) {
-                _context62.n = 9;
+                _context64.n = 9;
                 break;
               }
-              _context62.n = 8;
+              _context64.n = 8;
               return readSelection(mode, isCurrent);
             case 8:
-              result = _context62.v;
+              result = _context64.v;
             case 9:
               if (!(!result && isCurrent())) {
-                _context62.n = 10;
+                _context64.n = 10;
                 break;
               }
               throw new Error("播放队列中没有可用的本地歌曲");
             case 10:
               check == null ? void 0 : check();
-              return _context62.a(2, publish(result));
+              return _context64.a(2, publish(result));
           }
-        }, _callee62);
+        }, _callee64);
       }));
     }
     function create(query2, selectedId, mode, randomStart = false) {
       if (pending >= 8) return Promise.reject(new Error("播放队列操作过多，请稍后重试"));
       detach();
       active.value = true;
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee63() {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee65() {
         var created, index, page2, entry;
-        return _regenerator().w(function (_context63) {
-          while (1) switch (_context63.n) {
+        return _regenerator().w(function (_context65) {
+          while (1) switch (_context65.n) {
             case 0:
-              _context63.n = 1;
+              _context65.n = 1;
               return source.create(query2, selectedId);
             case 1:
-              created = _context63.v;
+              created = _context65.v;
               if (!(!created || !isCurrent())) {
-                _context63.n = 2;
+                _context65.n = 2;
                 break;
               }
-              return _context63.a(2, null);
+              return _context65.a(2, null);
             case 2:
               snapshot.value = created;
               if (!(randomStart && !selectedId && created.total > 1)) {
-                _context63.n = 7;
+                _context65.n = 7;
                 break;
               }
               index = Math.floor(Math.random() * created.total);
-              _context63.n = 3;
+              _context65.n = 3;
               return source.loadPage(Math.floor(index / LIBRARY_PAGE_SIZE));
             case 3:
-              page2 = _context63.v;
+              page2 = _context65.v;
               if (!(!page2 || !isCurrent())) {
-                _context63.n = 4;
+                _context65.n = 4;
                 break;
               }
-              return _context63.a(2, null);
+              return _context65.a(2, null);
             case 4:
               entry = page2.items[index % LIBRARY_PAGE_SIZE];
               if (entry) {
-                _context63.n = 5;
+                _context65.n = 5;
                 break;
               }
               throw new Error("未能读取随机播放起点");
             case 5:
-              _context63.n = 6;
+              _context65.n = 6;
               return commit({
                 kind: "select",
                 entryId: entry.queueEntryId
               });
             case 6:
               if (isCurrent()) {
-                _context63.n = 7;
+                _context65.n = 7;
                 break;
               }
-              return _context63.a(2, null);
+              return _context65.a(2, null);
             case 7:
-              _context63.n = 8;
+              _context65.n = 8;
               return commit({
                 kind: "mode",
                 mode: mode === "heart" ? "sequential" : mode
               });
             case 8:
-              return _context63.a(2, isCurrent() ? firstPlayable(mode, isCurrent) : null);
+              return _context65.a(2, isCurrent() ? firstPlayable(mode, isCurrent) : null);
           }
-        }, _callee63);
+        }, _callee65);
       })));
     }
     function restore(reference2, mode, canRestore, applySavedMode = false) {
@@ -12046,56 +12193,56 @@ var TwilightPortableCore = function (exports) {
       detach();
       active.value = true;
       var generation = epoch;
-      return run(ownsSource => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee64() {
+      return run(ownsSource => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee66() {
         var isCurrent, restored, result;
-        return _regenerator().w(function (_context64) {
-          while (1) switch (_context64.n) {
+        return _regenerator().w(function (_context66) {
+          while (1) switch (_context66.n) {
             case 0:
               isCurrent = () => ownsSource() && canRestore();
-              _context64.n = 1;
+              _context66.n = 1;
               return source.restore(reference2.id);
             case 1:
-              restored = _context64.v;
+              restored = _context66.v;
               if (!(!restored || !isCurrent())) {
-                _context64.n = 2;
+                _context66.n = 2;
                 break;
               }
               if (ownsSource()) detach();
-              return _context64.a(2, null);
+              return _context66.a(2, null);
             case 2:
               snapshot.value = restored;
               mode = applySavedMode ? mode : libraryQueueResumeMode(restored, mode);
               if (!applySavedMode) {
-                _context64.n = 3;
+                _context66.n = 3;
                 break;
               }
-              _context64.n = 3;
+              _context66.n = 3;
               return commit({
                 kind: "mode",
                 mode: mode === "heart" ? "sequential" : mode
               });
             case 3:
               if (isCurrent()) {
-                _context64.n = 4;
+                _context66.n = 4;
                 break;
               }
               if (ownsSource()) detach();
-              return _context64.a(2, null);
+              return _context66.a(2, null);
             case 4:
-              _context64.n = 5;
+              _context66.n = 5;
               return firstPlayable(mode, isCurrent);
             case 5:
-              result = _context64.v;
+              result = _context66.v;
               if (isCurrent()) {
-                _context64.n = 6;
+                _context66.n = 6;
                 break;
               }
               if (ownsSource()) detach();
-              return _context64.a(2, null);
+              return _context66.a(2, null);
             case 6:
-              return _context64.a(2, result);
+              return _context66.a(2, result);
           }
-        }, _callee64);
+        }, _callee66);
       }))).catch(error => {
         if (generation === epoch) detach();
         throw error;
@@ -12106,49 +12253,49 @@ var TwilightPortableCore = function (exports) {
       detach();
       active.value = true;
       var generation = epoch;
-      return run(ownsSource => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee65() {
+      return run(ownsSource => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee67() {
         var _a, _b, _c, current2, queue, result;
-        return _regenerator().w(function (_context65) {
-          while (1) switch (_context65.n) {
+        return _regenerator().w(function (_context67) {
+          while (1) switch (_context67.n) {
             case 0:
               current2 = () => ownsSource() && canAdopt();
-              _context65.n = 1;
+              _context67.n = 1;
               return source.restore(reference2.id);
             case 1:
-              queue = _context65.v;
+              queue = _context67.v;
               if (current2()) {
-                _context65.n = 2;
+                _context67.n = 2;
                 break;
               }
               if (ownsSource()) detach();
-              return _context65.a(2, null);
+              return _context67.a(2, null);
             case 2:
               if (!(!queue || queue.revision !== reference2.revision || queue.index !== reference2.index || queue.selectedEntryId !== reference2.entryId || queue.playMode !== void 0 && queue.playMode !== mode)) {
-                _context65.n = 3;
+                _context67.n = 3;
                 break;
               }
               throw new Error("后台播放队列已变化，未接管原生播放");
             case 3:
-              _context65.n = 4;
+              _context67.n = 4;
               return readSelection(mode, current2);
             case 4:
-              result = _context65.v;
+              result = _context67.v;
               if (current2()) {
-                _context65.n = 5;
+                _context67.n = 5;
                 break;
               }
               if (ownsSource()) detach();
-              return _context65.a(2, null);
+              return _context67.a(2, null);
             case 5:
               if (!(!result || result.queue.revision !== reference2.revision || ((_a = result.items[0]) == null ? void 0 : _a.position) !== reference2.index || ((_b = result.items[0]) == null ? void 0 : _b.queueEntryId) !== reference2.entryId || !((_c = result.items[0]) == null ? void 0 : _c.track))) {
-                _context65.n = 6;
+                _context67.n = 6;
                 break;
               }
               throw new Error("无法读取后台正在播放的歌曲，未接管原生播放");
             case 6:
-              return _context65.a(2, publish(result));
+              return _context67.a(2, publish(result));
           }
-        }, _callee65);
+        }, _callee67);
       }))).catch(error => {
         if (generation === epoch) detach();
         throw error;
@@ -12159,53 +12306,53 @@ var TwilightPortableCore = function (exports) {
       detach();
       active.value = true;
       var generation = epoch;
-      return run(ownsSource => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee66() {
+      return run(ownsSource => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee68() {
         var current2, queue, page2, row;
-        return _regenerator().w(function (_context66) {
-          while (1) switch (_context66.n) {
+        return _regenerator().w(function (_context68) {
+          while (1) switch (_context68.n) {
             case 0:
               current2 = () => ownsSource() && canAdopt();
-              _context66.n = 1;
+              _context68.n = 1;
               return source.restore(reference2.id);
             case 1:
-              queue = _context66.v;
+              queue = _context68.v;
               if (current2()) {
-                _context66.n = 2;
+                _context68.n = 2;
                 break;
               }
-              return _context66.a(2, null);
+              return _context68.a(2, null);
             case 2:
               if (!(!queue || queue.revision !== reference2.revision || queue.index !== reference2.index || queue.selectedEntryId !== reference2.entryId || libraryQueueResumeMode(queue, mode) !== mode)) {
-                _context66.n = 3;
+                _context68.n = 3;
                 break;
               }
               throw new Error("后台播放队列已变化，请重新读取恢复状态");
             case 3:
-              _context66.n = 4;
+              _context68.n = 4;
               return source.loadPage(Math.floor(queue.index / LIBRARY_PAGE_SIZE));
             case 4:
-              page2 = _context66.v;
+              page2 = _context68.v;
               if (current2()) {
-                _context66.n = 5;
+                _context68.n = 5;
                 break;
               }
-              return _context66.a(2, null);
+              return _context68.a(2, null);
             case 5:
               row = page2 == null ? void 0 : page2.items[queue.index % LIBRARY_PAGE_SIZE];
               if (!(!page2 || (row == null ? void 0 : row.queueEntryId) !== reference2.entryId)) {
-                _context66.n = 6;
+                _context68.n = 6;
                 break;
               }
               throw new Error("无法读取后台播放队列，请重试");
             case 6:
-              return _context66.a(2, publish({
+              return _context68.a(2, publish({
                 queue,
                 libraryRevision: page2.libraryRevision,
                 lastPlayablePosition: page2.lastPlayablePosition,
                 items: [row]
               }));
           }
-        }, _callee66);
+        }, _callee68);
       }))).then(result => {
         if (!result && generation === epoch) detach();
         return result;
@@ -12215,163 +12362,163 @@ var TwilightPortableCore = function (exports) {
       });
     }
     function navigate(direction, wrap, mode) {
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee67() {
-        var result, _t70, _t71;
-        return _regenerator().w(function (_context67) {
-          while (1) switch (_context67.n) {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee69() {
+        var result, _t75, _t76;
+        return _regenerator().w(function (_context69) {
+          while (1) switch (_context69.n) {
             case 0:
-              _context67.n = 1;
+              _context69.n = 1;
               return commit({
                 kind: "step",
                 direction,
                 wrap
               });
             case 1:
-              result = _context67.v;
+              result = _context69.v;
               if (!(!result || !isCurrent())) {
-                _context67.n = 2;
+                _context69.n = 2;
                 break;
               }
-              return _context67.a(2, null);
+              return _context69.a(2, null);
             case 2:
               if (!result.reachedEnd) {
-                _context67.n = 3;
+                _context69.n = 3;
                 break;
               }
-              return _context67.a(2, {
+              return _context69.a(2, {
                 reachedEnd: true,
                 window: null
               });
             case 3:
-              _t70 = publish;
-              _context67.n = 4;
+              _t75 = publish;
+              _context69.n = 4;
               return readSelection(mode, isCurrent);
             case 4:
-              _t71 = _t70(_context67.v);
-              return _context67.a(2, {
+              _t76 = _t75(_context69.v);
+              return _context69.a(2, {
                 reachedEnd: false,
-                window: _t71
+                window: _t76
               });
-          }
-        }, _callee67);
-      })));
-    }
-    function select(index, mode) {
-      if (!Number.isSafeInteger(index) || index < 0) return Promise.resolve(null);
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee68() {
-        var page2, entry, _t72, _t73;
-        return _regenerator().w(function (_context68) {
-          while (1) switch (_context68.n) {
-            case 0:
-              if (!(!source.state.queue || index >= source.state.queue.total)) {
-                _context68.n = 1;
-                break;
-              }
-              return _context68.a(2, null);
-            case 1:
-              _context68.n = 2;
-              return source.loadPage(Math.floor(index / LIBRARY_PAGE_SIZE));
-            case 2:
-              page2 = _context68.v;
-              entry = page2 == null ? void 0 : page2.items[index % LIBRARY_PAGE_SIZE];
-              if (!(!(entry == null ? void 0 : entry.track) || !isCurrent())) {
-                _context68.n = 3;
-                break;
-              }
-              return _context68.a(2, null);
-            case 3:
-              _context68.n = 4;
-              return commit({
-                kind: "select",
-                entryId: entry.queueEntryId
-              });
-            case 4:
-              if (!isCurrent()) {
-                _context68.n = 6;
-                break;
-              }
-              _t73 = publish;
-              _context68.n = 5;
-              return readSelection(mode, isCurrent);
-            case 5:
-              _t72 = _t73(_context68.v);
-              _context68.n = 7;
-              break;
-            case 6:
-              _t72 = null;
-            case 7:
-              return _context68.a(2, _t72);
-          }
-        }, _callee68);
-      })));
-    }
-    function selectEntry(entryId, expected, mode) {
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee69() {
-        return _regenerator().w(function (_context69) {
-          while (1) switch (_context69.n) {
-            case 0:
-              assertExpected(expected);
-              _context69.n = 1;
-              return commit({
-                kind: "select",
-                entryId
-              });
-            case 1:
-              return _context69.a(2, isCurrent() ? firstPlayable(mode, isCurrent) : null);
           }
         }, _callee69);
       })));
     }
-    function acceptNative(entryId, expected, mode) {
+    function select(index, mode) {
+      if (!Number.isSafeInteger(index) || index < 0) return Promise.resolve(null);
       return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee70() {
-        var previous, _t74, _t75;
+        var page2, entry, _t77, _t78;
         return _regenerator().w(function (_context70) {
           while (1) switch (_context70.n) {
             case 0:
-              previous = window.value;
-              if (!(!previous || previous.queue.id !== expected.id || previous.queue.revision !== expected.revision || !previous.items.some(entry => entry.queueEntryId === entryId && entry.track))) {
+              if (!(!source.state.queue || index >= source.state.queue.total)) {
                 _context70.n = 1;
                 break;
               }
               return _context70.a(2, null);
             case 1:
               _context70.n = 2;
+              return source.loadPage(Math.floor(index / LIBRARY_PAGE_SIZE));
+            case 2:
+              page2 = _context70.v;
+              entry = page2 == null ? void 0 : page2.items[index % LIBRARY_PAGE_SIZE];
+              if (!(!(entry == null ? void 0 : entry.track) || !isCurrent())) {
+                _context70.n = 3;
+                break;
+              }
+              return _context70.a(2, null);
+            case 3:
+              _context70.n = 4;
+              return commit({
+                kind: "select",
+                entryId: entry.queueEntryId
+              });
+            case 4:
+              if (!isCurrent()) {
+                _context70.n = 6;
+                break;
+              }
+              _t78 = publish;
+              _context70.n = 5;
+              return readSelection(mode, isCurrent);
+            case 5:
+              _t77 = _t78(_context70.v);
+              _context70.n = 7;
+              break;
+            case 6:
+              _t77 = null;
+            case 7:
+              return _context70.a(2, _t77);
+          }
+        }, _callee70);
+      })));
+    }
+    function selectEntry(entryId, expected, mode) {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee71() {
+        return _regenerator().w(function (_context71) {
+          while (1) switch (_context71.n) {
+            case 0:
+              assertExpected(expected);
+              _context71.n = 1;
+              return commit({
+                kind: "select",
+                entryId
+              });
+            case 1:
+              return _context71.a(2, isCurrent() ? firstPlayable(mode, isCurrent) : null);
+          }
+        }, _callee71);
+      })));
+    }
+    function acceptNative(entryId, expected, mode) {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee72() {
+        var previous, _t79, _t80;
+        return _regenerator().w(function (_context72) {
+          while (1) switch (_context72.n) {
+            case 0:
+              previous = window.value;
+              if (!(!previous || previous.queue.id !== expected.id || previous.queue.revision !== expected.revision || !previous.items.some(entry => entry.queueEntryId === entryId && entry.track))) {
+                _context72.n = 1;
+                break;
+              }
+              return _context72.a(2, null);
+            case 1:
+              _context72.n = 2;
               return commit({
                 kind: "select",
                 entryId
               });
             case 2:
               if (!isCurrent()) {
-                _context70.n = 4;
+                _context72.n = 4;
                 break;
               }
-              _t75 = publish;
-              _context70.n = 3;
+              _t80 = publish;
+              _context72.n = 3;
               return readSelection(mode, isCurrent);
             case 3:
-              _t74 = _t75(_context70.v);
-              _context70.n = 5;
+              _t79 = _t80(_context72.v);
+              _context72.n = 5;
               break;
             case 4:
-              _t74 = null;
+              _t79 = null;
             case 5:
-              return _context70.a(2, _t74);
+              return _context72.a(2, _t79);
           }
-        }, _callee70);
+        }, _callee72);
       })));
     }
     function edit2(edit22, mode, expected, options) {
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee71() {
-        var _a, _b, _c, items, inserted, batches, _i10, _batches, offset, batch, result, _t76;
-        return _regenerator().w(function (_context71) {
-          while (1) switch (_context71.p = _context71.n) {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee73() {
+        var _a, _b, _c, items, inserted, batches, _i10, _batches, offset, batch, result, _t81;
+        return _regenerator().w(function (_context73) {
+          while (1) switch (_context73.p = _context73.n) {
             case 0:
               assertExpected(expected);
               items = edit22.kind === "insert" ? (_b = edit22.items) != null ? _b : (_a = edit22.trackIds) == null ? void 0 : _a.map(id2 => ({
                 id: id2
               })) : void 0;
               if (!(edit22.kind === "insert" && items && items.length > LIBRARY_MAX_PAGE_SIZE)) {
-                _context71.n = 10;
+                _context73.n = 10;
                 break;
               }
               inserted = 0;
@@ -12379,22 +12526,22 @@ var TwilightPortableCore = function (exports) {
                 length: Math.ceil(items.length / LIBRARY_MAX_PAGE_SIZE)
               }, (_, index) => index * LIBRARY_MAX_PAGE_SIZE);
               if (edit22.afterEntryId && !edit22.beforeEntryId) batches.reverse();
-              _context71.p = 1;
+              _context73.p = 1;
               _i10 = 0, _batches = batches;
             case 2:
               if (!(_i10 < _batches.length)) {
-                _context71.n = 7;
+                _context73.n = 7;
                 break;
               }
               offset = _batches[_i10];
               if (isCurrent()) {
-                _context71.n = 3;
+                _context73.n = 3;
                 break;
               }
-              return _context71.a(2, null);
+              return _context73.a(2, null);
             case 3:
               batch = items.slice(offset, offset + LIBRARY_MAX_PAGE_SIZE);
-              _context71.n = 4;
+              _context73.n = 4;
               return commit(__spreadValues(__spreadValues({
                 kind: "insert",
                 items: batch
@@ -12404,110 +12551,110 @@ var TwilightPortableCore = function (exports) {
                 beforeEntryId: edit22.beforeEntryId
               } : {}), options);
             case 4:
-              result = _context71.v;
+              result = _context73.v;
               if (!(!result || !isCurrent())) {
-                _context71.n = 5;
+                _context73.n = 5;
                 break;
               }
-              return _context71.a(2, null);
+              return _context73.a(2, null);
             case 5:
               inserted += batch.length;
             case 6:
               _i10++;
-              _context71.n = 2;
+              _context73.n = 2;
               break;
             case 7:
-              _context71.n = 9;
+              _context73.n = 9;
               break;
             case 8:
-              _context71.p = 8;
-              _t76 = _context71.v;
-              throw new Error(`已确认添加 ${inserted} 首；后续批次中断，请刷新队列后检查：${_t76 instanceof Error ? _t76.message : String(_t76)}`);
+              _context73.p = 8;
+              _t81 = _context73.v;
+              throw new Error(`已确认添加 ${inserted} 首；后续批次中断，请刷新队列后检查：${_t81 instanceof Error ? _t81.message : String(_t81)}`);
             case 9:
-              _context71.n = 11;
+              _context73.n = 11;
               break;
             case 10:
-              _context71.n = 11;
+              _context73.n = 11;
               return commit(edit22, options);
             case 11:
               if (isCurrent()) {
-                _context71.n = 12;
+                _context73.n = 12;
                 break;
               }
-              return _context71.a(2, null);
+              return _context73.a(2, null);
             case 12:
               if ((_c = source.state.queue) == null ? void 0 : _c.total) {
-                _context71.n = 13;
+                _context73.n = 13;
                 break;
               }
               window.value = null;
-              return _context71.a(2, null);
+              return _context73.a(2, null);
             case 13:
-              return _context71.a(2, firstPlayable(mode, isCurrent));
+              return _context73.a(2, firstPlayable(mode, isCurrent));
           }
-        }, _callee71, null, [[1, 8]]);
+        }, _callee73, null, [[1, 8]]);
       })));
     }
     function extend(items, mode) {
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee72() {
-        var result, _t77;
-        return _regenerator().w(function (_context72) {
-          while (1) switch (_context72.n) {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee74() {
+        var result, _t82;
+        return _regenerator().w(function (_context74) {
+          while (1) switch (_context74.n) {
             case 0:
-              _context72.n = 1;
+              _context74.n = 1;
               return source.extend(items);
             case 1:
-              result = _context72.v;
+              result = _context74.v;
               if (!(!result || !isCurrent())) {
-                _context72.n = 2;
+                _context74.n = 2;
                 break;
               }
-              return _context72.a(2, null);
+              return _context74.a(2, null);
             case 2:
               snapshot.value = result.queue;
-              _t77 = publish;
-              _context72.n = 3;
+              _t82 = publish;
+              _context74.n = 3;
               return readSelection(mode, isCurrent);
             case 3:
-              return _context72.a(2, _t77(_context72.v));
+              return _context74.a(2, _t82(_context74.v));
           }
-        }, _callee72);
+        }, _callee74);
       })));
     }
     function undo(mode, expected) {
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee73() {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee75() {
         var _a, _b, _c, result;
-        return _regenerator().w(function (_context73) {
-          while (1) switch (_context73.n) {
+        return _regenerator().w(function (_context75) {
+          while (1) switch (_context75.n) {
             case 0:
               assertExpected(expected);
-              _context73.n = 1;
+              _context75.n = 1;
               return source.undo((_a = source.state.queue) == null ? void 0 : _a.revision);
             case 1:
-              result = _context73.v;
+              result = _context75.v;
               if (!(!result || !isCurrent())) {
-                _context73.n = 2;
+                _context75.n = 2;
                 break;
               }
-              return _context73.a(2, null);
+              return _context75.a(2, null);
             case 2:
               if ((_b = source.state.queue) == null ? void 0 : _b.total) {
-                _context73.n = 3;
+                _context75.n = 3;
                 break;
               }
               window.value = null;
-              return _context73.a(2, null);
+              return _context75.a(2, null);
             case 3:
-              return _context73.a(2, firstPlayable((_c = result.queue.playMode) != null ? _c : mode, isCurrent));
+              return _context75.a(2, firstPlayable((_c = result.queue.playMode) != null ? _c : mode, isCurrent));
           }
-        }, _callee73);
+        }, _callee75);
       })));
     }
     function appendPages(produce, mode, options = {}) {
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee75() {
-        var _a, _b, inserted, accepting, failed, failure2, state, reject, check, append, result, _t78, _t79, _t80;
-        return _regenerator().w(function (_context75) {
-          while (1) switch (_context75.p = _context75.n) {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee77() {
+        var _a, _b, inserted, accepting, failed, failure2, state, reject, check, append, result, _t83, _t84, _t85;
+        return _regenerator().w(function (_context77) {
+          while (1) switch (_context77.p = _context77.n) {
             case 0:
               inserted = 0;
               accepting = true, failed = false;
@@ -12537,20 +12684,20 @@ var TwilightPortableCore = function (exports) {
                   if (!Array.isArray(items) || items.length > LIBRARY_PAGE_SIZE) throw new Error("每批最多添加 200 首");
                   if (!items.length) return Promise.resolve();
                   var batch = [...items];
-                  request = (() => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee74() {
+                  request = (() => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee76() {
                     var result;
-                    return _regenerator().w(function (_context74) {
-                      while (1) switch (_context74.n) {
+                    return _regenerator().w(function (_context76) {
+                      while (1) switch (_context76.n) {
                         case 0:
-                          _context74.n = 1;
+                          _context76.n = 1;
                           return commit({
                             kind: "insert",
                             items: batch
                           });
                         case 1:
-                          result = _context74.v;
+                          result = _context76.v;
                           if (result) {
-                            _context74.n = 2;
+                            _context76.n = 2;
                             break;
                           }
                           throw new Error("播放来源已变化");
@@ -12558,9 +12705,9 @@ var TwilightPortableCore = function (exports) {
                           inserted += batch.length;
                           check();
                         case 3:
-                          return _context74.a(2);
+                          return _context76.a(2);
                       }
-                    }, _callee74);
+                    }, _callee76);
                   })))().catch(reject);
                   state.inFlight = request;
                   void request.then(() => {
@@ -12578,160 +12725,160 @@ var TwilightPortableCore = function (exports) {
                 }
                 return request;
               };
-              _context75.p = 1;
-              _context75.p = 2;
+              _context77.p = 1;
+              _context77.p = 2;
               check();
-              _context75.n = 3;
+              _context77.n = 3;
               return produce(append);
             case 3:
               if (!state.inFlight) {
-                _context75.n = 4;
+                _context77.n = 4;
                 break;
               }
               throw new Error("请等待每批队列添加完成后结束数据源");
             case 4:
-              _context75.n = 6;
+              _context77.n = 6;
               break;
             case 5:
-              _context75.p = 5;
-              _t78 = _context75.v;
+              _context77.p = 5;
+              _t83 = _context77.v;
               if (!failed) {
                 failed = true;
-                failure2 = _t78;
+                failure2 = _t83;
               }
             case 6:
-              _context75.p = 6;
+              _context77.p = 6;
               accepting = false;
-              _context75.n = 7;
+              _context77.n = 7;
               return (_a = state.inFlight) == null ? void 0 : _a.catch(() => {});
             case 7:
-              return _context75.f(6);
+              return _context77.f(6);
             case 8:
               check();
               if (!((_b = source.state.queue) == null ? void 0 : _b.total)) {
-                _context75.n = 10;
+                _context77.n = 10;
                 break;
               }
-              _context75.n = 9;
+              _context77.n = 9;
               return firstPlayable(mode, isCurrent, check);
             case 9:
-              _t79 = _context75.v;
-              _context75.n = 11;
+              _t84 = _context77.v;
+              _context77.n = 11;
               break;
             case 10:
-              _t79 = null;
+              _t84 = null;
             case 11:
-              result = _t79;
+              result = _t84;
               check();
-              return _context75.a(2, {
+              return _context77.a(2, {
                 inserted,
                 window: result
               });
             case 12:
-              _context75.p = 12;
-              _t80 = _context75.v;
-              throw new Error(`已确认添加 ${inserted} 首；后续批次中断，请刷新队列后检查：${_t80 instanceof Error ? _t80.message : String(_t80)}`);
+              _context77.p = 12;
+              _t85 = _context77.v;
+              throw new Error(`已确认添加 ${inserted} 首；后续批次中断，请刷新队列后检查：${_t85 instanceof Error ? _t85.message : String(_t85)}`);
             case 13:
-              return _context75.a(2);
+              return _context77.a(2);
           }
-        }, _callee75, null, [[2, 5, 6, 8], [1, 12]]);
+        }, _callee77, null, [[2, 5, 6, 8], [1, 12]]);
       })));
     }
     function refresh(mode) {
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee76() {
-        var _a, refreshed;
-        return _regenerator().w(function (_context76) {
-          while (1) switch (_context76.n) {
-            case 0:
-              _context76.n = 1;
-              return source.refresh();
-            case 1:
-              refreshed = _context76.v;
-              if (!(!isCurrent() || !refreshed)) {
-                _context76.n = 2;
-                break;
-              }
-              return _context76.a(2, null);
-            case 2:
-              snapshot.value = refreshed;
-              if (refreshed.total) {
-                _context76.n = 3;
-                break;
-              }
-              window.value = null;
-              return _context76.a(2, null);
-            case 3:
-              return _context76.a(2, isCurrent() ? firstPlayable((_a = refreshed.playMode) != null ? _a : mode, isCurrent) : null);
-          }
-        }, _callee76);
-      })));
-    }
-    function editPositions(action, mode) {
-      var expected = reference();
       return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee78() {
-        var _a, _b, queue, at, from, edit22, target;
+        var _a, refreshed;
         return _regenerator().w(function (_context78) {
           while (1) switch (_context78.n) {
             case 0:
-              queue = source.state.queue;
-              if (!(!expected || (queue == null ? void 0 : queue.id) !== expected.id || queue.revision !== expected.revision)) {
-                _context78.n = 1;
-                break;
-              }
-              throw new Error("播放队列已变化，请重新选择操作项");
+              _context78.n = 1;
+              return source.refresh();
             case 1:
-              if (!(action.kind === "move" && (!Number.isSafeInteger(action.to) || action.to < 0 || action.to >= queue.total || action.from === action.to))) {
+              refreshed = _context78.v;
+              if (!(!isCurrent() || !refreshed)) {
                 _context78.n = 2;
                 break;
               }
               return _context78.a(2, null);
             case 2:
-              at = index => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee77() {
-                var _a2, page2;
-                return _regenerator().w(function (_context77) {
-                  while (1) switch (_context77.n) {
-                    case 0:
-                      if (!(!Number.isSafeInteger(index) || index < 0 || index >= queue.total)) {
-                        _context77.n = 1;
-                        break;
-                      }
-                      return _context77.a(2, null);
-                    case 1:
-                      _context77.n = 2;
-                      return source.loadPage(Math.floor(index / LIBRARY_PAGE_SIZE));
-                    case 2:
-                      page2 = _context77.v;
-                      return _context77.a(2, (_a2 = page2 == null ? void 0 : page2.items[index % LIBRARY_PAGE_SIZE]) != null ? _a2 : null);
-                  }
-                }, _callee77);
-              }));
-              _context78.n = 3;
-              return at(action.kind === "remove" ? action.index : action.from);
-            case 3:
-              from = _context78.v;
-              if (!(!from || !isCurrent())) {
-                _context78.n = 4;
+              snapshot.value = refreshed;
+              if (refreshed.total) {
+                _context78.n = 3;
                 break;
               }
+              window.value = null;
               return _context78.a(2, null);
+            case 3:
+              return _context78.a(2, isCurrent() ? firstPlayable((_a = refreshed.playMode) != null ? _a : mode, isCurrent) : null);
+          }
+        }, _callee78);
+      })));
+    }
+    function editPositions(action, mode) {
+      var expected = reference();
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee80() {
+        var _a, _b, queue, at, from, edit22, target;
+        return _regenerator().w(function (_context80) {
+          while (1) switch (_context80.n) {
+            case 0:
+              queue = source.state.queue;
+              if (!(!expected || (queue == null ? void 0 : queue.id) !== expected.id || queue.revision !== expected.revision)) {
+                _context80.n = 1;
+                break;
+              }
+              throw new Error("播放队列已变化，请重新选择操作项");
+            case 1:
+              if (!(action.kind === "move" && (!Number.isSafeInteger(action.to) || action.to < 0 || action.to >= queue.total || action.from === action.to))) {
+                _context80.n = 2;
+                break;
+              }
+              return _context80.a(2, null);
+            case 2:
+              at = index => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee79() {
+                var _a2, page2;
+                return _regenerator().w(function (_context79) {
+                  while (1) switch (_context79.n) {
+                    case 0:
+                      if (!(!Number.isSafeInteger(index) || index < 0 || index >= queue.total)) {
+                        _context79.n = 1;
+                        break;
+                      }
+                      return _context79.a(2, null);
+                    case 1:
+                      _context79.n = 2;
+                      return source.loadPage(Math.floor(index / LIBRARY_PAGE_SIZE));
+                    case 2:
+                      page2 = _context79.v;
+                      return _context79.a(2, (_a2 = page2 == null ? void 0 : page2.items[index % LIBRARY_PAGE_SIZE]) != null ? _a2 : null);
+                  }
+                }, _callee79);
+              }));
+              _context80.n = 3;
+              return at(action.kind === "remove" ? action.index : action.from);
+            case 3:
+              from = _context80.v;
+              if (!(!from || !isCurrent())) {
+                _context80.n = 4;
+                break;
+              }
+              return _context80.a(2, null);
             case 4:
               edit22 = {
                 kind: "remove",
                 entryIds: [from.queueEntryId]
               };
               if (!(action.kind === "move")) {
-                _context78.n = 7;
+                _context80.n = 7;
                 break;
               }
-              _context78.n = 5;
+              _context80.n = 5;
               return at(action.to > action.from ? action.to + 1 : action.to);
             case 5:
-              target = _context78.v;
+              target = _context80.v;
               if (isCurrent()) {
-                _context78.n = 6;
+                _context80.n = 6;
                 break;
               }
-              return _context78.a(2, null);
+              return _context80.a(2, null);
             case 6:
               edit22 = {
                 kind: "move",
@@ -12739,39 +12886,39 @@ var TwilightPortableCore = function (exports) {
                 beforeEntryId: (_a = target == null ? void 0 : target.queueEntryId) != null ? _a : null
               };
             case 7:
-              _context78.n = 8;
+              _context80.n = 8;
               return commit(edit22);
             case 8:
               if (isCurrent()) {
-                _context78.n = 9;
+                _context80.n = 9;
                 break;
               }
-              return _context78.a(2, null);
+              return _context80.a(2, null);
             case 9:
               if ((_b = source.state.queue) == null ? void 0 : _b.total) {
-                _context78.n = 10;
+                _context80.n = 10;
                 break;
               }
               window.value = null;
-              return _context78.a(2, null);
+              return _context80.a(2, null);
             case 10:
-              return _context78.a(2, firstPlayable(mode, isCurrent));
+              return _context80.a(2, firstPlayable(mode, isCurrent));
           }
-        }, _callee78);
+        }, _callee80);
       })));
     }
     function forEachPage(visit) {
-      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee79() {
+      return run(isCurrent => __async$p(null, null, /*#__PURE__*/_regenerator().m(function _callee81() {
         var _a, _b, expected, visited, tracks2, libraryRevision, pageNumber, page2;
-        return _regenerator().w(function (_context79) {
-          while (1) switch (_context79.n) {
+        return _regenerator().w(function (_context81) {
+          while (1) switch (_context81.n) {
             case 0:
               expected = source.state.queue;
               if (expected) {
-                _context79.n = 1;
+                _context81.n = 1;
                 break;
               }
-              return _context79.a(2, null);
+              return _context81.a(2, null);
             case 1:
               visited = 0;
               tracks2 = 0;
@@ -12779,55 +12926,55 @@ var TwilightPortableCore = function (exports) {
               pageNumber = 0;
             case 2:
               if (!(pageNumber * LIBRARY_PAGE_SIZE < expected.total)) {
-                _context79.n = 8;
+                _context81.n = 8;
                 break;
               }
-              _context79.n = 3;
+              _context81.n = 3;
               return source.loadPage(pageNumber);
             case 3:
-              page2 = _context79.v;
+              page2 = _context81.v;
               if (!(!page2 || !isCurrent() || ((_a = source.state.queue) == null ? void 0 : _a.id) !== expected.id || source.state.queue.revision !== expected.revision || page2.revision !== expected.revision || page2.total !== expected.total || libraryRevision !== null && source.state.libraryRevision !== null && source.state.libraryRevision !== libraryRevision)) {
-                _context79.n = 4;
+                _context81.n = 4;
                 break;
               }
-              return _context79.a(2, null);
+              return _context81.a(2, null);
             case 4:
               if (!(libraryRevision === null)) {
-                _context79.n = 5;
+                _context81.n = 5;
                 break;
               }
               libraryRevision = page2.libraryRevision;
-              _context79.n = 6;
+              _context81.n = 6;
               break;
             case 5:
               if (!(page2.libraryRevision !== libraryRevision)) {
-                _context79.n = 6;
+                _context81.n = 6;
                 break;
               }
-              return _context79.a(2, null);
+              return _context81.a(2, null);
             case 6:
               visited++;
               tracks2 += page2.items.reduce((count, item) => count + (item.track ? 1 : 0), 0);
-              _context79.n = 7;
+              _context81.n = 7;
               return visit(page2);
             case 7:
               pageNumber++;
-              _context79.n = 2;
+              _context81.n = 2;
               break;
             case 8:
               if (!(!isCurrent() || ((_b = source.state.queue) == null ? void 0 : _b.id) !== expected.id || source.state.queue.revision !== expected.revision || source.state.libraryRevision !== libraryRevision)) {
-                _context79.n = 9;
+                _context81.n = 9;
                 break;
               }
-              return _context79.a(2, null);
+              return _context81.a(2, null);
             case 9:
-              return _context79.a(2, {
+              return _context81.a(2, {
                 queue: __spreadValues({}, expected),
                 visited,
                 tracks: tracks2
               });
           }
-        }, _callee79);
+        }, _callee81);
       })));
     }
     function reference() {
@@ -12845,64 +12992,64 @@ var TwilightPortableCore = function (exports) {
       return (entry == null ? void 0 : entry.track) ? libraryQueueTrack(entry.track, entry.queueEntryId) : null;
     }
     function playbackWindow(current2, mode) {
-      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee80() {
+      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee82() {
         var _a, _b, _c, generation, result;
-        return _regenerator().w(function (_context80) {
-          while (1) switch (_context80.n) {
+        return _regenerator().w(function (_context82) {
+          while (1) switch (_context82.n) {
             case 0:
               generation = epoch;
               if (!(!active.value || current2.queueEntryId !== ((_a = reference()) == null ? void 0 : _a.entryId))) {
-                _context80.n = 1;
+                _context82.n = 1;
                 break;
               }
-              return _context80.a(2, null);
+              return _context82.a(2, null);
             case 1:
-              _context80.n = 2;
+              _context82.n = 2;
               return source.playbackWindow(windowOptions(mode));
             case 2:
-              result = _context80.v;
+              result = _context82.v;
               if (!(generation !== epoch || !active.value || !result || result.queue.selectedEntryId !== current2.queueEntryId || ((_c = (_b = result.items[0]) == null ? void 0 : _b.track) == null ? void 0 : _c.id) !== current2.id)) {
-                _context80.n = 3;
+                _context82.n = 3;
                 break;
               }
-              return _context80.a(2, null);
+              return _context82.a(2, null);
             case 3:
-              return _context80.a(2, publish(result));
+              return _context82.a(2, publish(result));
           }
-        }, _callee80);
+        }, _callee82);
       }));
     }
     function replaceSource(command, mode) {
-      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee81() {
+      return __async$p(this, null, /*#__PURE__*/_regenerator().m(function _callee83() {
         var generation, repaired, result;
-        return _regenerator().w(function (_context81) {
-          while (1) switch (_context81.n) {
+        return _regenerator().w(function (_context83) {
+          while (1) switch (_context83.n) {
             case 0:
               generation = epoch;
-              _context81.n = 1;
+              _context83.n = 1;
               return source.replaceSource(command);
             case 1:
-              repaired = _context81.v;
+              repaired = _context83.v;
               if (!(!repaired || generation !== epoch)) {
-                _context81.n = 2;
+                _context83.n = 2;
                 break;
               }
               throw new Error("Playback source detached during repair");
             case 2:
-              _context81.n = 3;
+              _context83.n = 3;
               return source.playbackWindow(windowOptions(mode));
             case 3:
-              result = _context81.v;
+              result = _context83.v;
               if (!(!result || generation !== epoch)) {
-                _context81.n = 4;
+                _context83.n = 4;
                 break;
               }
               throw new Error("Cannot read the repaired playback window");
             case 4:
               publish(result);
-              return _context81.a(2, result);
+              return _context83.a(2, result);
           }
-        }, _callee81);
+        }, _callee83);
       }));
     }
     return {
@@ -12990,57 +13137,57 @@ var TwilightPortableCore = function (exports) {
     }
   }
   function authorizeNativeSource(source, authorize) {
-    return __async$o(this, null, /*#__PURE__*/_regenerator().m(function _callee82() {
-      return _regenerator().w(function (_context82) {
-        while (1) switch (_context82.n) {
+    return __async$o(this, null, /*#__PURE__*/_regenerator().m(function _callee84() {
+      return _regenerator().w(function (_context84) {
+        while (1) switch (_context84.n) {
           case 0:
-            _context82.n = 1;
+            _context84.n = 1;
             return prepareNativeSource(source, authorize);
           case 1:
-            return _context82.a(2, _context82.v);
+            return _context84.a(2, _context84.v);
         }
-      }, _callee82);
+      }, _callee84);
     }));
   }
   function prepareNativeSource(source, prepare) {
-    return __async$o(this, null, /*#__PURE__*/_regenerator().m(function _callee83() {
-      var local, iso, path, _t81;
-      return _regenerator().w(function (_context83) {
-        while (1) switch (_context83.p = _context83.n) {
+    return __async$o(this, null, /*#__PURE__*/_regenerator().m(function _callee85() {
+      var local, iso, path, _t86;
+      return _regenerator().w(function (_context85) {
+        while (1) switch (_context85.p = _context85.n) {
           case 0:
             local = isAfterglowPlayableSource(source) && !/^https?:\/\//i.test(source);
             iso = local ? /^(.*\.iso)(\?area=(?:stereo|multichannel)&track=[1-9]\d{0,8})$/i.exec(source) : null;
-            _context83.p = 1;
+            _context85.p = 1;
             if (iso) {
-              _context83.n = 3;
+              _context85.n = 3;
               break;
             }
-            _context83.n = 2;
+            _context85.n = 2;
             return prepare(source);
           case 2:
-            return _context83.a(2, _context83.v);
+            return _context85.a(2, _context85.v);
           case 3:
-            _context83.n = 4;
+            _context85.n = 4;
             return prepare(iso[1]);
           case 4:
-            path = _context83.v;
-            return _context83.a(2, path === null ? null : `${path}${iso[2]}`);
+            path = _context85.v;
+            return _context85.a(2, path === null ? null : `${path}${iso[2]}`);
           case 5:
-            _context83.p = 5;
-            _t81 = _context83.v;
-            if (!(_t81 instanceof SourceAuthorizationError)) {
-              _context83.n = 6;
+            _context85.p = 5;
+            _t86 = _context85.v;
+            if (!(_t86 instanceof SourceAuthorizationError)) {
+              _context85.n = 6;
               break;
             }
-            throw _t81;
+            throw _t86;
           case 6:
-            throw new SourceAuthorizationError(_t81 instanceof Error ? _t81.message : "Audio source authorization was refused", {
-              cause: _t81
+            throw new SourceAuthorizationError(_t86 instanceof Error ? _t86.message : "Audio source authorization was refused", {
+              cause: _t86
             });
           case 7:
-            return _context83.a(2);
+            return _context85.a(2);
         }
-      }, _callee83, null, [[1, 5]]);
+      }, _callee85, null, [[1, 5]]);
     }));
   }
   var isSourceCurrent = (resolved, now = Date.now()) => resolved.expiresAt === null || resolved.expiresAt > now;
@@ -13169,45 +13316,45 @@ var TwilightPortableCore = function (exports) {
       if (this.pending) return this.pending;
       var generation = this.generation;
       var current2 = () => this.active && generation === this.generation;
-      var run = Promise.resolve().then(() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee84() {
-        var maintain, _t82;
-        return _regenerator().w(function (_context84) {
-          while (1) switch (_context84.p = _context84.n) {
+      var run = Promise.resolve().then(() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee86() {
+        var maintain, _t87;
+        return _regenerator().w(function (_context86) {
+          while (1) switch (_context86.p = _context86.n) {
             case 0:
-              _context84.p = 0;
+              _context86.p = 0;
             case 1:
               if (!(current2() && this.requested)) {
-                _context84.n = 5;
+                _context86.n = 5;
                 break;
               }
               this.requested = false;
               maintain = () => current2() ? this.maintain(current2) : Promise.resolve();
               if (!this.options.resources) {
-                _context84.n = 3;
+                _context86.n = 3;
                 break;
               }
-              _context84.n = 2;
+              _context86.n = 2;
               return this.options.resources.use(maintain);
             case 2:
-              _context84.n = 4;
+              _context86.n = 4;
               break;
             case 3:
-              _context84.n = 4;
+              _context86.n = 4;
               return maintain();
             case 4:
-              _context84.n = 1;
+              _context86.n = 1;
               break;
             case 5:
-              _context84.n = 7;
+              _context86.n = 7;
               break;
             case 6:
-              _context84.p = 6;
-              _t82 = _context84.v;
-              if (current2()) this.options.onError(_t82 instanceof Error ? _t82.message : String(_t82));
+              _context86.p = 6;
+              _t87 = _context86.v;
+              if (current2()) this.options.onError(_t87 instanceof Error ? _t87.message : String(_t87));
             case 7:
-              return _context84.a(2);
+              return _context86.a(2);
           }
-        }, _callee84, this, [[0, 6]]);
+        }, _callee86, this, [[0, 6]]);
       })));
       this.pending = run;
       void run.finally(() => {
@@ -13216,59 +13363,59 @@ var TwilightPortableCore = function (exports) {
       return run;
     }
     maintain(current2) {
-      return __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee92() {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, engine, info, token2, native, item, index, plan, window, mode, lastPlayablePosition, row, next, repeat, nativeMode, endTarget, end, deadline, key, cached2, prepared2, _prepared, resolved2, target2, attemptKey, nextKey, apply, residentNext, expectedNext, reusable, base, baseMap, now, cached, prepared, _prepared2, resolved, target, _t85, _t86, _t87, _t88;
-        return _regenerator().w(function (_context92) {
-          while (1) switch (_context92.p = _context92.n) {
+      return __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee94() {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, engine, info, token2, native, item, index, plan, window, mode, lastPlayablePosition, row, next, repeat, nativeMode, endTarget, end, deadline, key, cached2, prepared2, _prepared, resolved2, target2, attemptKey, nextKey, apply, residentNext, expectedNext, reusable, base, baseMap, now, cached, prepared, _prepared2, resolved, target, _t90, _t91, _t92, _t93;
+        return _regenerator().w(function (_context94) {
+          while (1) switch (_context94.p = _context94.n) {
             case 0:
               engine = this.options.engine;
-              _context92.n = 1;
+              _context94.n = 1;
               return engine.getPlaybackInfo();
             case 1:
-              info = _context92.v;
+              info = _context94.v;
               if (current2()) {
-                _context92.n = 2;
+                _context94.n = 2;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 2:
               token2 = engine.getQueueToken();
               native = engine.getQueueSnapshot();
               item = native[info.queueIndex];
               index = this.mapping[info.queueIndex];
               if (!(!token2 || !(item == null ? void 0 : item.queueEntryId) || native.length !== this.mapping.length || !Number.isSafeInteger(index) || index < 0 && !(index === -1 && ((_b = (_a = this.options).allowDetachedCurrent) == null ? void 0 : _b.call(_a))))) {
-                _context92.n = 3;
+                _context94.n = 3;
                 break;
               }
               throw new Error("afterglow_requires_mappable_current_track");
             case 3:
               if (!(info.state !== "stopped" && info.source !== item.source)) {
-                _context92.n = 4;
+                _context94.n = 4;
                 break;
               }
               throw new Error("afterglow_requires_mappable_current_track");
             case 4:
-              _context92.n = 5;
+              _context94.n = 5;
               return this.options.readWindow(index, item.queueEntryId, current2);
             case 5:
-              plan = _context92.v;
+              plan = _context94.v;
               if (!(!current2() || !plan)) {
-                _context92.n = 6;
+                _context94.n = 6;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 6:
               window = plan.window, mode = plan.mode;
               lastPlayablePosition = (_c = window.lastPlayablePosition) != null ? _c : window.queue.total - 1;
               row = window.items[0];
               if (!(window.queue.index !== index || window.queue.selectedEntryId !== item.queueEntryId || (row == null ? void 0 : row.position) !== index || row.queueEntryId !== item.queueEntryId || row.track && row.track.id !== item.id)) {
-                _context92.n = 7;
+                _context94.n = 7;
                 break;
               }
               throw new Error("afterglow_library_queue_changed");
             case 7:
               if (!(mode === "heart")) {
-                _context92.n = 8;
+                _context94.n = 8;
                 break;
               }
               throw new Error("afterglow_requires_renderer_play_mode");
@@ -13280,132 +13427,132 @@ var TwilightPortableCore = function (exports) {
               this.hasEndTarget = !!(endTarget == null ? void 0 : endTarget.track);
               end = engine.getPlaybackEnd();
               if (!(info.state === "stopped" && end && !(endTarget == null ? void 0 : endTarget.track))) {
-                _context92.n = 9;
+                _context94.n = 9;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 9:
               if (!(info.state === "stopped" && end && (endTarget == null ? void 0 : endTarget.track))) {
-                _context92.n = 22;
+                _context94.n = 22;
                 break;
               }
               deadline = this.getPlaybackEndRecoveryDeadline();
               if (!(!deadline || ((_d = this.options.now) != null ? _d : Date.now)() >= deadline)) {
-                _context92.n = 10;
+                _context94.n = 10;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 10:
               key = `${endTarget.queueEntryId}:${window.libraryRevision}`;
               if (!(((_e = this.retry) == null ? void 0 : _e.key) === key && ((_f = this.options.now) != null ? _f : Date.now)() < this.retry.after)) {
-                _context92.n = 11;
+                _context94.n = 11;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 11:
               cached2 = ((_g = this.source) == null ? void 0 : _g.key) === key ? this.source.prepared : null;
-              _context92.p = 12;
+              _context94.p = 12;
               if (!(cached2 && isSourceCurrent(cached2.resolved, ((_h = this.options.now) != null ? _h : Date.now)()))) {
-                _context92.n = 13;
+                _context94.n = 13;
                 break;
               }
-              _t85 = cached2;
-              _context92.n = 15;
+              _t90 = cached2;
+              _context94.n = 15;
               break;
             case 13:
-              _context92.n = 14;
+              _context94.n = 14;
               return this.prepare(libraryQueueTrack(endTarget.track, endTarget.queueEntryId));
             case 14:
-              _t85 = _context92.v;
+              _t90 = _context94.v;
             case 15:
-              prepared2 = _t85;
+              prepared2 = _t90;
               if (current2()) {
-                _context92.n = 16;
+                _context94.n = 16;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 16:
-              _context92.n = 19;
+              _context94.n = 19;
               break;
             case 17:
-              _context92.p = 17;
-              _t86 = _context92.v;
+              _context94.p = 17;
+              _t91 = _context94.v;
               if (current2()) {
-                _context92.n = 18;
+                _context94.n = 18;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 18:
               this.retry = {
                 key,
                 after: ((_i = this.options.now) != null ? _i : Date.now)() + 3e4
               };
-              throw _t86;
+              throw _t91;
             case 19:
               if (current2()) {
-                _context92.n = 20;
+                _context94.n = 20;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 20:
               _prepared = prepared2, resolved2 = _prepared.resolved;
               target2 = nativeQueueItem(prepared2.track, resolved2.source, endTarget.position, mode !== "repeat" && endTarget.position === lastPlayablePosition);
-              _context92.n = 21;
-              return this.options.commit(() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee87() {
-                var _a2, selected, mutation, _t83, _t84;
-                return _regenerator().w(function (_context87) {
-                  while (1) switch (_context87.n) {
+              _context94.n = 21;
+              return this.options.commit(() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee89() {
+                var _a2, selected, mutation, _t88, _t89;
+                return _regenerator().w(function (_context89) {
+                  while (1) switch (_context89.n) {
                     case 0:
-                      _t84 = !current2();
-                      if (_t84) {
-                        _context87.n = 2;
+                      _t89 = !current2();
+                      if (_t89) {
+                        _context89.n = 2;
                         break;
                       }
-                      _context87.n = 1;
+                      _context89.n = 1;
                       return this.options.validateWindow(plan);
                     case 1:
-                      _t84 = !_context87.v;
+                      _t89 = !_context89.v;
                     case 2:
-                      _t83 = _t84;
-                      if (_t83) {
-                        _context87.n = 3;
+                      _t88 = _t89;
+                      if (_t88) {
+                        _context89.n = 3;
                         break;
                       }
-                      _t83 = !current2();
+                      _t88 = !current2();
                     case 3:
-                      if (!_t83) {
-                        _context87.n = 4;
+                      if (!_t88) {
+                        _context89.n = 4;
                         break;
                       }
-                      return _context87.a(2);
+                      return _context89.a(2);
                     case 4:
                       if (!(((_a2 = this.options.now) != null ? _a2 : Date.now)() >= deadline)) {
-                        _context87.n = 5;
+                        _context89.n = 5;
                         break;
                       }
-                      return _context87.a(2);
+                      return _context89.a(2);
                     case 5:
                       this.requireFreshSource(key, resolved2, endTarget.position);
                       selected = false;
-                      mutation = (() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee85() {
+                      mutation = (() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee87() {
                         var _a3, _b2, _c2, _d2, _e2, _f2, _g2, advanced, actual;
-                        return _regenerator().w(function (_context85) {
-                          while (1) switch (_context85.p = _context85.n) {
+                        return _regenerator().w(function (_context87) {
+                          while (1) switch (_context87.p = _context87.n) {
                             case 0:
-                              _context85.p = 0;
+                              _context87.p = 0;
                               (_a3 = prepared2.confirm) == null ? void 0 : _a3.call(prepared2);
-                              _context85.n = 1;
+                              _context87.n = 1;
                               return (_c2 = (_b2 = this.options).commitSource) == null ? void 0 : _c2.call(_b2, plan, endTarget.queueEntryId, prepared2);
                             case 1:
                               if (current2()) {
-                                _context85.n = 2;
+                                _context87.n = 2;
                                 break;
                               }
-                              return _context85.a(2);
+                              return _context87.a(2);
                             case 2:
                               (_d2 = prepared2.confirm) == null ? void 0 : _d2.call(prepared2);
                               this.requireFreshSource(key, resolved2, endTarget.position);
-                              _context85.n = 3;
+                              _context87.n = 3;
                               return engine.continueAfterPlaybackEnd({
                                 expected: end,
                                 item: target2,
@@ -13417,13 +13564,13 @@ var TwilightPortableCore = function (exports) {
                                 onSelected: () => {
                                   selected = true;
                                   this.mapping = [endTarget.position];
-                                  if (current2()) this.options.onMappingChanged(this.getMapping());
+                                  this.options.onMappingChanged(this.getMapping());
                                 }
                               });
                             case 3:
-                              advanced = _context85.v;
+                              advanced = _context87.v;
                               if (!(!advanced && ((_e2 = endTarget.track) == null ? void 0 : _e2.id) !== prepared2.track.id)) {
-                                _context85.n = 4;
+                                _context87.n = 4;
                                 break;
                               }
                               throw new Error("Native EOF rejected the repaired source identity");
@@ -13438,134 +13585,134 @@ var TwilightPortableCore = function (exports) {
                                 this.options.onError(this.expiredSourceError(key, endTarget.position).message);
                               }
                             case 5:
-                              _context85.p = 5;
+                              _context87.p = 5;
                               if (!(selected && engine.getQueueToken())) {
-                                _context85.n = 7;
+                                _context87.n = 7;
                                 break;
                               }
-                              _context85.n = 6;
+                              _context87.n = 6;
                               return engine.getPlaybackInfo();
                             case 6:
-                              actual = _context85.v;
+                              actual = _context87.v;
                               if (!(actual.queueIndex === 0 && ((_g2 = engine.getQueueSnapshot()[0]) == null ? void 0 : _g2.queueEntryId) === endTarget.queueEntryId)) {
-                                _context85.n = 7;
+                                _context87.n = 7;
                                 break;
                               }
-                              _context85.n = 7;
+                              _context87.n = 7;
                               return this.options.onPlaybackAdvanced(actual, endTarget.position, endTarget.queueEntryId, prepared2.track);
                             case 7:
-                              return _context85.f(5);
+                              return _context87.f(5);
                             case 8:
-                              return _context85.a(2);
+                              return _context87.a(2);
                           }
-                        }, _callee85, this, [[0,, 5, 8]]);
-                      })))().catch(error => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee86() {
+                        }, _callee87, this, [[0,, 5, 8]]);
+                      })))().catch(error => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee88() {
                         var _a3, _b2;
-                        return _regenerator().w(function (_context86) {
-                          while (1) switch (_context86.n) {
+                        return _regenerator().w(function (_context88) {
+                          while (1) switch (_context88.n) {
                             case 0:
                               if (current2()) {
                                 this.options.onError(error instanceof Error ? error.message : String(error));
                                 this.active = false;
                               }
-                              _context86.n = 1;
+                              _context88.n = 1;
                               return (_b2 = (_a3 = this.options).onCommitError) == null ? void 0 : _b2.call(_a3, error);
                             case 1:
                               throw error;
                             case 2:
-                              return _context86.a(2);
+                              return _context88.a(2);
                           }
-                        }, _callee86, this);
+                        }, _callee88, this);
                       })));
                       this.engineDrain = mutation.catch(() => {});
-                      _context87.n = 6;
+                      _context89.n = 6;
                       return mutation;
                     case 6:
-                      return _context87.a(2);
+                      return _context89.a(2);
                   }
-                }, _callee87, this);
+                }, _callee89, this);
               })), current2);
             case 21:
-              return _context92.a(2);
+              return _context94.a(2);
             case 22:
               attemptKey = `${token2}:${info.queueIndex}:${window.queue.revision}:${window.libraryRevision}:${nativeMode}`;
               if (!(this.rejected === attemptKey)) {
-                _context92.n = 23;
+                _context94.n = 23;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 23:
               nextKey = next ? `${next.queueEntryId}:${window.libraryRevision}` : "";
               if (((_j = this.source) == null ? void 0 : _j.key) !== nextKey) this.source = null;
               if (((_k = this.retry) == null ? void 0 : _k.key) !== nextKey) this.retry = null;
-              apply = (items, mapping, prepared2) => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee91() {
+              apply = (items, mapping, prepared2) => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee93() {
                 var changed;
-                return _regenerator().w(function (_context91) {
-                  while (1) switch (_context91.n) {
+                return _regenerator().w(function (_context93) {
+                  while (1) switch (_context93.n) {
                     case 0:
                       changed = false;
-                      _context91.n = 1;
-                      return this.options.commit(() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee90() {
+                      _context93.n = 1;
+                      return this.options.commit(() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee92() {
                         var valid, latest, mutation;
-                        return _regenerator().w(function (_context90) {
-                          while (1) switch (_context90.n) {
+                        return _regenerator().w(function (_context92) {
+                          while (1) switch (_context92.n) {
                             case 0:
                               if (current2()) {
-                                _context90.n = 1;
+                                _context92.n = 1;
                                 break;
                               }
-                              return _context90.a(2);
+                              return _context92.a(2);
                             case 1:
-                              _context90.n = 2;
+                              _context92.n = 2;
                               return this.options.validateWindow(plan);
                             case 2:
-                              valid = _context90.v;
+                              valid = _context92.v;
                               if (!(!current2() || !valid || engine.getQueueToken() !== token2)) {
-                                _context90.n = 3;
+                                _context92.n = 3;
                                 break;
                               }
-                              return _context90.a(2);
+                              return _context92.a(2);
                             case 3:
-                              _context90.n = 4;
+                              _context92.n = 4;
                               return engine.getPlaybackInfo();
                             case 4:
-                              latest = _context90.v;
+                              latest = _context92.v;
                               if (!(!current2() || engine.getQueueToken() !== token2 || latest.queueIndex !== info.queueIndex || latest.source !== info.source)) {
-                                _context90.n = 5;
+                                _context92.n = 5;
                                 break;
                               }
-                              return _context90.a(2);
+                              return _context92.a(2);
                             case 5:
                               if (!(latest.state === "stopped" && engine.getPlaybackEnd())) {
-                                _context90.n = 6;
+                                _context92.n = 6;
                                 break;
                               }
                               this.requested = true;
-                              return _context90.a(2);
+                              return _context92.a(2);
                             case 6:
                               if (prepared2) this.requireFreshSource(nextKey, prepared2.resolved, next.position);
-                              mutation = (() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee88() {
+                              mutation = (() => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee90() {
                                 var _a2, _b2, _c2, _d2, _e2, result;
-                                return _regenerator().w(function (_context88) {
-                                  while (1) switch (_context88.n) {
+                                return _regenerator().w(function (_context90) {
+                                  while (1) switch (_context90.n) {
                                     case 0:
                                       (_a2 = prepared2 == null ? void 0 : prepared2.confirm) == null ? void 0 : _a2.call(prepared2);
                                       if (!prepared2) {
-                                        _context88.n = 1;
+                                        _context90.n = 1;
                                         break;
                                       }
-                                      _context88.n = 1;
+                                      _context90.n = 1;
                                       return (_c2 = (_b2 = this.options).commitSource) == null ? void 0 : _c2.call(_b2, plan, next.queueEntryId, prepared2);
                                     case 1:
                                       if (current2()) {
-                                        _context88.n = 2;
+                                        _context90.n = 2;
                                         break;
                                       }
-                                      return _context88.a(2);
+                                      return _context90.a(2);
                                     case 2:
                                       (_d2 = prepared2 == null ? void 0 : prepared2.confirm) == null ? void 0 : _d2.call(prepared2);
                                       if (prepared2) this.requireFreshSource(nextKey, prepared2.resolved, next.position);
-                                      _context88.n = 3;
+                                      _context90.n = 3;
                                       return engine.rebindQueue({
                                         expected: {
                                           queueToken: token2,
@@ -13578,13 +13725,13 @@ var TwilightPortableCore = function (exports) {
                                         playMode: nativeMode
                                       });
                                     case 3:
-                                      result = _context88.v;
+                                      result = _context90.v;
                                       if (result) {
-                                        _context88.n = 5;
+                                        _context90.n = 5;
                                         break;
                                       }
                                       if (!(prepared2 && ((_e2 = next.track) == null ? void 0 : _e2.id) !== prepared2.track.id)) {
-                                        _context88.n = 4;
+                                        _context90.n = 4;
                                         break;
                                       }
                                       throw new Error("Native handoff rejected the repaired source identity");
@@ -13593,46 +13740,46 @@ var TwilightPortableCore = function (exports) {
                                         this.rejected = attemptKey;
                                         this.options.onError("afterglow_library_queue_changed");
                                       }
-                                      return _context88.a(2);
+                                      return _context90.a(2);
                                     case 5:
                                       this.rejected = null;
                                       this.mapping = mapping;
                                       changed = true;
-                                      if (current2()) this.options.onMappingChanged(this.getMapping());
+                                      this.options.onMappingChanged(this.getMapping());
                                     case 6:
-                                      return _context88.a(2);
+                                      return _context90.a(2);
                                   }
-                                }, _callee88, this);
-                              })))().catch(error => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee89() {
+                                }, _callee90, this);
+                              })))().catch(error => __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee91() {
                                 var _a2, _b2;
-                                return _regenerator().w(function (_context89) {
-                                  while (1) switch (_context89.n) {
+                                return _regenerator().w(function (_context91) {
+                                  while (1) switch (_context91.n) {
                                     case 0:
                                       if (current2()) {
                                         this.active = false;
                                         this.options.onError(error instanceof Error ? error.message : String(error));
                                       }
-                                      _context89.n = 1;
+                                      _context91.n = 1;
                                       return (_b2 = (_a2 = this.options).onCommitError) == null ? void 0 : _b2.call(_a2, error);
                                     case 1:
                                       throw error;
                                     case 2:
-                                      return _context89.a(2);
+                                      return _context91.a(2);
                                   }
-                                }, _callee89, this);
+                                }, _callee91, this);
                               })));
                               this.engineDrain = mutation.catch(() => {});
-                              _context90.n = 7;
+                              _context92.n = 7;
                               return mutation;
                             case 7:
-                              return _context90.a(2);
+                              return _context92.a(2);
                           }
-                        }, _callee90, this);
+                        }, _callee92, this);
                       })), current2);
                     case 1:
-                      return _context91.a(2, changed);
+                      return _context93.a(2, changed);
                   }
-                }, _callee91, this);
+                }, _callee93, this);
               }));
               residentNext = native[info.queueIndex + 1];
               expectedNext = (next == null ? void 0 : next.track) && residentNext ? nativeQueueItem(libraryQueueTrack(next.track, next.queueEntryId), residentNext.source, next.position, next.position === lastPlayablePosition) : null;
@@ -13645,101 +13792,101 @@ var TwilightPortableCore = function (exports) {
                 var _a2, _b2;
                 return entry.queueEntryId !== ((_a2 = base[i]) == null ? void 0 : _a2.queueEntryId) || entry.logicalQueueEnd !== ((_b2 = base[i]) == null ? void 0 : _b2.logicalQueueEnd);
               }))) {
-                _context92.n = 26;
+                _context94.n = 26;
                 break;
               }
-              _context92.n = 24;
+              _context94.n = 24;
               return apply(base, baseMap, reusable ? (_m = this.source) == null ? void 0 : _m.prepared : void 0);
             case 24:
-              if (!_context92.v) {
-                _context92.n = 25;
+              if (!_context94.v) {
+                _context94.n = 25;
                 break;
               }
               this.requested = true;
             case 25:
-              return _context92.a(2);
+              return _context94.a(2);
             case 26:
               if (next == null ? void 0 : next.track) {
-                _context92.n = 27;
+                _context94.n = 27;
                 break;
               }
               (_o = (_n = this.options).onHealthy) == null ? void 0 : _o.call(_n);
-              return _context92.a(2);
+              return _context94.a(2);
             case 27:
               now = ((_p = this.options.now) != null ? _p : Date.now)();
               cached = this.source;
               if (!(cached && isSourceCurrent(cached.prepared.resolved, now) && (cached.prepared.resolved.expiresAt === null || cached.prepared.resolved.expiresAt - now > 12e4 || now < cached.refreshAfter))) {
-                _context92.n = 28;
+                _context94.n = 28;
                 break;
               }
               (_r = (_q = this.options).onHealthy) == null ? void 0 : _r.call(_q);
-              return _context92.a(2);
+              return _context94.a(2);
             case 28:
               if (!(this.retry && now < this.retry.after)) {
-                _context92.n = 29;
+                _context94.n = 29;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 29:
-              _context92.p = 29;
-              _context92.n = 30;
+              _context94.p = 29;
+              _context94.n = 30;
               return this.prepare(libraryQueueTrack(next.track, next.queueEntryId));
             case 30:
-              prepared = _context92.v;
-              _context92.n = 33;
+              prepared = _context94.v;
+              _context94.n = 33;
               break;
             case 31:
-              _context92.p = 31;
-              _t87 = _context92.v;
+              _context94.p = 31;
+              _t92 = _context94.v;
               if (current2()) {
-                _context92.n = 32;
+                _context94.n = 32;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 32:
               this.retry = {
                 key: nextKey,
                 after: ((_s = this.options.now) != null ? _s : Date.now)() + 3e4
               };
-              throw _t87;
+              throw _t92;
             case 33:
               if (current2()) {
-                _context92.n = 34;
+                _context94.n = 34;
                 break;
               }
-              return _context92.a(2);
+              return _context94.a(2);
             case 34:
               _prepared2 = prepared, resolved = _prepared2.resolved;
               this.requireFreshSource(nextKey, resolved, next.position);
               target = nativeQueueItem(prepared.track, resolved.source, next.position, next.position === lastPlayablePosition);
               if (!(!reusable || JSON.stringify(expectedNext) !== JSON.stringify(target))) {
-                _context92.n = 37;
+                _context94.n = 37;
                 break;
               }
-              _context92.n = 35;
+              _context94.n = 35;
               return apply([base[0], target], [index, next.position], prepared);
             case 35:
-              _t88 = !_context92.v;
-              if (_t88) {
-                _context92.n = 36;
+              _t93 = !_context94.v;
+              if (_t93) {
+                _context94.n = 36;
                 break;
               }
-              _t88 = !current2();
+              _t93 = !current2();
             case 36:
-              if (!_t88) {
-                _context92.n = 37;
+              if (!_t93) {
+                _context94.n = 37;
                 break;
               }
               if (current2() && this.requested) this.rememberSource(nextKey, prepared);
-              return _context92.a(2);
+              return _context94.a(2);
             case 37:
               this.retry = null;
               this.rememberSource(nextKey, prepared);
               (_u = (_t = this.options).onHealthy) == null ? void 0 : _u.call(_t);
             case 38:
-              return _context92.a(2);
+              return _context94.a(2);
           }
-        }, _callee92, this, [[29, 31], [12, 17]]);
+        }, _callee94, this, [[29, 31], [12, 17]]);
       }));
     }
     expiredSourceError(key, position) {
@@ -13756,44 +13903,44 @@ var TwilightPortableCore = function (exports) {
       throw this.expiredSourceError(key, position);
     }
     prepare(track) {
-      return __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee93() {
-        var resolved, _t89, _t90, _t91, _t92, _t93;
-        return _regenerator().w(function (_context93) {
-          while (1) switch (_context93.n) {
+      return __async$n(this, null, /*#__PURE__*/_regenerator().m(function _callee95() {
+        var resolved, _t94, _t95, _t96, _t97, _t98;
+        return _regenerator().w(function (_context95) {
+          while (1) switch (_context95.n) {
             case 0:
               if (!this.options.prepareSource) {
-                _context93.n = 1;
+                _context95.n = 1;
                 break;
               }
-              return _context93.a(2, this.options.prepareSource(track, this.sourceReads.signal));
+              return _context95.a(2, this.options.prepareSource(track, this.sourceReads.signal));
             case 1:
-              _context93.n = 2;
+              _context95.n = 2;
               return this.options.resolver.resolve(track, this.sourceReads.signal);
             case 2:
-              resolved = _context93.v;
+              resolved = _context95.v;
               this.sourceReads.signal.throwIfAborted();
               if (resolved) {
-                _context93.n = 3;
+                _context95.n = 3;
                 break;
               }
               throw new Error("afterglow_core_source_unavailable");
             case 3:
-              _t89 = track;
-              _t90 = __spreadProps;
-              _t91 = __spreadValues({}, resolved);
-              _context93.n = 4;
+              _t94 = track;
+              _t95 = __spreadProps;
+              _t96 = __spreadValues({}, resolved);
+              _context95.n = 4;
               return authorizeNativeSource(resolved.source, this.options.authorize);
             case 4:
-              _t92 = _context93.v;
-              _t93 = _t90(_t91, {
-                source: _t92
+              _t97 = _context95.v;
+              _t98 = _t95(_t96, {
+                source: _t97
               });
-              return _context93.a(2, {
-                track: _t89,
-                resolved: _t93
+              return _context95.a(2, {
+                track: _t94,
+                resolved: _t98
               });
           }
-        }, _callee93, this);
+        }, _callee95, this);
       }));
     }
     rememberSource(key, prepared) {
@@ -13936,10 +14083,10 @@ var TwilightPortableCore = function (exports) {
     });
   };
   function importLegacyQueue(options) {
-    return __async$m(this, null, /*#__PURE__*/_regenerator().m(function _callee94() {
+    return __async$m(this, null, /*#__PURE__*/_regenerator().m(function _callee96() {
       var _a, _b, _c, session, api, tracks2, selected, sameSelection, id2, start, opened, queue, sequence, offset, items, result2, result, _offset3, page2, i, row, track, duration, position;
-      return _regenerator().w(function (_context94) {
-        while (1) switch (_context94.n) {
+      return _regenerator().w(function (_context96) {
+        while (1) switch (_context96.n) {
           case 0:
             session = options.session, api = options.api;
             tracks2 = toPlaybackQueueSnapshots((((_a = session.queue) == null ? void 0 : _a.length) ? session.queue : [session.track]).map(cloneTrackForPlaybackSession));
@@ -13955,32 +14102,32 @@ var TwilightPortableCore = function (exports) {
               contentRevision: options.libraryRevision,
               order: session.playMode === "shuffle" ? "shuffle" : "original"
             };
-            _context94.n = 1;
+            _context96.n = 1;
             return api.importLegacyPlaybackQueue(start);
           case 1:
-            opened = _context94.v;
+            opened = _context96.v;
           case 2:
             if (!(opened.kind === "retiring")) {
-              _context94.n = 4;
+              _context96.n = 4;
               break;
             }
-            _context94.n = 3;
+            _context96.n = 3;
             return api.importLegacyPlaybackQueue(start);
           case 3:
-            opened = _context94.v;
-            _context94.n = 2;
+            opened = _context96.v;
+            _context96.n = 2;
             break;
           case 4:
             if (!(opened.kind === "ready")) {
-              _context94.n = 5;
+              _context96.n = 5;
               break;
             }
             queue = opened.queue;
-            _context94.n = 13;
+            _context96.n = 13;
             break;
           case 5:
             if (!(opened.kind !== "building" || opened.total !== 0 || opened.sequence !== 0)) {
-              _context94.n = 6;
+              _context96.n = 6;
               break;
             }
             throw new Error("Invalid Core queue import start");
@@ -13989,7 +14136,7 @@ var TwilightPortableCore = function (exports) {
             offset = 0;
           case 7:
             if (!(offset < tracks2.length)) {
-              _context94.n = 10;
+              _context96.n = 10;
               break;
             }
             items = tracks2.slice(offset, offset + LIBRARY_PAGE_SIZE).map(track => __spreadValues({
@@ -14000,7 +14147,7 @@ var TwilightPortableCore = function (exports) {
             } : {
               snapshot: __spreadValues({}, track)
             }));
-            _context94.n = 8;
+            _context96.n = 8;
             return api.importLegacyPlaybackQueue({
               kind: "append",
               id: id2,
@@ -14008,18 +14155,18 @@ var TwilightPortableCore = function (exports) {
               items
             });
           case 8:
-            result2 = _context94.v;
+            result2 = _context96.v;
             if (!(result2.kind !== "building" || result2.sequence !== sequence || result2.total !== offset + items.length)) {
-              _context94.n = 9;
+              _context96.n = 9;
               break;
             }
             throw new Error("Invalid Core queue import batch acknowledgement");
           case 9:
             offset += LIBRARY_PAGE_SIZE;
-            _context94.n = 7;
+            _context96.n = 7;
             break;
           case 10:
-            _context94.n = 11;
+            _context96.n = 11;
             return api.importLegacyPlaybackQueue({
               kind: "commit",
               id: id2,
@@ -14027,9 +14174,9 @@ var TwilightPortableCore = function (exports) {
               selectedIndex: selected
             });
           case 11:
-            result = _context94.v;
+            result = _context96.v;
             if (!(result.kind !== "ready")) {
-              _context94.n = 12;
+              _context96.n = 12;
               break;
             }
             throw new Error("Core queue import did not publish");
@@ -14037,7 +14184,7 @@ var TwilightPortableCore = function (exports) {
             queue = result.queue;
           case 13:
             if (!(queue.id !== id2 || queue.total !== tracks2.length || queue.index !== selected || queue.selectedEntryId !== tracks2[selected].queueEntryId || queue.order !== start.order)) {
-              _context94.n = 14;
+              _context96.n = 14;
               break;
             }
             throw new Error("Published Core import does not match the legacy session");
@@ -14045,17 +14192,17 @@ var TwilightPortableCore = function (exports) {
             _offset3 = 0;
           case 15:
             if (!(_offset3 < tracks2.length)) {
-              _context94.n = 21;
+              _context96.n = 21;
               break;
             }
-            _context94.n = 16;
+            _context96.n = 16;
             return api.readQueue(id2, _offset3, LIBRARY_PAGE_SIZE, {
               expectedRevision: queue.revision
             });
           case 16:
-            page2 = _context94.v;
+            page2 = _context96.v;
             if (!(page2.offset !== _offset3 || page2.items.length !== Math.min(LIBRARY_PAGE_SIZE, tracks2.length - _offset3))) {
-              _context94.n = 17;
+              _context96.n = 17;
               break;
             }
             throw new Error("Incomplete Core queue import readback");
@@ -14063,32 +14210,32 @@ var TwilightPortableCore = function (exports) {
             i = 0;
           case 18:
             if (!(i < page2.items.length)) {
-              _context94.n = 20;
+              _context96.n = 20;
               break;
             }
             row = page2.items[i], track = tracks2[_offset3 + i];
             if (!(row.queueEntryId !== track.queueEntryId || ((_c = row.track) == null ? void 0 : _c.id) !== track.id || row.track.filePath !== track.filePath || row.track.subTrack !== track.subTrack || JSON.stringify(normalizeCueRange(row.track.cueRange)) !== JSON.stringify(normalizeCueRange(track.cueRange)))) {
-              _context94.n = 19;
+              _context96.n = 19;
               break;
             }
             throw new Error("Core queue import changed a legacy occurrence or source segment");
           case 19:
             i++;
-            _context94.n = 18;
+            _context96.n = 18;
             break;
           case 20:
             _offset3 += LIBRARY_PAGE_SIZE;
-            _context94.n = 15;
+            _context96.n = 15;
             break;
           case 21:
             duration = tracks2[selected].duration;
             position = sameSelection && session.mode === "trackAndPosition" ? Math.max(0, Number.isFinite(duration) && duration > 0 ? Math.min(session.position, duration) : session.position) : 0;
-            return _context94.a(2, {
+            return _context96.a(2, {
               queue,
               position
             });
         }
-      }, _callee94);
+      }, _callee96);
     }));
   }
   var __async$l = (__this, __arguments, generator) => {
@@ -14112,47 +14259,47 @@ var TwilightPortableCore = function (exports) {
     });
   };
   function automaticPlaybackMask(tracks2, allowed, signal) {
-    return __async$l(this, null, /*#__PURE__*/_regenerator().m(function _callee95() {
+    return __async$l(this, null, /*#__PURE__*/_regenerator().m(function _callee97() {
       var result;
-      return _regenerator().w(function (_context95) {
-        while (1) switch (_context95.n) {
+      return _regenerator().w(function (_context97) {
+        while (1) switch (_context97.n) {
           case 0:
             signal == null ? void 0 : signal.throwIfAborted();
             if (!(!allowed || !tracks2.length)) {
-              _context95.n = 1;
+              _context97.n = 1;
               break;
             }
-            return _context95.a(2, tracks2.map(() => true));
+            return _context97.a(2, tracks2.map(() => true));
           case 1:
-            _context95.n = 2;
+            _context97.n = 2;
             return allowed(tracks2, signal);
           case 2:
-            result = _context95.v;
+            result = _context97.v;
             signal == null ? void 0 : signal.throwIfAborted();
             if (!(!Array.isArray(result) || result.length !== tracks2.length || tracks2.some((_, index) => typeof result[index] !== "boolean"))) {
-              _context95.n = 3;
+              _context97.n = 3;
               break;
             }
             throw new Error("Automatic playback preferences returned an invalid batch");
           case 3:
-            return _context95.a(2, result);
+            return _context97.a(2, result);
         }
-      }, _callee95);
+      }, _callee97);
     }));
   }
   function automaticPlaybackTracks(tracks2, allowed, signal, explicitId) {
-    return __async$l(this, null, /*#__PURE__*/_regenerator().m(function _callee96() {
+    return __async$l(this, null, /*#__PURE__*/_regenerator().m(function _callee98() {
       var mask;
-      return _regenerator().w(function (_context96) {
-        while (1) switch (_context96.n) {
+      return _regenerator().w(function (_context98) {
+        while (1) switch (_context98.n) {
           case 0:
-            _context96.n = 1;
+            _context98.n = 1;
             return automaticPlaybackMask(tracks2, allowed, signal);
           case 1:
-            mask = _context96.v;
-            return _context96.a(2, tracks2.filter((track, index) => mask[index] || track.id === explicitId));
+            mask = _context98.v;
+            return _context98.a(2, tracks2.filter((track, index) => mask[index] || track.id === explicitId));
         }
-      }, _callee96);
+      }, _callee98);
     }));
   }
   var __async$k = (__this, __arguments, generator) => {
@@ -14225,25 +14372,25 @@ var TwilightPortableCore = function (exports) {
       if (playing && state && state.remaining < REFILL_THRESHOLD) void this.refill().catch(() => {});
     }
     fetch(providerId, key, signal, fmFallback = false, explicitId) {
-      return __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee97() {
+      return __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee99() {
         var method, response, seen, tracks2;
-        return _regenerator().w(function (_context97) {
-          while (1) switch (_context97.n) {
+        return _regenerator().w(function (_context99) {
+          while (1) switch (_context99.n) {
             case 0:
               method = key === "fm" || fmFallback ? "fetchPersonalFm" : "fetchPrivateContent";
               if (this.options.supportedMethods(providerId).includes(method)) {
-                _context97.n = 1;
+                _context99.n = 1;
                 break;
               }
               throw new Error(`Provider does not support ${method}`);
             case 1:
-              _context97.n = 2;
+              _context99.n = 2;
               return this.options.call(providerId, method, signal);
             case 2:
-              response = _context97.v;
+              response = _context99.v;
               signal.throwIfAborted();
               if (Array.isArray(response)) {
-                _context97.n = 3;
+                _context99.n = 3;
                 break;
               }
               throw new Error("Provider returned an invalid recommendation batch");
@@ -14259,24 +14406,24 @@ var TwilightPortableCore = function (exports) {
                 track.streamUrl = null;
                 return [track];
               });
-              return _context97.a(2, automaticPlaybackTracks(tracks2, this.options.automaticPlaybackAllowed, signal, explicitId));
+              return _context99.a(2, automaticPlaybackTracks(tracks2, this.options.automaticPlaybackAllowed, signal, explicitId));
           }
-        }, _callee97, this);
+        }, _callee99, this);
       }));
     }
     initial(providerId, key, signal, explicitId) {
-      return __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee98() {
+      return __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee100() {
         var tracks2;
-        return _regenerator().w(function (_context98) {
-          while (1) switch (_context98.n) {
+        return _regenerator().w(function (_context100) {
+          while (1) switch (_context100.n) {
             case 0:
-              _context98.n = 1;
+              _context100.n = 1;
               return this.fetch(providerId, key, signal, false, explicitId);
             case 1:
-              tracks2 = _context98.v;
-              return _context98.a(2, tracks2.length || key !== "radar" || !this.options.supportedMethods(providerId).includes("fetchPersonalFm") ? tracks2 : this.fetch(providerId, key, signal, true, explicitId));
+              tracks2 = _context100.v;
+              return _context100.a(2, tracks2.length || key !== "radar" || !this.options.supportedMethods(providerId).includes("fetchPersonalFm") ? tracks2 : this.fetch(providerId, key, signal, true, explicitId));
           }
-        }, _callee98, this);
+        }, _callee100, this);
       }));
     }
     refill(explicit = false) {
@@ -14289,65 +14436,65 @@ var TwilightPortableCore = function (exports) {
         var _a;
         return !signal.aborted && this.context === context && ((_a = this.options.queue()) == null ? void 0 : _a.id) === context.queueId;
       };
-      var work = Promise.resolve().then(() => __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee100() {
-        var append, added, _t95, _t96;
-        return _regenerator().w(function (_context100) {
-          while (1) switch (_context100.n) {
+      var work = Promise.resolve().then(() => __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee102() {
+        var append, added, _t100, _t101;
+        return _regenerator().w(function (_context102) {
+          while (1) switch (_context102.n) {
             case 0:
-              append = tracks2 => __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee99() {
-                var _t94;
-                return _regenerator().w(function (_context99) {
-                  while (1) switch (_context99.p = _context99.n) {
+              append = tracks2 => __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee101() {
+                var _t99;
+                return _regenerator().w(function (_context101) {
+                  while (1) switch (_context101.p = _context101.n) {
                     case 0:
                       if (current2()) {
-                        _context99.n = 1;
+                        _context101.n = 1;
                         break;
                       }
-                      return _context99.a(2, 0);
+                      return _context101.a(2, 0);
                     case 1:
-                      _context99.p = 1;
-                      _context99.n = 2;
+                      _context101.p = 1;
+                      _context101.n = 2;
                       return this.options.append(context.queueId, tracks2, current2);
                     case 2:
-                      return _context99.a(2, _context99.v);
+                      return _context101.a(2, _context101.v);
                     case 3:
-                      _context99.p = 3;
-                      _t94 = _context99.v;
+                      _context101.p = 3;
+                      _t99 = _context101.v;
                       if (current2()) this.failedWrite = true;
-                      throw _t94;
+                      throw _t99;
                     case 4:
-                      return _context99.a(2);
+                      return _context101.a(2);
                   }
-                }, _callee99, this, [[1, 3]]);
+                }, _callee101, this, [[1, 3]]);
               }));
-              _t95 = append;
-              _context100.n = 1;
+              _t100 = append;
+              _context102.n = 1;
               return this.fetch(context.providerId, context.key, signal);
             case 1:
-              _context100.n = 2;
-              return _t95(_context100.v);
+              _context102.n = 2;
+              return _t100(_context102.v);
             case 2:
-              added = _context100.v;
+              added = _context102.v;
               if (!(current2() && added === 0 && context.key === "radar" && this.options.supportedMethods(context.providerId).includes("fetchPersonalFm"))) {
-                _context100.n = 5;
+                _context102.n = 5;
                 break;
               }
-              _t96 = append;
-              _context100.n = 3;
+              _t101 = append;
+              _context102.n = 3;
               return this.fetch(context.providerId, context.key, signal, true);
             case 3:
-              _context100.n = 4;
-              return _t96(_context100.v);
+              _context102.n = 4;
+              return _t101(_context102.v);
             case 4:
-              added = _context100.v;
+              added = _context102.v;
             case 5:
               if (current2()) {
                 this.error = null;
                 this.retryAfter = added ? 0 : this.options.now() + RETRY_MS;
               }
-              return _context100.a(2, added);
+              return _context102.a(2, added);
           }
-        }, _callee100, this);
+        }, _callee102, this);
       }))).catch(error => {
         if (current2()) {
           this.error = projectCoreError(error);
@@ -14363,19 +14510,19 @@ var TwilightPortableCore = function (exports) {
       return work;
     }
     shutdown() {
-      return __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee101() {
+      return __async$k(this, null, /*#__PURE__*/_regenerator().m(function _callee103() {
         var _a;
-        return _regenerator().w(function (_context101) {
-          while (1) switch (_context101.n) {
+        return _regenerator().w(function (_context103) {
+          while (1) switch (_context103.n) {
             case 0:
               this.closed = true;
               this.controller.abort(new Error("Personalized queue is shutting down"));
-              _context101.n = 1;
+              _context103.n = 1;
               return (_a = this.pending) == null ? void 0 : _a.catch(() => {});
             case 1:
-              return _context101.a(2);
+              return _context103.a(2);
           }
-        }, _callee101, this);
+        }, _callee103, this);
       }));
     }
   }
@@ -14475,49 +14622,49 @@ var TwilightPortableCore = function (exports) {
       if (playing && state.active && state.available && state.remaining < 3) void this.refill().catch(() => {});
     }
     liked(signal, selectedId) {
-      return __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee103() {
+      return __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee105() {
         var _a, library, playlistId, selected;
-        return _regenerator().w(function (_context103) {
-          while (1) switch (_context103.n) {
+        return _regenerator().w(function (_context105) {
+          while (1) switch (_context105.n) {
             case 0:
-              _context103.n = 1;
+              _context105.n = 1;
               return this.options.call("fetchUserLibrary", [], signal);
             case 1:
-              library = _context103.v;
+              library = _context105.v;
               signal.throwIfAborted();
               playlistId = Number((_a = library == null ? void 0 : library.likedPlaylist) == null ? void 0 : _a.id);
               if (!(!Number.isSafeInteger(playlistId) || playlistId <= 0)) {
-                _context103.n = 2;
+                _context105.n = 2;
                 break;
               }
               throw new Error("NCM liked playlist is unavailable");
             case 2:
               selected = selectedId ? -1 : 0;
-              return _context103.a(2, {
+              return _context105.a(2, {
                 playlistId,
                 selectedIndex: () => {
                   if (selected < 0) throw new Error("Selected liked song is unavailable");
                   return selected;
                 },
-                produce: append => __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee102() {
+                produce: append => __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee104() {
                   var offset, position, page2, batch, index;
-                  return _regenerator().w(function (_context102) {
-                    while (1) switch (_context102.n) {
+                  return _regenerator().w(function (_context104) {
+                    while (1) switch (_context104.n) {
                       case 0:
                         offset = 0, position = 0;
                       case 1:
                         signal.throwIfAborted();
-                        _context102.n = 2;
+                        _context104.n = 2;
                         return this.options.call("fetchLikedTracksPage", [offset, 200, false], signal);
                       case 2:
-                        page2 = _context102.v;
+                        page2 = _context104.v;
                         signal.throwIfAborted();
                         batch = tracks(page2.tracks);
                         if (selectedId && selected < 0) {
                           index = batch.findIndex(track => track.id === selectedId);
                           if (index >= 0) selected = position + index;
                         }
-                        _context102.n = 3;
+                        _context104.n = 3;
                         return append(batch.map(track => ({
                           id: track.id,
                           snapshot: __spreadValues({}, track)
@@ -14525,44 +14672,44 @@ var TwilightPortableCore = function (exports) {
                       case 3:
                         position += batch.length;
                         if (page2.hasMore) {
-                          _context102.n = 4;
+                          _context104.n = 4;
                           break;
                         }
-                        return _context102.a(3, 7);
+                        return _context104.a(3, 7);
                       case 4:
                         if (!(!Number.isSafeInteger(page2.nextOffset) || page2.nextOffset <= offset)) {
-                          _context102.n = 5;
+                          _context104.n = 5;
                           break;
                         }
                         throw new Error("NCM liked playlist cursor did not advance");
                       case 5:
                         offset = page2.nextOffset;
                       case 6:
-                        _context102.n = 1;
+                        _context104.n = 1;
                         break;
                       case 7:
-                        return _context102.a(2);
+                        return _context104.a(2);
                     }
-                  }, _callee102, this);
+                  }, _callee104, this);
                 }))
               });
           }
-        }, _callee103, this);
+        }, _callee105, this);
       }));
     }
     fetch(playlistId, seed, signal) {
-      return __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee104() {
+      return __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee106() {
         var result;
-        return _regenerator().w(function (_context104) {
-          while (1) switch (_context104.n) {
+        return _regenerator().w(function (_context106) {
+          while (1) switch (_context106.n) {
             case 0:
               if (!(seed.source !== "ncm" || !seed.ncmSongId)) {
-                _context104.n = 1;
+                _context106.n = 1;
                 break;
               }
               throw new Error("Heart mode requires an NCM seed");
             case 1:
-              _context104.n = 2;
+              _context106.n = 2;
               return this.options.call("fetchIntelligenceList", [{
                 songId: seed.ncmSongId,
                 playlistId,
@@ -14570,11 +14717,11 @@ var TwilightPortableCore = function (exports) {
                 count: 20
               }], signal);
             case 2:
-              result = _context104.v;
+              result = _context106.v;
               signal.throwIfAborted();
-              return _context104.a(2, automaticPlaybackTracks(tracks(result), this.options.automaticPlaybackAllowed, signal));
+              return _context106.a(2, automaticPlaybackTracks(tracks(result), this.options.automaticPlaybackAllowed, signal));
           }
-        }, _callee104, this);
+        }, _callee106, this);
       }));
     }
     refill(explicit = false) {
@@ -14592,41 +14739,41 @@ var TwilightPortableCore = function (exports) {
         var _a;
         return !signal.aborted && context === this.context && ((_a = this.options.queue()) == null ? void 0 : _a.id) === context.queueId;
       };
-      var work = Promise.resolve().then(() => __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee105() {
-        var batch, added, _t97;
-        return _regenerator().w(function (_context105) {
-          while (1) switch (_context105.p = _context105.n) {
+      var work = Promise.resolve().then(() => __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee107() {
+        var batch, added, _t102;
+        return _regenerator().w(function (_context107) {
+          while (1) switch (_context107.p = _context107.n) {
             case 0:
-              _context105.n = 1;
+              _context107.n = 1;
               return this.fetch(context.likedPlaylistId, seed, signal);
             case 1:
-              batch = _context105.v;
+              batch = _context107.v;
               if (current2()) {
-                _context105.n = 2;
+                _context107.n = 2;
                 break;
               }
-              return _context105.a(2, 0);
+              return _context107.a(2, 0);
             case 2:
-              _context105.p = 2;
-              _context105.n = 3;
+              _context107.p = 2;
+              _context107.n = 3;
               return this.options.append(context.queueId, batch, current2);
             case 3:
-              added = _context105.v;
-              _context105.n = 5;
+              added = _context107.v;
+              _context107.n = 5;
               break;
             case 4:
-              _context105.p = 4;
-              _t97 = _context105.v;
+              _context107.p = 4;
+              _t102 = _context107.v;
               if (current2()) this.failedWrite = true;
-              throw _t97;
+              throw _t102;
             case 5:
               if (current2()) {
                 this.error = null;
                 this.retryAfter = added ? 0 : this.options.now() + 15e3;
               }
-              return _context105.a(2, added);
+              return _context107.a(2, added);
           }
-        }, _callee105, this, [[2, 4]]);
+        }, _callee107, this, [[2, 4]]);
       }))).catch(error => {
         if (current2()) {
           this.error = projectCoreError(error);
@@ -14642,19 +14789,19 @@ var TwilightPortableCore = function (exports) {
       return work;
     }
     shutdown() {
-      return __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee106() {
+      return __async$j(this, null, /*#__PURE__*/_regenerator().m(function _callee108() {
         var _a;
-        return _regenerator().w(function (_context106) {
-          while (1) switch (_context106.n) {
+        return _regenerator().w(function (_context108) {
+          while (1) switch (_context108.n) {
             case 0:
               this.closed = true;
               this.controller.abort(new Error("Heart queue is shutting down"));
-              _context106.n = 1;
+              _context108.n = 1;
               return (_a = this.pending) == null ? void 0 : _a.catch(() => {});
             case 1:
-              return _context106.a(2);
+              return _context108.a(2);
           }
-        }, _callee106, this);
+        }, _callee108, this);
       }));
     }
   }
@@ -14896,14 +15043,14 @@ var TwilightPortableCore = function (exports) {
       });
     }
     startCast(command, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee108() {
-        var _a, _b, _c, cast, intent, position, base, _t100;
-        return _regenerator().w(function (_context108) {
-          while (1) switch (_context108.p = _context108.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee110() {
+        var _a, _b, _c, cast, intent, position, base, _t105;
+        return _regenerator().w(function (_context110) {
+          while (1) switch (_context110.p = _context110.n) {
             case 0:
               cast = this.options.cast;
               if (cast) {
-                _context108.n = 1;
+                _context110.n = 1;
                 break;
               }
               throw new Error("Cast runtime unavailable");
@@ -14911,7 +15058,7 @@ var TwilightPortableCore = function (exports) {
               cast.assertDevice(command.deviceId, command.revision);
               this.assertReference(command.queue);
               if (!(((_a = this.controller.reference()) == null ? void 0 : _a.entryId) !== command.queue.occurrenceId)) {
-                _context108.n = 2;
+                _context110.n = 2;
                 break;
               }
               throw Object.assign(new Error("Cast occurrence changed"), {
@@ -14919,27 +15066,27 @@ var TwilightPortableCore = function (exports) {
               });
             case 2:
               if (!(((_b = this.currentTrack) == null ? void 0 : _b.subTrack) || ((_c = this.currentTrack) == null ? void 0 : _c.cueRange))) {
-                _context108.n = 3;
+                _context110.n = 3;
                 break;
               }
               throw new Error("Cast does not support native subtracks or CUE segments");
             case 3:
               intent = this.beginPreparation();
               position = 0;
-              _context108.p = 4;
-              _context108.n = 5;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee107() {
-                var _a2, _b2, _t98, _t99;
-                return _regenerator().w(function (_context107) {
-                  while (1) switch (_context107.n) {
+              _context110.p = 4;
+              _context110.n = 5;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee109() {
+                var _a2, _b2, _t103, _t104;
+                return _regenerator().w(function (_context109) {
+                  while (1) switch (_context109.n) {
                     case 0:
                       this.guard(intent, signal);
-                      _context107.n = 1;
+                      _context109.n = 1;
                       return this.nativeSelection();
                     case 1:
                       this.assertReference(command.queue);
                       if (!(!this.currentTrack || this.currentTrack.queueEntryId !== command.queue.occurrenceId)) {
-                        _context107.n = 2;
+                        _context109.n = 2;
                         break;
                       }
                       throw Object.assign(new Error("Cast occurrence changed"), {
@@ -14947,41 +15094,41 @@ var TwilightPortableCore = function (exports) {
                       });
                     case 2:
                       if (!(this.currentTrack.subTrack || this.currentTrack.cueRange)) {
-                        _context107.n = 3;
+                        _context109.n = 3;
                         break;
                       }
                       throw new Error("Cast does not support native subtracks or CUE segments");
                     case 3:
                       cast.assertDevice(command.deviceId, command.revision);
                       if (!(cast.state().phase === "ready")) {
-                        _context107.n = 5;
+                        _context109.n = 5;
                         break;
                       }
-                      _t98 = this;
-                      _context107.n = 4;
+                      _t103 = this;
+                      _context109.n = 4;
                       return cast.read();
                     case 4:
-                      _t98.acceptCast.call(_t98, _context107.v);
+                      _t103.acceptCast.call(_t103, _context109.v);
                     case 5:
                       position = (_b2 = (_a2 = this.info) == null ? void 0 : _a2.position) != null ? _b2 : 0;
-                      _context107.n = 6;
+                      _context109.n = 6;
                       return this.clearAbLoop();
                     case 6:
-                      _context107.n = 7;
+                      _context109.n = 7;
                       return this.options.engine.stop();
                     case 7:
-                      _context107.n = 8;
+                      _context109.n = 8;
                       return this.options.engine.getPlaybackInfo();
                     case 8:
-                      _t99 = _context107.v.state;
-                      if (!(_t99 !== "stopped")) {
-                        _context107.n = 9;
+                      _t104 = _context109.v.state;
+                      if (!(_t104 !== "stopped")) {
+                        _context109.n = 9;
                         break;
                       }
                       throw new Error("Native Stop was not acknowledged");
                     case 9:
                       this.guard(intent, signal);
-                      _context107.n = 10;
+                      _context109.n = 10;
                       return cast.select(command.deviceId, command.revision);
                     case 10:
                       this.restored = true;
@@ -14991,133 +15138,133 @@ var TwilightPortableCore = function (exports) {
                       });
                       this.publish();
                     case 11:
-                      return _context107.a(2);
+                      return _context109.a(2);
                   }
-                }, _callee107, this);
+                }, _callee109, this);
               })));
             case 5:
               base = this.controller.window.value;
-              _context108.n = 6;
+              _context110.n = 6;
               return this.load(this.detachedHeartTrack ? this.detachedWindow(base) : base, intent, true, position, signal);
             case 6:
-              _context108.n = 10;
+              _context110.n = 10;
               break;
             case 7:
-              _context108.p = 7;
-              _t100 = _context108.v;
+              _context110.p = 7;
+              _t105 = _context110.v;
               if (!(intent === this.intent && !this.uncertain)) {
-                _context108.n = 9;
+                _context110.n = 9;
                 break;
               }
-              _context108.n = 8;
-              return this.commit(() => this.failStopped(_t100));
+              _context110.n = 8;
+              return this.commit(() => this.failStopped(_t105));
             case 8:
               this.publish();
             case 9:
-              throw _t100;
+              throw _t105;
             case 10:
-              _context108.p = 10;
+              _context110.p = 10;
               this.finishPreparation(intent);
-              return _context108.f(10);
+              return _context110.f(10);
             case 11:
-              return _context108.a(2);
+              return _context110.a(2);
           }
-        }, _callee108, this, [[4, 7, 10, 11]]);
+        }, _callee110, this, [[4, 7, 10, 11]]);
       }));
     }
     endCast(revision2) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee110() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee112() {
         var cast, intent;
-        return _regenerator().w(function (_context110) {
-          while (1) switch (_context110.n) {
+        return _regenerator().w(function (_context112) {
+          while (1) switch (_context112.n) {
             case 0:
               cast = this.options.cast;
               if (cast) {
-                _context110.n = 1;
+                _context112.n = 1;
                 break;
               }
               throw new Error("Cast runtime unavailable");
             case 1:
               cast.assertRevision(revision2);
               intent = this.revoke();
-              _context110.n = 2;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee109() {
-                var _a, _b, _c, _d, position, _t101, _t102, _t103, _t104, _t105;
-                return _regenerator().w(function (_context109) {
-                  while (1) switch (_context109.p = _context109.n) {
+              _context112.n = 2;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee111() {
+                var _a, _b, _c, _d, position, _t106, _t107, _t108, _t109, _t110;
+                return _regenerator().w(function (_context111) {
+                  while (1) switch (_context111.p = _context111.n) {
                     case 0:
                       this.guard(intent);
-                      _context109.p = 1;
+                      _context111.p = 1;
                       if (!(cast.state().phase === "ready")) {
-                        _context109.n = 3;
+                        _context111.n = 3;
                         break;
                       }
-                      _t101 = this;
-                      _context109.n = 2;
+                      _t106 = this;
+                      _context111.n = 2;
                       return cast.read();
                     case 2:
-                      _t101.acceptCast.call(_t101, _context109.v);
+                      _t106.acceptCast.call(_t106, _context111.v);
                     case 3:
                       position = (_b = (_a = this.info) == null ? void 0 : _a.position) != null ? _b : 0;
-                      _context109.n = 4;
+                      _context111.n = 4;
                       return this.clearAbLoop();
                     case 4:
-                      _context109.n = 5;
+                      _context111.n = 5;
                       return cast.end();
                     case 5:
                       this.restored = true;
                       this.uncertain = false;
-                      _t102 = __spreadProps;
-                      _t103 = __spreadValues;
-                      _t104 = {};
-                      _context109.n = 6;
+                      _t107 = __spreadProps;
+                      _t108 = __spreadValues;
+                      _t109 = {};
+                      _context111.n = 6;
                       return this.options.engine.getPlaybackInfo();
                     case 6:
-                      this.info = _t102(_t103(_t104, _context109.v), {
+                      this.info = _t107(_t108(_t109, _context111.v), {
                         state: "paused",
                         position,
                         duration: (_d = (_c = this.currentTrack) == null ? void 0 : _c.duration) != null ? _d : 0,
                         nativePlaybackActive: false
                       });
-                      _context109.n = 9;
+                      _context111.n = 9;
                       break;
                     case 7:
-                      _context109.p = 7;
-                      _t105 = _context109.v;
-                      _context109.n = 8;
-                      return this.failStopped(_t105);
+                      _context111.p = 7;
+                      _t110 = _context111.v;
+                      _context111.n = 8;
+                      return this.failStopped(_t110);
                     case 8:
-                      throw _t105;
+                      throw _t110;
                     case 9:
-                      _context109.p = 9;
+                      _context111.p = 9;
                       this.publish();
-                      return _context109.f(9);
+                      return _context111.f(9);
                     case 10:
-                      return _context109.a(2);
+                      return _context111.a(2);
                   }
-                }, _callee109, this, [[1, 7, 9, 10]]);
+                }, _callee111, this, [[1, 7, 9, 10]]);
               })));
             case 2:
-              _context110.n = 3;
+              _context112.n = 3;
               return this.flush();
             case 3:
-              return _context110.a(2);
+              return _context112.a(2);
           }
-        }, _callee110, this);
+        }, _callee112, this);
       }));
     }
     observeCast(sample, revision2) {
       var intent = this.intent;
-      void this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee111() {
+      void this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee113() {
         var _a, _b, _c, _d, _e, _f, previous, duration, ended, loopAtEnd, boundaries, queue;
-        return _regenerator().w(function (_context111) {
-          while (1) switch (_context111.n) {
+        return _regenerator().w(function (_context113) {
+          while (1) switch (_context113.n) {
             case 0:
               if (!(this.stopped || intent !== this.intent || !((_a = this.options.cast) == null ? void 0 : _a.active()) || this.uncertain || this.restored || revision2 !== this.options.cast.state().revision)) {
-                _context111.n = 1;
+                _context113.n = 1;
                 break;
               }
-              return _context111.a(2, false);
+              return _context113.a(2, false);
             case 1:
               previous = this.info;
               duration = sample.duration || ((_b = this.currentTrack) == null ? void 0 : _b.duration) || 0;
@@ -15128,15 +15275,15 @@ var TwilightPortableCore = function (exports) {
               }), loopAtEnd ? {
                 state: "playing"
               } : {}) : sample);
-              _context111.n = 2;
+              _context113.n = 2;
               return this.enforceAbLoop(intent);
             case 2:
-              if (!_context111.v) {
-                _context111.n = 3;
+              if (!_context113.v) {
+                _context113.n = 3;
                 break;
               }
               this.publish();
-              return _context111.a(2, false);
+              return _context113.a(2, false);
             case 3:
               if (ended && this.castBoundaryRevision !== revision2 && this.info) {
                 boundaries = this.info.naturalBoundaries;
@@ -15151,87 +15298,87 @@ var TwilightPortableCore = function (exports) {
               this.publish();
               if (this.options.now() - this.lastSavedAt >= 5e3) this.scheduleSave();
               if (!(ended && this.castBoundaryRevision !== revision2)) {
-                _context111.n = 4;
+                _context113.n = 4;
                 break;
               }
               this.castBoundaryRevision = revision2;
-              return _context111.a(2, true);
+              return _context113.a(2, true);
             case 4:
-              return _context111.a(2, false);
+              return _context113.a(2, false);
           }
-        }, _callee111, this);
-      }))).then(advance => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee112() {
-        return _regenerator().w(function (_context112) {
-          while (1) switch (_context112.n) {
+        }, _callee113, this);
+      }))).then(advance => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee114() {
+        return _regenerator().w(function (_context114) {
+          while (1) switch (_context114.n) {
             case 0:
               if (!(advance && intent === this.intent)) {
-                _context112.n = 1;
+                _context114.n = 1;
                 break;
               }
-              _context112.n = 1;
+              _context114.n = 1;
               return this.advanceCast();
             case 1:
-              return _context112.a(2);
+              return _context114.a(2);
           }
-        }, _callee112, this);
+        }, _callee114, this);
       }))).catch(error => {
         if (intent === this.intent) this.castFailed(error, revision2);
       });
     }
     castFailed(error, revision2) {
       var intent = this.intent;
-      void this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee113() {
+      void this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee115() {
         var _a;
-        return _regenerator().w(function (_context113) {
-          while (1) switch (_context113.n) {
+        return _regenerator().w(function (_context115) {
+          while (1) switch (_context115.n) {
             case 0:
               if (!(this.stopped || intent !== this.intent || !((_a = this.options.cast) == null ? void 0 : _a.active()) || revision2 !== this.options.cast.state().revision)) {
-                _context113.n = 1;
+                _context115.n = 1;
                 break;
               }
-              return _context113.a(2);
+              return _context115.a(2);
             case 1:
               this.revoke();
-              _context113.n = 2;
+              _context115.n = 2;
               return this.failStopped(error);
             case 2:
               this.publish();
             case 3:
-              return _context113.a(2);
+              return _context115.a(2);
           }
-        }, _callee113, this);
+        }, _callee115, this);
       }))).catch(() => {});
     }
     advanceCast() {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee114() {
-        var _a, _b, _c, intent, signal, reference, base, next, target, _t106;
-        return _regenerator().w(function (_context114) {
-          while (1) switch (_context114.p = _context114.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee116() {
+        var _a, _b, _c, intent, signal, reference, base, next, target, _t111;
+        return _regenerator().w(function (_context116) {
+          while (1) switch (_context116.p = _context116.n) {
             case 0:
               if (!this.automaticQueue()) {
-                _context114.n = 1;
+                _context116.n = 1;
                 break;
               }
-              return _context114.a(2, this.navigateAutomatic(1, void 0, true));
+              return _context116.a(2, this.navigateAutomatic(1, void 0, true));
             case 1:
               intent = this.beginPreparation(), signal = this.preview.signal;
-              _context114.p = 2;
+              _context116.p = 2;
               reference = this.controller.reference();
               if (reference) {
-                _context114.n = 3;
+                _context116.n = 3;
                 break;
               }
-              return _context114.a(2);
+              return _context116.a(2);
             case 3:
               if (!(this.mode === "repeat" && this.currentTrack)) {
-                _context114.n = 5;
+                _context116.n = 5;
                 break;
               }
               base = this.controller.window.value;
-              _context114.n = 4;
+              _context116.n = 4;
               return this.load(this.detachedHeartTrack ? this.detachedWindow(base) : base, intent, true, 0, signal);
             case 4:
-              return _context114.a(2, _context114.v);
+              return _context116.a(2, _context116.v);
             case 5:
               next = () => this.detachedHeartTrack ? this.options.queues.readQueue(reference.id, 0, 1, {
                 expectedRevision: reference.revision
@@ -15239,30 +15386,30 @@ var TwilightPortableCore = function (exports) {
                 var _a2;
                 return (_a2 = page2.items[0]) != null ? _a2 : null;
               }) : this.options.queues.readNeighbor(reference.id, reference.revision, reference.index, 1, this.mode === "listLoop" || this.mode === "shuffle");
-              _context114.n = 6;
+              _context116.n = 6;
               return next();
             case 6:
-              target = _context114.v;
+              target = _context116.v;
               if (!(!target && (((_a = this.personalized) == null ? void 0 : _a.state()) || ((_b = this.heart) == null ? void 0 : _b.state().active)))) {
-                _context114.n = 9;
+                _context116.n = 9;
                 break;
               }
-              _context114.n = 7;
+              _context116.n = 7;
               return ((_c = this.personalized) == null ? void 0 : _c.state()) ? this.personalized.refill() : this.heart.refill();
             case 7:
               this.guard(intent, signal);
               reference = this.controller.reference();
-              _context114.n = 8;
+              _context116.n = 8;
               return next();
             case 8:
-              target = _context114.v;
+              target = _context116.v;
             case 9:
               this.guard(intent, signal);
               if (!(target == null ? void 0 : target.track)) {
-                _context114.n = 11;
+                _context116.n = 11;
                 break;
               }
-              _context114.n = 10;
+              _context116.n = 10;
               return this.load(this.targetWindow(target), intent, true, 0, signal, {
                 selection: {
                   expected: reference,
@@ -15270,55 +15417,55 @@ var TwilightPortableCore = function (exports) {
                 }
               });
             case 10:
-              return _context114.a(2, _context114.v);
+              return _context116.a(2, _context116.v);
             case 11:
-              _context114.n = 12;
+              _context116.n = 12;
               return this.stop();
             case 12:
-              _context114.n = 15;
+              _context116.n = 15;
               break;
             case 13:
-              _context114.p = 13;
-              _t106 = _context114.v;
+              _context116.p = 13;
+              _t111 = _context116.v;
               if (!(intent === this.intent && !this.uncertain)) {
-                _context114.n = 15;
+                _context116.n = 15;
                 break;
               }
-              _context114.n = 14;
-              return this.commit(() => this.failStopped(_t106));
+              _context116.n = 14;
+              return this.commit(() => this.failStopped(_t111));
             case 14:
               this.publish();
             case 15:
-              _context114.p = 15;
+              _context116.p = 15;
               this.finishPreparation(intent);
-              return _context114.f(15);
+              return _context116.f(15);
             case 16:
-              return _context114.a(2);
+              return _context116.a(2);
           }
-        }, _callee114, this, [[2, 13, 15, 16]]);
+        }, _callee116, this, [[2, 13, 15, 16]]);
       }));
     }
     initialize() {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee115() {
-        var _a, _b, _c, _d, _e, _f, saved, session, position, window, queue, imported, _queue2, _window, base, _queue3, _window2, _t107, _t108, _t109, _t110, _t111, _t112;
-        return _regenerator().w(function (_context115) {
-          while (1) switch (_context115.p = _context115.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee117() {
+        var _a, _b, _c, _d, _e, _f, saved, session, position, window, queue, imported, _queue2, _window, base, _queue3, _window2, _t112, _t113, _t114, _t115, _t116, _t117;
+        return _regenerator().w(function (_context117) {
+          while (1) switch (_context117.p = _context117.n) {
             case 0:
-              _context115.n = 1;
+              _context117.n = 1;
               return this.options.engine.start();
             case 1:
-              _context115.n = 2;
+              _context117.n = 2;
               return this.options.engine.getPlaybackInfo();
             case 2:
-              this.info = _context115.v;
+              this.info = _context117.v;
               if (this.info.volume > 0) this.lastAudibleVolume = this.info.volume;
-              _context115.n = 3;
+              _context117.n = 3;
               return this.options.repository.load();
             case 3:
-              saved = _context115.v;
+              saved = _context117.v;
               this.revision = (_a = saved == null ? void 0 : saved.revision) != null ? _a : 0;
               if (!((saved == null ? void 0 : saved.data) && this.options.resumeMode() !== "off")) {
-                _context115.n = 22;
+                _context117.n = 22;
                 break;
               }
               session = saved.data;
@@ -15326,18 +15473,18 @@ var TwilightPortableCore = function (exports) {
               position = session.position;
               this.mode = (_c = session.playMode) != null ? _c : "sequential";
               if (!session.libraryQueue) {
-                _context115.n = 10;
+                _context117.n = 10;
                 break;
               }
               if (!(session.detachedHeartTrack && session.heart && this.heart)) {
-                _context115.n = 7;
+                _context117.n = 7;
                 break;
               }
-              _context115.n = 4;
+              _context117.n = 4;
               return this.options.queues.getQueue(session.libraryQueue.id);
             case 4:
-              queue = _context115.v;
-              _context115.n = 5;
+              queue = _context117.v;
+              _context117.n = 5;
               return this.controller.adoptStopped({
                 id: queue.id,
                 revision: queue.revision,
@@ -15345,44 +15492,44 @@ var TwilightPortableCore = function (exports) {
                 entryId: queue.selectedEntryId
               }, libraryQueueResumeMode(queue, this.mode), () => !this.stopped);
             case 5:
-              window = _context115.v;
-              _context115.n = 6;
+              window = _context117.v;
+              _context117.n = 6;
               return this.updateTrack(session.track);
             case 6:
-              _context115.n = 9;
+              _context117.n = 9;
               break;
             case 7:
-              _context115.n = 8;
+              _context117.n = 8;
               return this.controller.restore(session.libraryQueue, this.mode, () => !this.stopped);
             case 8:
-              window = _context115.v;
-              _context115.n = 9;
+              window = _context117.v;
+              _context117.n = 9;
               return this.updateTrack(this.controller.track(window));
             case 9:
               if (window) this.mode = libraryQueueResumeMode(window.queue, this.mode);
-              _context115.n = 14;
+              _context117.n = 14;
               break;
             case 10:
-              _t107 = importLegacyQueue;
-              _t108 = this.options.queues;
-              _t109 = session;
-              _t110 = this.revision;
-              _context115.n = 11;
+              _t112 = importLegacyQueue;
+              _t113 = this.options.queues;
+              _t114 = session;
+              _t115 = this.revision;
+              _context117.n = 11;
               return this.options.queues.libraryRevision();
             case 11:
-              _t111 = _context115.v;
-              _context115.n = 12;
-              return _t107({
-                api: _t108,
-                session: _t109,
-                sessionRevision: _t110,
-                libraryRevision: _t111
+              _t116 = _context117.v;
+              _context117.n = 12;
+              return _t112({
+                api: _t113,
+                session: _t114,
+                sessionRevision: _t115,
+                libraryRevision: _t116
               });
             case 12:
-              imported = _context115.v;
+              imported = _context117.v;
               position = imported.position;
               _queue2 = imported.queue;
-              _context115.n = 13;
+              _context117.n = 13;
               return this.controller.restore({
                 id: _queue2.id,
                 revision: _queue2.revision,
@@ -15390,29 +15537,29 @@ var TwilightPortableCore = function (exports) {
                 entryId: _queue2.selectedEntryId
               }, this.mode, () => !this.stopped, true);
             case 13:
-              _window = _context115.v;
-              _context115.n = 14;
+              _window = _context117.v;
+              _context117.n = 14;
               return this.updateTrack(this.controller.track(_window));
             case 14:
               if (!this.currentTrack) {
-                _context115.n = 22;
+                _context117.n = 22;
                 break;
               }
               if (!(session.heart && session.heart.queueId === ((_d = this.controller.reference()) == null ? void 0 : _d.id) && this.heart)) {
-                _context115.n = 21;
+                _context117.n = 21;
                 break;
               }
               if (!session.heart.baseQueue) {
-                _context115.n = 20;
+                _context117.n = 20;
                 break;
               }
               base = createLibraryPlaybackController(this.options.queues);
-              _context115.p = 15;
-              _context115.n = 16;
+              _context117.p = 15;
+              _context117.n = 16;
               return this.options.queues.getQueue(session.heart.baseQueue.id);
             case 16:
-              _queue3 = _context115.v;
-              _context115.n = 17;
+              _queue3 = _context117.v;
+              _context117.n = 17;
               return base.adoptStopped({
                 id: _queue3.id,
                 revision: _queue3.revision,
@@ -15420,30 +15567,30 @@ var TwilightPortableCore = function (exports) {
                 entryId: _queue3.selectedEntryId
               }, libraryQueueResumeMode(_queue3, "sequential"), () => !this.stopped);
             case 17:
-              _window2 = _context115.v;
+              _window2 = _context117.v;
               if (_window2) {
-                _context115.n = 18;
+                _context117.n = 18;
                 break;
               }
               throw new Error("Heart base queue is unavailable");
             case 18:
               this.heartBase = base;
               this.mode = "heart";
-              _context115.n = 20;
+              _context117.n = 20;
               break;
             case 19:
-              _context115.p = 19;
-              _t112 = _context115.v;
+              _context117.p = 19;
+              _t117 = _context117.v;
               base.dispose();
-              throw _t112;
+              throw _t117;
             case 20:
               this.heart.attach(session.heart);
               if (!session.detachedHeartTrack) {
-                _context115.n = 21;
+                _context117.n = 21;
                 break;
               }
               this.detachedHeartTrack = true;
-              _context115.n = 21;
+              _context117.n = 21;
               return this.updateTrack(session.track);
             case 21:
               if (session.personalizedStream && session.personalizedStream.queueId === ((_e = this.controller.reference()) == null ? void 0 : _e.id)) (_f = this.personalized) == null ? void 0 : _f.attach(session.personalizedStream);
@@ -15459,17 +15606,17 @@ var TwilightPortableCore = function (exports) {
               this.options.engine.on("playback-sample", this.listen);
               this.options.engine.on("audio-service-crash", this.crash);
               if (!((saved == null ? void 0 : saved.data) && !saved.data.libraryQueue && this.currentTrack)) {
-                _context115.n = 23;
+                _context117.n = 23;
                 break;
               }
-              _context115.n = 23;
+              _context117.n = 23;
               return this.flush();
             case 23:
               this.publish();
             case 24:
-              return _context115.a(2);
+              return _context117.a(2);
           }
-        }, _callee115, this, [[15, 19]]);
+        }, _callee117, this, [[15, 19]]);
       }));
     }
     snapshot() {
@@ -15510,38 +15657,38 @@ var TwilightPortableCore = function (exports) {
       if (!this.observed) return;
       var advance = false;
       var intent = this.intent;
-      this.observing = this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee116() {
+      this.observing = this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee118() {
         var _a, _b, _c, intent2, observed, info, looped, end, key;
-        return _regenerator().w(function (_context116) {
-          while (1) switch (_context116.n) {
+        return _regenerator().w(function (_context118) {
+          while (1) switch (_context118.n) {
             case 0:
               intent2 = this.intent;
               observed = this.observed;
               this.observed = null;
               if (!(!observed || ((_a = this.options.cast) == null ? void 0 : _a.active()) || this.restored || this.uncertain || observed.token !== this.options.engine.getQueueToken())) {
-                _context116.n = 1;
+                _context118.n = 1;
                 break;
               }
-              return _context116.a(2);
+              return _context118.a(2);
             case 1:
-              _context116.n = 2;
+              _context118.n = 2;
               return this.options.engine.getPlaybackInfo();
             case 2:
-              info = _context116.v;
-              _context116.n = 3;
+              info = _context118.v;
+              _context118.n = 3;
               return this.acceptNative(info);
             case 3:
               if (!(observed.token !== this.options.engine.getQueueToken())) {
-                _context116.n = 4;
+                _context118.n = 4;
                 break;
               }
-              return _context116.a(2);
+              return _context118.a(2);
             case 4:
               this.info = info;
-              _context116.n = 5;
+              _context118.n = 5;
               return this.enforceAbLoop(intent2);
             case 5:
-              looped = _context116.v;
+              looped = _context118.v;
               end = this.options.engine.getPlaybackEnd();
               if (!looped && this.automaticQueue() && info.state === "stopped" && end && !((_b = this.options.sleepTimer) == null ? void 0 : _b.triggered())) {
                 key = `${end.intent}:${end.selection.queueToken}:${end.selection.index}`;
@@ -15554,136 +15701,136 @@ var TwilightPortableCore = function (exports) {
               if (this.options.now() - this.lastSavedAt >= 5e3) this.scheduleSave();
               void ((_c = this.maintainer) == null ? void 0 : _c.tick());
             case 6:
-              return _context116.a(2);
+              return _context118.a(2);
           }
-        }, _callee116, this);
-      }))).then(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee117() {
-        return _regenerator().w(function (_context117) {
-          while (1) switch (_context117.n) {
+        }, _callee118, this);
+      }))).then(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee119() {
+        return _regenerator().w(function (_context119) {
+          while (1) switch (_context119.n) {
             case 0:
               if (!(advance && intent === this.intent)) {
-                _context117.n = 1;
+                _context119.n = 1;
                 break;
               }
-              _context117.n = 1;
+              _context119.n = 1;
               return this.navigateAutomatic(1, void 0, true);
             case 1:
-              return _context117.a(2);
+              return _context119.a(2);
           }
-        }, _callee117, this);
-      }))).catch(error => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee118() {
-        var _t113;
-        return _regenerator().w(function (_context118) {
-          while (1) switch (_context118.p = _context118.n) {
+        }, _callee119, this);
+      }))).catch(error => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee120() {
+        var _t118;
+        return _regenerator().w(function (_context120) {
+          while (1) switch (_context120.p = _context120.n) {
             case 0:
               this.revoke();
-              _context118.p = 1;
-              _context118.n = 2;
+              _context120.p = 1;
+              _context120.n = 2;
               return this.commit(() => this.failStopped(error));
             case 2:
-              _context118.n = 4;
+              _context120.n = 4;
               break;
             case 3:
-              _context118.p = 3;
-              _t113 = _context118.v;
-              this.error = errorText(_t113);
+              _context120.p = 3;
+              _t118 = _context120.v;
+              this.error = errorText(_t118);
             case 4:
               this.publish();
             case 5:
-              return _context118.a(2);
+              return _context120.a(2);
           }
-        }, _callee118, this, [[1, 3]]);
+        }, _callee120, this, [[1, 3]]);
       }))).finally(() => {
         this.observing = null;
         if (this.observed) this.drainObservation();
       });
     }
     acceptNative(info) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee119() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee121() {
         var _a, _b, entry, index, reference, window, result, previous, selected, _previous;
-        return _regenerator().w(function (_context119) {
-          while (1) switch (_context119.n) {
+        return _regenerator().w(function (_context121) {
+          while (1) switch (_context121.n) {
             case 0:
               entry = this.options.engine.getQueueSnapshot()[info.queueIndex];
               index = this.mapping[info.queueIndex];
               reference = this.controller.reference();
               if (!(!reference || !(entry == null ? void 0 : entry.queueEntryId) || index === void 0 || info.source !== entry.source)) {
-                _context119.n = 1;
+                _context121.n = 1;
                 break;
               }
-              return _context119.a(2);
+              return _context121.a(2);
             case 1:
               if (!(this.detachedHeartTrack && entry.queueEntryId === ((_a = this.currentTrack) == null ? void 0 : _a.queueEntryId))) {
-                _context119.n = 2;
+                _context121.n = 2;
                 break;
               }
-              return _context119.a(2);
+              return _context121.a(2);
             case 2:
               if (!this.detachedHeartTrack) {
-                _context119.n = 6;
+                _context121.n = 6;
                 break;
               }
-              _context119.n = 3;
+              _context121.n = 3;
               return this.controller.selectEntry(entry.queueEntryId, reference, this.mode);
             case 3:
-              window = _context119.v;
+              window = _context121.v;
               if (!(!window || window.queue.index !== index)) {
-                _context119.n = 4;
+                _context121.n = 4;
                 break;
               }
               throw new Error("Heart exit successor changed");
             case 4:
               this.detachedHeartTrack = false;
-              _context119.n = 5;
+              _context121.n = 5;
               return this.updateTrack(this.controller.track(window));
             case 5:
-              return _context119.a(2);
+              return _context121.a(2);
             case 6:
               if (!(reference.entryId !== entry.queueEntryId)) {
-                _context119.n = 11;
+                _context121.n = 11;
                 break;
               }
-              _context119.n = 7;
+              _context121.n = 7;
               return this.controller.acceptNative(entry.queueEntryId, reference, this.mode);
             case 7:
-              result = _context119.v;
+              result = _context121.v;
               if (!(!result || result.queue.index !== index)) {
-                _context119.n = 8;
+                _context121.n = 8;
                 break;
               }
               throw new Error("Native occurrence no longer matches the logical queue");
             case 8:
               previous = this.currentTrack;
-              _context119.n = 9;
+              _context121.n = 9;
               return this.updateTrack(this.controller.track(result));
             case 9:
-              _context119.n = 10;
+              _context121.n = 10;
               return this.applyTrackRate(previous, this.currentTrack);
             case 10:
-              _context119.n = 14;
+              _context121.n = 14;
               break;
             case 11:
               if (!(((_b = this.currentTrack) == null ? void 0 : _b.id) !== entry.id)) {
-                _context119.n = 14;
+                _context121.n = 14;
                 break;
               }
               selected = this.controller.track();
               if (!((selected == null ? void 0 : selected.id) !== entry.id)) {
-                _context119.n = 12;
+                _context121.n = 12;
                 break;
               }
               throw new Error("Native source identity differs from SQL");
             case 12:
               _previous = this.currentTrack;
-              _context119.n = 13;
+              _context121.n = 13;
               return this.updateTrack(selected);
             case 13:
-              _context119.n = 14;
+              _context121.n = 14;
               return this.applyTrackRate(_previous, selected);
             case 14:
-              return _context119.a(2);
+              return _context121.a(2);
           }
-        }, _callee119, this);
+        }, _callee121, this);
       }));
     }
     interruptSleep() {
@@ -15724,28 +15871,28 @@ var TwilightPortableCore = function (exports) {
       this.publish();
     }
     commit(operation) {
-      var result = this.mutation.then(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee120() {
-        return _regenerator().w(function (_context120) {
-          while (1) switch (_context120.p = _context120.n) {
+      var result = this.mutation.then(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee122() {
+        return _regenerator().w(function (_context122) {
+          while (1) switch (_context122.p = _context122.n) {
             case 0:
-              _context120.n = 1;
+              _context122.n = 1;
               return this.sleepReset;
             case 1:
               this.committing = true;
-              _context120.p = 2;
-              _context120.n = 3;
+              _context122.p = 2;
+              _context122.n = 3;
               return operation();
             case 3:
-              return _context120.a(2, _context120.v);
+              return _context122.a(2, _context122.v);
             case 4:
-              _context120.p = 4;
+              _context122.p = 4;
               this.committing = false;
               this.drainObservation();
-              return _context120.f(4);
+              return _context122.f(4);
             case 5:
-              return _context120.a(2);
+              return _context122.a(2);
           }
-        }, _callee120, this, [[2,, 4, 5]]);
+        }, _callee122, this, [[2,, 4, 5]]);
       })));
       this.mutation = result.catch(() => {});
       return result;
@@ -15760,109 +15907,109 @@ var TwilightPortableCore = function (exports) {
       return this.commit(() => this.options.runTransport ? this.options.runTransport(action) : action());
     }
     resolve(window, intent, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee121() {
-        var entry, track, current2, prepared, _t114;
-        return _regenerator().w(function (_context121) {
-          while (1) switch (_context121.p = _context121.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee123() {
+        var entry, track, current2, prepared, _t119;
+        return _regenerator().w(function (_context123) {
+          while (1) switch (_context123.p = _context123.n) {
             case 0:
               this.guard(intent, signal);
               entry = window.items[0];
               track = (entry == null ? void 0 : entry.track) ? libraryQueueTrack(entry.track, entry.queueEntryId) : null;
               if (track) {
-                _context121.n = 1;
+                _context123.n = 1;
                 break;
               }
               throw new Error("Selected queue occurrence is not playable");
             case 1:
               current2 = signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal;
-              _context121.p = 2;
-              _context121.n = 3;
+              _context123.p = 2;
+              _context123.n = 3;
               return this.prepareSource(track, current2);
             case 3:
-              prepared = _context121.v;
-              _context121.n = 5;
+              prepared = _context123.v;
+              _context123.n = 5;
               break;
             case 4:
-              _context121.p = 4;
-              _t114 = _context121.v;
+              _context123.p = 4;
+              _t119 = _context123.v;
               this.guard(intent, signal);
-              throw _t114;
+              throw _t119;
             case 5:
               this.guard(intent, signal);
-              return _context121.a(2, prepared);
+              return _context123.a(2, prepared);
           }
-        }, _callee121, this, [[2, 4]]);
+        }, _callee123, this, [[2, 4]]);
       }));
     }
     prepareSource(track, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee122() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee124() {
         var resolved, source;
-        return _regenerator().w(function (_context122) {
-          while (1) switch (_context122.n) {
+        return _regenerator().w(function (_context124) {
+          while (1) switch (_context124.n) {
             case 0:
               if (!this.options.sources) {
-                _context122.n = 1;
+                _context124.n = 1;
                 break;
               }
-              return _context122.a(2, this.options.sources.prepare(track, signal));
+              return _context124.a(2, this.options.sources.prepare(track, signal));
             case 1:
-              _context122.n = 2;
+              _context124.n = 2;
               return this.options.resolver.resolve(track, signal);
             case 2:
-              resolved = _context122.v;
+              resolved = _context124.v;
               signal == null ? void 0 : signal.throwIfAborted();
               if (resolved) {
-                _context122.n = 3;
+                _context124.n = 3;
                 break;
               }
               throw new Error("Unable to resolve the selected audio source");
             case 3:
-              _context122.n = 4;
+              _context124.n = 4;
               return authorizeNativeSource(resolved.source, this.options.authorize);
             case 4:
-              source = _context122.v;
+              source = _context124.v;
               signal == null ? void 0 : signal.throwIfAborted();
               if (isSourceCurrent(resolved, this.options.now())) {
-                _context122.n = 5;
+                _context124.n = 5;
                 break;
               }
               throw new Error("Audio source expired before playback");
             case 5:
-              return _context122.a(2, {
+              return _context124.a(2, {
                 track,
                 resolved: __spreadProps(__spreadValues({}, resolved), {
                   source
                 })
               });
           }
-        }, _callee122, this);
+        }, _callee124, this);
       }));
     }
     /** The native commit lane owns this write and the controller cache adoption.
      * No provider IO or recursive controller command is allowed in this stage. */
     repairSource(owner, window, occurrenceId, prepared) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee123() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee125() {
         var _a, _b, _c, _d, _e, _f, row, queue, previous, snapshot, repaired;
-        return _regenerator().w(function (_context123) {
-          while (1) switch (_context123.n) {
+        return _regenerator().w(function (_context125) {
+          while (1) switch (_context125.n) {
             case 0:
               (_a = prepared.confirm) == null ? void 0 : _a.call(prepared);
               row = window.items.find(item => item.queueEntryId === occurrenceId);
               if (row == null ? void 0 : row.track) {
-                _context123.n = 1;
+                _context125.n = 1;
                 break;
               }
               throw new Error("Source repair occurrence is unavailable");
             case 1:
               if (!(row.track.id === prepared.track.id)) {
-                _context123.n = 2;
+                _context125.n = 2;
                 break;
               }
-              return _context123.a(2);
+              return _context125.a(2);
             case 2:
               queue = owner.diagnostics.queue;
               if (!(!(queue == null ? void 0 : queue.selectedEntryId) || queue.id !== window.queue.id || queue.revision !== window.queue.revision)) {
-                _context123.n = 3;
+                _context125.n = 3;
                 break;
               }
               throw new Error("Playback queue changed during source preparation");
@@ -15870,18 +16017,18 @@ var TwilightPortableCore = function (exports) {
               previous = libraryQueueTrack(row.track, occurrenceId);
               snapshot = __spreadValues({}, toPlaybackQueueSnapshot(prepared.track));
               if (!(this.detachedHeartTrack && window.queue.index === -1 && occurrenceId === ((_b = this.currentTrack) == null ? void 0 : _b.queueEntryId))) {
-                _context123.n = 5;
+                _context125.n = 5;
                 break;
               }
               window.items = window.items.map(item => item === row ? __spreadProps(__spreadValues({}, item), {
                 track: snapshot
               }) : item);
-              _context123.n = 4;
+              _context125.n = 4;
               return (_d = (_c = this.options.sources) == null ? void 0 : _c.repaired) == null ? void 0 : _d.call(_c, previous, prepared.track);
             case 4:
-              return _context123.a(2);
+              return _context125.a(2);
             case 5:
-              _context123.n = 6;
+              _context125.n = 6;
               return owner.replaceSource({
                 queue: {
                   id: queue.id,
@@ -15901,129 +16048,129 @@ var TwilightPortableCore = function (exports) {
                 })
               }, this.mode);
             case 6:
-              repaired = _context123.v;
+              repaired = _context125.v;
               window.queue = __spreadProps(__spreadValues({}, window.queue), {
                 revision: repaired.queue.revision
               });
               window.items = window.items.map(item => item === row ? __spreadProps(__spreadValues({}, item), {
                 track: snapshot
               }) : item);
-              _context123.n = 7;
+              _context125.n = 7;
               return (_f = (_e = this.options.sources) == null ? void 0 : _e.repaired) == null ? void 0 : _f.call(_e, previous, prepared.track);
             case 7:
-              return _context123.a(2);
+              return _context125.a(2);
           }
-        }, _callee123, this);
+        }, _callee125, this);
       }));
     }
     load(_0, _1, _2) {
-      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee124(window, intent, play, position = 0, signal, context = {}) {
+      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee126(window, intent, play, position = 0, signal, context = {}) {
         var run;
-        return _regenerator().w(function (_context124) {
-          while (1) switch (_context124.p = _context124.n) {
+        return _regenerator().w(function (_context126) {
+          while (1) switch (_context126.p = _context126.n) {
             case 0:
               this.guard(intent, signal);
               this.loadingIntent = intent;
               this.requestedState = play ? "playing" : "paused";
               this.publish();
-              _context124.p = 1;
+              _context126.p = 1;
               if (!this.sourceBarrier) {
-                _context124.n = 2;
+                _context126.n = 2;
                 break;
               }
-              _context124.n = 2;
+              _context126.n = 2;
               return this.sourceBarrier;
             case 2:
               run = () => {
                 this.guard(intent, signal);
                 return this.loadSource(window, intent, play, position, signal, context);
               };
-              _context124.n = 3;
+              _context126.n = 3;
               return this.options.resources && !context.resourcesHeld ? this.options.resources.use(run) : run();
             case 3:
-              _context124.p = 3;
+              _context126.p = 3;
               this.finishPreparation(intent);
-              return _context124.f(3);
+              return _context126.f(3);
             case 4:
-              return _context124.a(2);
+              return _context126.a(2);
           }
-        }, _callee124, this, [[1,, 3, 4]]);
+        }, _callee126, this, [[1,, 3, 4]]);
       }));
     }
     loadSource(_0, _1, _2) {
-      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee127(window, intent, play, position = 0, signal, context = {}) {
-        var _this, _a, _b, _c, selection, adopt, prepare, owner, staged, prepared, _loop, attempt, _t117, _t118;
-        return _regenerator().w(function (_context127) {
-          while (1) switch (_context127.n) {
+      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee129(window, intent, play, position = 0, signal, context = {}) {
+        var _this, _a, _b, _c, selection, adopt, prepare, owner, staged, prepared, _loop, attempt, _t122, _t123;
+        return _regenerator().w(function (_context129) {
+          while (1) switch (_context129.n) {
             case 0:
               _this = this;
               selection = context.selection, adopt = context.adopt, prepare = context.prepare;
               owner = (_a = context.owner) != null ? _a : this.controller, staged = !!prepare;
               if (!((_b = context.prepared) != null)) {
-                _context127.n = 1;
+                _context129.n = 1;
                 break;
               }
-              _t117 = _b;
-              _context127.n = 6;
+              _t122 = _b;
+              _context129.n = 6;
               break;
             case 1:
               if (!context.recover) {
-                _context127.n = 3;
+                _context129.n = 3;
                 break;
               }
-              _context127.n = 2;
+              _context129.n = 2;
               return this.recoverSource(context.recover, intent, signal);
             case 2:
-              _t118 = _context127.v;
-              _context127.n = 5;
+              _t123 = _context129.v;
+              _context129.n = 5;
               break;
             case 3:
-              _context127.n = 4;
+              _context129.n = 4;
               return this.resolve(window, intent, signal);
             case 4:
-              _t118 = _context127.v;
+              _t123 = _context129.v;
             case 5:
-              _t117 = _t118;
+              _t122 = _t123;
             case 6:
-              prepared = _t117;
-              _loop = /*#__PURE__*/_regenerator().m(function _callee126() {
-                var _prepared3, track, resolved, _yield$automaticPlayb, _yield$automaticPlayb2, allowed, base, _t116;
-                return _regenerator().w(function (_context126) {
-                  while (1) switch (_context126.p = _context126.n) {
+              prepared = _t122;
+              _loop = /*#__PURE__*/_regenerator().m(function _callee128() {
+                var _prepared3, track, resolved, _yield$automaticPlayb, _yield$automaticPlayb2, allowed, base, _t121;
+                return _regenerator().w(function (_context128) {
+                  while (1) switch (_context128.p = _context128.n) {
                     case 0:
                       _prepared3 = prepared, track = _prepared3.track, resolved = _prepared3.resolved;
                       if (!context.automatic) {
-                        _context126.n = 2;
+                        _context128.n = 2;
                         break;
                       }
-                      _context126.n = 1;
+                      _context128.n = 1;
                       return automaticPlaybackMask([track], _this.options.automaticPlaybackAllowed, signal);
                     case 1:
-                      _yield$automaticPlayb = _context126.v;
+                      _yield$automaticPlayb = _context128.v;
                       _yield$automaticPlayb2 = _slicedToArray(_yield$automaticPlayb, 1);
                       allowed = _yield$automaticPlayb2[0];
                       _this.guard(intent, signal);
                       if (allowed) {
-                        _context126.n = 2;
+                        _context128.n = 2;
                         break;
                       }
                       throw new AutomaticPlaybackRejected();
                     case 2:
-                      _context126.p = 2;
-                      _context126.n = 3;
-                      return _this.transport(() => __async$i(_this, null, /*#__PURE__*/_regenerator().m(function _callee125() {
-                        var _a2, _b2, _c2, _d, _e, _f, _g, _h, _i, _j, reference, previousTrack, selected, sample, result, _t115;
-                        return _regenerator().w(function (_context125) {
-                          while (1) switch (_context125.p = _context125.n) {
+                      _context128.p = 2;
+                      _context128.n = 3;
+                      return _this.transport(() => __async$i(_this, null, /*#__PURE__*/_regenerator().m(function _callee127() {
+                        var _a2, _b2, _c2, _d, _e, _f, _g, _h, _i, _j, reference, previousTrack, selected, sample, result, _t120;
+                        return _regenerator().w(function (_context127) {
+                          while (1) switch (_context127.p = _context127.n) {
                             case 0:
                               this.guard(intent, signal);
                               if (!(context.automatic && selection)) {
-                                _context125.n = 2;
+                                _context127.n = 2;
                                 break;
                               }
                               reference = this.controller.reference();
                               if (!((reference == null ? void 0 : reference.id) !== selection.expected.id || reference.entryId !== context.automaticOrigin)) {
-                                _context125.n = 1;
+                                _context127.n = 1;
                                 break;
                               }
                               throw Object.assign(new Error("Automatic playback occurrence changed"), {
@@ -16037,40 +16184,40 @@ var TwilightPortableCore = function (exports) {
                             case 2:
                               if (selection) this.assertReference(selection.expected);
                               if (!(selection == null ? void 0 : selection.native)) {
-                                _context125.n = 3;
+                                _context127.n = 3;
                                 break;
                               }
-                              _context125.n = 3;
+                              _context127.n = 3;
                               return this.fenceNative(selection.native);
                             case 3:
                               this.guard(intent, signal);
                               if (!context.prepared) {
-                                _context125.n = 4;
+                                _context127.n = 4;
                                 break;
                               }
                               (_a2 = prepared.confirm) == null ? void 0 : _a2.call(prepared);
                               if (isSourceCurrent(resolved, this.options.now())) {
-                                _context125.n = 4;
+                                _context127.n = 4;
                                 break;
                               }
                               throw new Error("Audio source expired before playback");
                             case 4:
-                              _context125.n = 5;
+                              _context127.n = 5;
                               return prepare == null ? void 0 : prepare();
                             case 5:
-                              _context125.p = 5;
+                              _context127.p = 5;
                               this.guard(intent, signal);
                               (_b2 = prepared.confirm) == null ? void 0 : _b2.call(prepared);
                               if (isSourceCurrent(resolved, this.options.now())) {
-                                _context125.n = 6;
+                                _context127.n = 6;
                                 break;
                               }
                               throw new Error("Audio source expired before playback");
                             case 6:
-                              _context125.n = 7;
+                              _context127.n = 7;
                               return this.observeDepartingTrack(track);
                             case 7:
-                              _context125.n = 8;
+                              _context127.n = 8;
                               return this.repairSource(owner, window, track.queueEntryId, prepared);
                             case 8:
                               if (selection) selection.expected = __spreadProps(__spreadValues({}, selection.expected), {
@@ -16079,39 +16226,39 @@ var TwilightPortableCore = function (exports) {
                               this.guard(intent, signal);
                               (_c2 = prepared.confirm) == null ? void 0 : _c2.call(prepared);
                               if (isSourceCurrent(resolved, this.options.now())) {
-                                _context125.n = 9;
+                                _context127.n = 9;
                                 break;
                               }
                               throw new Error("Audio source expired before playback");
                             case 9:
-                              _context125.n = 10;
+                              _context127.n = 10;
                               return this.clearAbLoop();
                             case 10:
                               if ((_d = this.options.cast) == null ? void 0 : _d.active()) {
-                                _context125.n = 11;
+                                _context127.n = 11;
                                 break;
                               }
-                              _context125.n = 11;
+                              _context127.n = 11;
                               return this.options.engine.loadQueue([nativeQueueItem(track, resolved.source, window.queue.index, window.queue.index === window.lastPlayablePosition)], 0);
                             case 11:
                               adopt == null ? void 0 : adopt();
                               this.mapping = [window.queue.index];
                               previousTrack = this.currentTrack;
-                              _context125.n = 12;
+                              _context127.n = 12;
                               return this.updateTrack(track);
                             case 12:
                               this.restored = false;
                               this.uncertain = false;
                               if (!selection) {
-                                _context125.n = 15;
+                                _context127.n = 15;
                                 break;
                               }
-                              _context125.n = 13;
+                              _context127.n = 13;
                               return this.controller.selectEntry(track.queueEntryId, selection.expected, this.mode);
                             case 13:
-                              selected = _context125.v;
+                              selected = _context127.v;
                               if (!(!selected || ((_e = selected.items[0]) == null ? void 0 : _e.queueEntryId) !== track.queueEntryId)) {
-                                _context125.n = 14;
+                                _context127.n = 14;
                                 break;
                               }
                               throw new Error("SQL did not confirm the selected native occurrence");
@@ -16120,87 +16267,87 @@ var TwilightPortableCore = function (exports) {
                             case 15:
                               this.guard(intent, signal);
                               if (!((_f = this.options.cast) == null ? void 0 : _f.active())) {
-                                _context125.n = 17;
+                                _context127.n = 17;
                                 break;
                               }
-                              _context125.n = 16;
+                              _context127.n = 16;
                               return this.options.cast.load(resolved.source, track, track.source === "radio" ? 0 : position, play, signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal);
                             case 16:
-                              sample = _context125.v;
+                              sample = _context127.v;
                               this.acceptCast(sample, resolved.source);
                               if (play) (_h = (_g = this.options).playbackStarted) == null ? void 0 : _h.call(_g);
-                              _context125.n = 24;
+                              _context127.n = 24;
                               break;
                             case 17:
-                              _context125.n = 18;
+                              _context127.n = 18;
                               return this.applyTrackRate(previousTrack, track);
                             case 18:
-                              _context125.n = 19;
+                              _context127.n = 19;
                               return this.options.engine.setPlayMode(this.mode === "repeat" && !this.automaticQueue() ? "repeat" : "sequential");
                             case 19:
                               if (!play) {
-                                _context125.n = 22;
+                                _context127.n = 22;
                                 break;
                               }
-                              _context125.n = 20;
+                              _context127.n = 20;
                               return this.options.engine.play(resolved.source, position, () => intent === this.intent && !(signal == null ? void 0 : signal.aborted) && isSourceCurrent(resolved, this.options.now()));
                             case 20:
-                              result = _context125.v;
+                              result = _context127.v;
                               if (!(!result.nativeStarted || result.superseded)) {
-                                _context125.n = 21;
+                                _context127.n = 21;
                                 break;
                               }
                               throw nativeStartFailure(result);
                             case 21:
                               (_j = (_i = this.options).playbackStarted) == null ? void 0 : _j.call(_i);
                             case 22:
-                              _context125.n = 23;
+                              _context127.n = 23;
                               return this.options.engine.getPlaybackInfo();
                             case 23:
-                              this.info = _context125.v;
+                              this.info = _context127.v;
                             case 24:
                               this.error = null;
-                              _context125.n = 28;
+                              _context127.n = 28;
                               break;
                             case 25:
-                              _context125.p = 25;
-                              _t115 = _context125.v;
+                              _context127.p = 25;
+                              _t120 = _context127.v;
                               adopt == null ? void 0 : adopt();
-                              _context125.n = 26;
+                              _context127.n = 26;
                               return this.updateTrack(track);
                             case 26:
-                              _context125.n = 27;
-                              return this.failStopped(_t115);
+                              _context127.n = 27;
+                              return this.failStopped(_t120);
                             case 27:
-                              throw _t115;
+                              throw _t120;
                             case 28:
-                              _context125.p = 28;
+                              _context127.p = 28;
                               this.publish();
-                              return _context125.f(28);
+                              return _context127.f(28);
                             case 29:
-                              return _context125.a(2);
+                              return _context127.a(2);
                           }
-                        }, _callee125, this, [[5, 25, 28, 29]]);
+                        }, _callee127, this, [[5, 25, 28, 29]]);
                       })));
                     case 3:
-                      return _context126.a(2, 1);
+                      return _context128.a(2, 1);
                     case 4:
-                      _context126.p = 4;
-                      _t116 = _context126.v;
+                      _context128.p = 4;
+                      _t121 = _context128.v;
                       _this.guard(intent, signal);
-                      if (!(!(_t116 instanceof NativeSourceRejected) || attempt > 0 || context.allowRecovery === false || !((_c = _this.options.sources) == null ? void 0 : _c.recover))) {
-                        _context126.n = 5;
+                      if (!(!(_t121 instanceof NativeSourceRejected) || attempt > 0 || context.allowRecovery === false || !((_c = _this.options.sources) == null ? void 0 : _c.recover))) {
+                        _context128.n = 5;
                         break;
                       }
-                      throw _t116;
+                      throw _t121;
                     case 5:
-                      _context126.n = 6;
+                      _context128.n = 6;
                       return _this.recoverSource(track, intent, signal);
                     case 6:
-                      prepared = _context126.v;
+                      prepared = _context128.v;
                       base = owner.window.value;
                       if (base) {
-                        _context126.n = 7;
+                        _context128.n = 7;
                         break;
                       }
                       throw new Error("Playback queue detached during source recovery");
@@ -16210,56 +16357,56 @@ var TwilightPortableCore = function (exports) {
                       adopt = void 0;
                       prepare = void 0;
                     case 8:
-                      return _context126.a(2);
+                      return _context128.a(2);
                   }
-                }, _callee126, null, [[2, 4]]);
+                }, _callee128, null, [[2, 4]]);
               });
               attempt = 0;
             case 7:
-              return _context127.d(_regeneratorValues(_loop()), 8);
+              return _context129.d(_regeneratorValues(_loop()), 8);
             case 8:
-              if (!_context127.v) {
-                _context127.n = 9;
+              if (!_context129.v) {
+                _context129.n = 9;
                 break;
               }
-              return _context127.a(3, 10);
+              return _context129.a(3, 10);
             case 9:
               attempt++;
-              _context127.n = 7;
+              _context129.n = 7;
               break;
             case 10:
               this.guard(intent, signal);
               if (!staged) this.startMaintenance();
-              _context127.n = 11;
+              _context129.n = 11;
               return this.flush();
             case 11:
-              return _context127.a(2);
+              return _context129.a(2);
           }
-        }, _callee127, this);
+        }, _callee129, this);
       }));
     }
     recoverSource(track, intent, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee128() {
-        var prepared, _t119;
-        return _regenerator().w(function (_context128) {
-          while (1) switch (_context128.p = _context128.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee130() {
+        var prepared, _t124;
+        return _regenerator().w(function (_context130) {
+          while (1) switch (_context130.p = _context130.n) {
             case 0:
-              _context128.p = 0;
-              _context128.n = 1;
+              _context130.p = 0;
+              _context130.n = 1;
               return this.options.sources.recover(track, signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal);
             case 1:
-              prepared = _context128.v;
+              prepared = _context130.v;
               this.guard(intent, signal);
-              return _context128.a(2, prepared);
+              return _context130.a(2, prepared);
             case 2:
-              _context128.p = 2;
-              _t119 = _context128.v;
+              _context130.p = 2;
+              _t124 = _context130.v;
               this.guard(intent, signal);
-              throw _t119;
+              throw _t124;
             case 3:
-              return _context128.a(2);
+              return _context130.a(2);
           }
-        }, _callee128, this, [[0, 2]]);
+        }, _callee130, this, [[0, 2]]);
       }));
     }
     startMaintenance() {
@@ -16279,168 +16426,168 @@ var TwilightPortableCore = function (exports) {
         resolver: this.options.resolver,
         authorize: this.options.authorize,
         prepareSource: (track, signal) => this.prepareSource(track, signal),
-        commitSource: (_0, _1, _2) => __async$i(this, [_0, _1, _2], /*#__PURE__*/_regenerator().m(function _callee129({
+        commitSource: (_0, _1, _2) => __async$i(this, [_0, _1, _2], /*#__PURE__*/_regenerator().m(function _callee131({
           window
         }, occurrenceId, prepared) {
-          return _regenerator().w(function (_context129) {
-            while (1) switch (_context129.n) {
+          return _regenerator().w(function (_context131) {
+            while (1) switch (_context131.n) {
               case 0:
-                _context129.n = 1;
+                _context131.n = 1;
                 return this.repairSource(this.controller, window, occurrenceId, prepared);
               case 1:
-                return _context129.a(2);
+                return _context131.a(2);
             }
-          }, _callee129, this);
+          }, _callee131, this);
         })),
         onCommitError: error => this.failStopped(error),
         now: this.options.now,
-        readWindow: (_index, entryId, current2) => this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee130() {
-          var _a2, reference, selected, changed, window, _t120;
-          return _regenerator().w(function (_context130) {
-            while (1) switch (_context130.n) {
+        readWindow: (_index, entryId, current2) => this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee132() {
+          var _a2, reference, selected, changed, window, _t125;
+          return _regenerator().w(function (_context132) {
+            while (1) switch (_context132.n) {
               case 0:
                 if (!(!current2() || intent !== this.intent)) {
-                  _context130.n = 1;
+                  _context132.n = 1;
                   break;
                 }
-                return _context130.a(2, null);
+                return _context132.a(2, null);
               case 1:
                 reference = this.controller.reference();
                 if (!this.detachedHeartTrack) {
-                  _context130.n = 7;
+                  _context132.n = 7;
                   break;
                 }
                 if (!(entryId === ((_a2 = this.currentTrack) == null ? void 0 : _a2.queueEntryId))) {
-                  _context130.n = 2;
+                  _context132.n = 2;
                   break;
                 }
-                return _context130.a(2, {
+                return _context132.a(2, {
                   window: this.detachedWindow(this.controller.window.value),
                   mode: this.mode
                 });
               case 2:
                 if (reference) {
-                  _context130.n = 3;
+                  _context132.n = 3;
                   break;
                 }
-                return _context130.a(2, null);
+                return _context132.a(2, null);
               case 3:
-                _context130.n = 4;
+                _context132.n = 4;
                 return this.controller.selectEntry(entryId, reference, this.mode);
               case 4:
-                selected = _context130.v;
+                selected = _context132.v;
                 if (!(!selected || !current2())) {
-                  _context130.n = 5;
+                  _context132.n = 5;
                   break;
                 }
-                return _context130.a(2, null);
+                return _context132.a(2, null);
               case 5:
                 this.detachedHeartTrack = false;
-                _context130.n = 6;
+                _context132.n = 6;
                 return this.updateTrack(this.controller.track(selected));
               case 6:
-                _context130.n = 10;
+                _context132.n = 10;
                 break;
               case 7:
                 if (!((reference == null ? void 0 : reference.entryId) !== entryId && reference)) {
-                  _context130.n = 10;
+                  _context132.n = 10;
                   break;
                 }
-                _context130.n = 8;
+                _context132.n = 8;
                 return this.controller.acceptNative(entryId, reference, this.mode);
               case 8:
-                changed = _context130.v;
+                changed = _context132.v;
                 if (!(!changed || !current2())) {
-                  _context130.n = 9;
+                  _context132.n = 9;
                   break;
                 }
-                return _context130.a(2, null);
+                return _context132.a(2, null);
               case 9:
-                _context130.n = 10;
+                _context132.n = 10;
                 return this.updateTrack(this.controller.track(changed));
               case 10:
                 if (!this.currentTrack) {
-                  _context130.n = 12;
+                  _context132.n = 12;
                   break;
                 }
-                _context130.n = 11;
+                _context132.n = 11;
                 return this.controller.playbackWindow(this.currentTrack, this.mode);
               case 11:
-                _t120 = _context130.v;
-                _context130.n = 13;
+                _t125 = _context132.v;
+                _context132.n = 13;
                 break;
               case 12:
-                _t120 = null;
+                _t125 = null;
               case 13:
-                window = _t120;
-                return _context130.a(2, window && current2() ? {
+                window = _t125;
+                return _context132.a(2, window && current2() ? {
                   window,
                   mode: this.mode === "heart" ? "sequential" : this.mode
                 } : null);
             }
-          }, _callee130, this);
+          }, _callee132, this);
         }))),
         allowDetachedCurrent: () => this.detachedHeartTrack,
         mayContinueAfterEnd: () => {
           var _a2;
           return !((_a2 = this.options.sleepTimer) == null ? void 0 : _a2.triggered());
         },
-        validateWindow: _0 => __async$i(this, [_0], /*#__PURE__*/_regenerator().m(function _callee131({
+        validateWindow: _0 => __async$i(this, [_0], /*#__PURE__*/_regenerator().m(function _callee133({
           window
         }) {
           var queue, expected;
-          return _regenerator().w(function (_context131) {
-            while (1) switch (_context131.n) {
+          return _regenerator().w(function (_context133) {
+            while (1) switch (_context133.n) {
               case 0:
-                _context131.n = 1;
+                _context133.n = 1;
                 return this.options.queues.getQueue(window.queue.id);
               case 1:
-                queue = _context131.v;
+                queue = _context133.v;
                 expected = this.detachedHeartTrack ? this.controller.window.value.queue : window.queue;
-                return _context131.a(2, queue.revision === expected.revision && queue.index === expected.index && queue.selectedEntryId === expected.selectedEntryId);
+                return _context133.a(2, queue.revision === expected.revision && queue.index === expected.index && queue.selectedEntryId === expected.selectedEntryId);
             }
-          }, _callee131, this);
+          }, _callee133, this);
         })),
-        commit: (operation, current2) => this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee132() {
-          return _regenerator().w(function (_context132) {
-            while (1) switch (_context132.n) {
+        commit: (operation, current2) => this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee134() {
+          return _regenerator().w(function (_context134) {
+            while (1) switch (_context134.n) {
               case 0:
                 if (!(current2() && intent === this.intent)) {
-                  _context132.n = 1;
+                  _context134.n = 1;
                   break;
                 }
-                _context132.n = 1;
+                _context134.n = 1;
                 return operation();
               case 1:
-                return _context132.a(2);
+                return _context134.a(2);
             }
-          }, _callee132, this);
+          }, _callee134, this);
         }))),
         onMappingChanged: mapping => {
           this.mapping = mapping;
         },
-        onPlaybackAdvanced: (info, _index, occurrenceId, prepared) => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee133() {
+        onPlaybackAdvanced: (info, _index, occurrenceId, prepared) => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee135() {
           var _a2;
-          return _regenerator().w(function (_context133) {
-            while (1) switch (_context133.n) {
+          return _regenerator().w(function (_context135) {
+            while (1) switch (_context135.n) {
               case 0:
                 if (!(this.detachedHeartTrack && prepared && occurrenceId === ((_a2 = this.currentTrack) == null ? void 0 : _a2.queueEntryId))) {
-                  _context133.n = 1;
+                  _context135.n = 1;
                   break;
                 }
-                _context133.n = 1;
+                _context135.n = 1;
                 return this.updateTrack(prepared);
               case 1:
-                _context133.n = 2;
+                _context135.n = 2;
                 return this.acceptNative(info);
               case 2:
                 this.info = info;
                 this.publish();
                 this.scheduleSave();
               case 3:
-                return _context133.a(2);
+                return _context135.a(2);
             }
-          }, _callee133, this);
+          }, _callee135, this);
         })),
         onError: message => {
           this.error = message;
@@ -16450,30 +16597,30 @@ var TwilightPortableCore = function (exports) {
       void this.maintainer.start();
     }
     fromQuery(_0, _1) {
-      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee134(query2, selectedId, play = true, signal, options = {}) {
+      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee136(query2, selectedId, play = true, signal, options = {}) {
         var _a, _b, intent, candidate, adopted, requestedMode, nextMode, window, previous;
-        return _regenerator().w(function (_context134) {
-          while (1) switch (_context134.p = _context134.n) {
+        return _regenerator().w(function (_context136) {
+          while (1) switch (_context136.p = _context136.n) {
             case 0:
               intent = this.beginPreparation(play);
               candidate = createLibraryPlaybackController(this.options.queues);
               adopted = false;
-              _context134.p = 1;
+              _context136.p = 1;
               requestedMode = (_a = options.playMode) != null ? _a : this.mode;
               nextMode = requestedMode === "heart" ? "sequential" : requestedMode;
-              _context134.n = 2;
+              _context136.n = 2;
               return candidate.create(query2, selectedId, nextMode, options.randomStart);
             case 2:
-              window = _context134.v;
+              window = _context136.v;
               this.guard(intent, signal);
               if (window) {
-                _context134.n = 3;
+                _context136.n = 3;
                 break;
               }
               throw new Error("No playable queue entries");
             case 3:
               previous = this.controller;
-              _context134.n = 4;
+              _context136.n = 4;
               return this.load(window, intent, play, (_b = options.position) != null ? _b : 0, signal, {
                 adopt: () => {
                   if (adopted) return;
@@ -16486,35 +16633,35 @@ var TwilightPortableCore = function (exports) {
                 owner: candidate
               });
             case 4:
-              _context134.p = 4;
+              _context136.p = 4;
               if (!adopted) candidate.dispose();
               this.finishPreparation(intent);
               if (intent === this.intent) this.startMaintenance();
-              return _context134.f(4);
+              return _context136.f(4);
             case 5:
-              return _context134.a(2);
+              return _context136.a(2);
           }
-        }, _callee134, this, [[1,, 4, 5]]);
+        }, _callee136, this, [[1,, 4, 5]]);
       }));
     }
     /** Internal source-owner entry point. Public clients submit identities, never arbitrary tracks. */
     fromPages(_0) {
-      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee135(produce, options = {}, signal) {
+      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee137(produce, options = {}, signal) {
         var intent;
-        return _regenerator().w(function (_context135) {
-          while (1) switch (_context135.n) {
+        return _regenerator().w(function (_context137) {
+          while (1) switch (_context137.n) {
             case 0:
               intent = this.beginPreparation(options.play !== false);
-              return _context135.a(2, this.stagePages(produce, options, intent, signal));
+              return _context137.a(2, this.stagePages(produce, options, intent, signal));
           }
-        }, _callee135, this);
+        }, _callee137, this);
       }));
     }
     stagePages(produce, options, intent, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee139() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee141() {
         var _a, _b, candidate, mode, adopted, revision2, result;
-        return _regenerator().w(function (_context139) {
-          while (1) switch (_context139.p = _context139.n) {
+        return _regenerator().w(function (_context141) {
+          while (1) switch (_context141.p = _context141.n) {
             case 0:
               candidate = createLibraryPlaybackController(__spreadValues(__spreadValues({}, this.options.queues), options.preserveOccurrenceIds ? {
                 buildQueue: command => {
@@ -16526,23 +16673,23 @@ var TwilightPortableCore = function (exports) {
               } : {}));
               mode = (_a = options.mode) != null ? _a : this.mode === "heart" ? "sequential" : this.mode;
               adopted = false;
-              _context139.p = 1;
-              _context139.n = 2;
+              _context141.p = 1;
+              _context141.n = 2;
               return this.options.queues.libraryRevision();
             case 2:
-              revision2 = _context139.v;
+              revision2 = _context141.v;
               this.guard(intent, signal);
-              _context139.n = 3;
+              _context141.n = 3;
               return candidate.stagePages(produce, __spreadProps(__spreadValues({}, options.preserveOccurrenceIds ? {
                 id: `core-restore-${crypto.randomUUID()}`
               } : {}), {
                 contentRevision: revision2,
                 selectedIndex: options.selectedIndex,
                 order: (_b = options.order) != null ? _b : mode === "shuffle" ? "shuffle" : "original"
-              }), mode, (window, activate, retain) => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee138() {
+              }), mode, (window, activate, retain) => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee140() {
                 var _a2, _b2, previous, adopt;
-                return _regenerator().w(function (_context138) {
-                  while (1) switch (_context138.n) {
+                return _regenerator().w(function (_context140) {
+                  while (1) switch (_context140.n) {
                     case 0:
                       previous = this.controller;
                       adopt = () => {
@@ -16559,45 +16706,45 @@ var TwilightPortableCore = function (exports) {
                         (_b3 = options.onAdopt) == null ? void 0 : _b3.call(options);
                       };
                       if (!(options.play === false)) {
-                        _context138.n = 3;
+                        _context140.n = 3;
                         break;
                       }
-                      _context138.n = 1;
-                      return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee136() {
+                      _context140.n = 1;
+                      return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee138() {
                         var _a3, _b3, _c, _d, _e, _f, _g, info;
-                        return _regenerator().w(function (_context136) {
-                          while (1) switch (_context136.n) {
+                        return _regenerator().w(function (_context138) {
+                          while (1) switch (_context138.n) {
                             case 0:
                               this.guard(intent, signal);
                               (_a3 = options.guard) == null ? void 0 : _a3.call(options);
-                              _context136.n = 1;
+                              _context138.n = 1;
                               return (_b3 = this.options.cast) == null ? void 0 : _b3.stop();
                             case 1:
-                              _context136.n = 2;
+                              _context138.n = 2;
                               return this.options.engine.pause();
                             case 2:
-                              _context136.n = 3;
+                              _context138.n = 3;
                               return this.options.engine.getPlaybackInfo();
                             case 3:
-                              info = _context136.v;
+                              info = _context138.v;
                               if (!(info.state === "playing")) {
-                                _context136.n = 4;
+                                _context138.n = 4;
                                 break;
                               }
                               throw new Error("Native Pause was not acknowledged");
                             case 4:
-                              _context136.n = 5;
+                              _context138.n = 5;
                               return this.observeDepartingTrack(candidate.track(window));
                             case 5:
-                              _context136.n = 6;
+                              _context138.n = 6;
                               return (_c = options.beforeAdopt) == null ? void 0 : _c.call(options, false);
                             case 6:
-                              _context136.n = 7;
+                              _context138.n = 7;
                               return this.clearAbLoop();
                             case 7:
                               this.guard(intent, signal);
                               adopt();
-                              _context136.n = 8;
+                              _context138.n = 8;
                               return this.updateTrack(candidate.track(window));
                             case 8:
                               this.restored = true;
@@ -16610,33 +16757,33 @@ var TwilightPortableCore = function (exports) {
                               this.error = null;
                               this.publish();
                             case 9:
-                              return _context136.a(2);
+                              return _context138.a(2);
                           }
-                        }, _callee136, this);
+                        }, _callee138, this);
                       })));
                     case 1:
-                      _context138.n = 2;
+                      _context140.n = 2;
                       return this.flush();
                     case 2:
-                      _context138.n = 4;
+                      _context140.n = 4;
                       break;
                     case 3:
-                      _context138.n = 4;
+                      _context140.n = 4;
                       return this.load(window, intent, true, (_a2 = options.position) != null ? _a2 : 0, signal, __spreadValues({
                         automatic: options.automatic,
-                        prepare: () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee137() {
+                        prepare: () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee139() {
                           var _a3;
-                          return _regenerator().w(function (_context137) {
-                            while (1) switch (_context137.n) {
+                          return _regenerator().w(function (_context139) {
+                            while (1) switch (_context139.n) {
                               case 0:
-                                _context137.n = 1;
+                                _context139.n = 1;
                                 return (_a3 = options.beforeAdopt) == null ? void 0 : _a3.call(options, true);
                               case 1:
                                 adopt();
                               case 2:
-                                return _context137.a(2);
+                                return _context139.a(2);
                             }
-                          }, _callee137);
+                          }, _callee139);
                         })),
                         owner: candidate
                       }, options.preparedSource ? {
@@ -16649,9 +16796,9 @@ var TwilightPortableCore = function (exports) {
                         allowRecovery: false
                       } : {}));
                     case 4:
-                      return _context138.a(2);
+                      return _context140.a(2);
                   }
-                }, _callee138, this);
+                }, _callee140, this);
               })), {
                 signal,
                 guard: () => {
@@ -16661,31 +16808,31 @@ var TwilightPortableCore = function (exports) {
                 }
               });
             case 3:
-              result = _context139.v;
+              result = _context141.v;
               if (result) {
-                _context139.n = 4;
+                _context141.n = 4;
                 break;
               }
               throw new Error("No playable queue entries");
             case 4:
-              _context139.p = 4;
+              _context141.p = 4;
               if (!adopted) candidate.dispose();
               this.finishPreparation(intent);
               if (intent === this.intent) this.startMaintenance();
-              return _context139.f(4);
+              return _context141.f(4);
             case 5:
-              return _context139.a(2);
+              return _context141.a(2);
           }
-        }, _callee139, this, [[1,, 4, 5]]);
+        }, _callee141, this, [[1,, 4, 5]]);
       }));
     }
     /** Named restore is a playback intent from the first source read onward.
      * Pause/Stop cancel slow preparation; an empty result leaves the live queue. */
     restoreNamedSession(session, resolveEntries, guard, play = false, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee145() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee147() {
         var intent, initialReference, current2, beforeAdopt, result, originalPositions, candidate, adopted, window, previous, adopt, prepare;
-        return _regenerator().w(function (_context145) {
-          while (1) switch (_context145.p = _context145.n) {
+        return _regenerator().w(function (_context147) {
+          while (1) switch (_context147.p = _context147.n) {
             case 0:
               intent = this.beginPreparation(play);
               initialReference = this.controller.reference();
@@ -16693,19 +16840,19 @@ var TwilightPortableCore = function (exports) {
                 this.guard(intent, signal);
                 guard();
               };
-              beforeAdopt = playing => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee140() {
+              beforeAdopt = playing => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee142() {
                 var native, reference;
-                return _regenerator().w(function (_context140) {
-                  while (1) switch (_context140.n) {
+                return _regenerator().w(function (_context142) {
+                  while (1) switch (_context142.n) {
                     case 0:
-                      _context140.n = 1;
+                      _context142.n = 1;
                       return this.nativeSelection();
                     case 1:
-                      native = _context140.v;
+                      native = _context142.v;
                       current2();
                       reference = this.controller.reference();
                       if (!((reference == null ? void 0 : reference.id) !== (initialReference == null ? void 0 : initialReference.id) || (reference == null ? void 0 : reference.revision) !== (initialReference == null ? void 0 : initialReference.revision) || (reference == null ? void 0 : reference.entryId) !== (initialReference == null ? void 0 : initialReference.entryId))) {
-                        _context140.n = 2;
+                        _context142.n = 2;
                         break;
                       }
                       throw Object.assign(new Error("队列选中项已变化，已取消恢复"), {
@@ -16713,50 +16860,50 @@ var TwilightPortableCore = function (exports) {
                       });
                     case 2:
                       if (!(playing && native)) {
-                        _context140.n = 3;
+                        _context142.n = 3;
                         break;
                       }
-                      _context140.n = 3;
+                      _context142.n = 3;
                       return this.fenceNative(native);
                     case 3:
                       current2();
                     case 4:
-                      return _context140.a(2);
+                      return _context142.a(2);
                   }
-                }, _callee140, this);
+                }, _callee142, this);
               }));
-              _context145.p = 1;
+              _context147.p = 1;
               current2();
               if (session.libraryQueue) {
-                _context145.n = 5;
+                _context147.n = 5;
                 break;
               }
-              _context145.n = 2;
+              _context147.n = 2;
               return resolveEntries(signal ? AbortSignal.any([signal, this.preview.signal]) : this.preview.signal);
             case 2:
-              result = _context145.v;
+              result = _context147.v;
               current2();
               if (result.queue.length) {
-                _context145.n = 3;
+                _context147.n = 3;
                 break;
               }
               throw new Error("会话中的资源均不可用，当前队列未改变");
             case 3:
               originalPositions = new Map(result.original.map((track, index) => [track.queueEntryId, index]));
-              _context145.n = 4;
-              return this.stagePages(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee141() {
+              _context147.n = 4;
+              return this.stagePages(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee143() {
                 var offset;
-                return _regenerator().w(function (_context141) {
-                  while (1) switch (_context141.n) {
+                return _regenerator().w(function (_context143) {
+                  while (1) switch (_context143.n) {
                     case 0:
                       offset = 0;
                     case 1:
                       if (!(offset < result.queue.length)) {
-                        _context141.n = 3;
+                        _context143.n = 3;
                         break;
                       }
                       current2();
-                      _context141.n = 2;
+                      _context143.n = 2;
                       return append(result.queue.slice(offset, offset + 200).map(track => {
                         var snapshot = __spreadValues({}, toPlaybackQueueSnapshot(track));
                         return __spreadValues({
@@ -16771,12 +16918,12 @@ var TwilightPortableCore = function (exports) {
                       }));
                     case 2:
                       offset += 200;
-                      _context141.n = 1;
+                      _context143.n = 1;
                       break;
                     case 3:
-                      return _context141.a(2);
+                      return _context143.a(2);
                   }
-                }, _callee141);
+                }, _callee143);
               })), {
                 selectedIndex: result.index,
                 position: result.position,
@@ -16787,7 +16934,7 @@ var TwilightPortableCore = function (exports) {
                 beforeAdopt
               }, intent, signal);
             case 4:
-              return _context145.a(2, {
+              return _context147.a(2, {
                 restored: result.queue.length,
                 missing: result.missing,
                 deferred: result.deferred
@@ -16795,17 +16942,17 @@ var TwilightPortableCore = function (exports) {
             case 5:
               candidate = createLibraryPlaybackController(this.options.queues);
               adopted = false;
-              _context145.p = 6;
-              _context145.n = 7;
+              _context147.p = 6;
+              _context147.n = 7;
               return candidate.restore(session.libraryQueue, session.playMode, () => {
                 current2();
                 return true;
               }, true);
             case 7:
-              window = _context145.v;
+              window = _context147.v;
               current2();
               if (window) {
-                _context145.n = 8;
+                _context147.n = 8;
                 break;
               }
               throw new Error("数据库队列已删除或没有可用资源，当前队列未改变");
@@ -16819,88 +16966,88 @@ var TwilightPortableCore = function (exports) {
                 adopted = true;
                 previous.dispose();
               };
-              prepare = playing => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee142() {
+              prepare = playing => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee144() {
                 var latest;
-                return _regenerator().w(function (_context142) {
-                  while (1) switch (_context142.n) {
+                return _regenerator().w(function (_context144) {
+                  while (1) switch (_context144.n) {
                     case 0:
-                      _context142.n = 1;
+                      _context144.n = 1;
                       return beforeAdopt(playing);
                     case 1:
-                      _context142.n = 2;
+                      _context144.n = 2;
                       return this.options.queues.getQueue(window.queue.id);
                     case 2:
-                      latest = _context142.v;
+                      latest = _context144.v;
                       current2();
                       if (!(latest.revision !== window.queue.revision)) {
-                        _context142.n = 3;
+                        _context144.n = 3;
                         break;
                       }
                       throw Object.assign(new Error("共享播放队列已变化，请重新选择会话"), {
                         code: "STALE_REVISION"
                       });
                     case 3:
-                      return _context142.a(2);
+                      return _context144.a(2);
                   }
-                }, _callee142, this);
+                }, _callee144, this);
               }));
               if (!play) {
-                _context145.n = 10;
+                _context147.n = 10;
                 break;
               }
-              _context145.n = 9;
+              _context147.n = 9;
               return this.load(window, intent, true, session.position, signal, {
-                prepare: () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee143() {
-                  return _regenerator().w(function (_context143) {
-                    while (1) switch (_context143.n) {
+                prepare: () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee145() {
+                  return _regenerator().w(function (_context145) {
+                    while (1) switch (_context145.n) {
                       case 0:
-                        _context143.n = 1;
+                        _context145.n = 1;
                         return prepare(true);
                       case 1:
                         adopt();
                       case 2:
-                        return _context143.a(2);
+                        return _context145.a(2);
                     }
-                  }, _callee143);
+                  }, _callee145);
                 })),
                 owner: candidate
               });
             case 9:
-              _context145.n = 12;
+              _context147.n = 12;
               break;
             case 10:
-              _context145.n = 11;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee144() {
+              _context147.n = 11;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee146() {
                 var _a, _b, _c, _d, info;
-                return _regenerator().w(function (_context144) {
-                  while (1) switch (_context144.n) {
+                return _regenerator().w(function (_context146) {
+                  while (1) switch (_context146.n) {
                     case 0:
                       current2();
-                      _context144.n = 1;
+                      _context146.n = 1;
                       return (_a = this.options.cast) == null ? void 0 : _a.stop();
                     case 1:
-                      _context144.n = 2;
+                      _context146.n = 2;
                       return this.options.engine.pause();
                     case 2:
-                      _context144.n = 3;
+                      _context146.n = 3;
                       return this.options.engine.getPlaybackInfo();
                     case 3:
-                      info = _context144.v;
+                      info = _context146.v;
                       if (!(info.state === "playing")) {
-                        _context144.n = 4;
+                        _context146.n = 4;
                         break;
                       }
                       throw new Error("Native Pause was not acknowledged");
                     case 4:
-                      _context144.n = 5;
+                      _context146.n = 5;
                       return prepare(false);
                     case 5:
                       current2();
                       adopt();
-                      _context144.n = 6;
+                      _context146.n = 6;
                       return this.clearAbLoop();
                     case 6:
-                      _context144.n = 7;
+                      _context146.n = 7;
                       return this.updateTrack(candidate.track(window));
                     case 7:
                       this.restored = true;
@@ -16913,62 +17060,62 @@ var TwilightPortableCore = function (exports) {
                       this.error = null;
                       this.publish();
                     case 8:
-                      return _context144.a(2);
+                      return _context146.a(2);
                   }
-                }, _callee144, this);
+                }, _callee146, this);
               })));
             case 11:
-              _context145.n = 12;
+              _context147.n = 12;
               return this.flush();
             case 12:
-              return _context145.a(2, {
+              return _context147.a(2, {
                 restored: window.queue.total,
                 missing: [],
                 deferred: 0
               });
             case 13:
-              _context145.p = 13;
+              _context147.p = 13;
               if (!adopted) candidate.dispose();
-              return _context145.f(13);
+              return _context147.f(13);
             case 14:
-              _context145.p = 14;
+              _context147.p = 14;
               this.finishPreparation(intent);
               if (intent === this.intent) this.startMaintenance();
-              return _context145.f(14);
+              return _context147.f(14);
             case 15:
-              return _context145.a(2);
+              return _context147.a(2);
           }
-        }, _callee145, this, [[6,, 13, 14], [1,, 14, 15]]);
+        }, _callee147, this, [[6,, 13, 14], [1,, 14, 15]]);
       }));
     }
     fromTrack(track, position = 0, play = true, signal, guard) {
       var intent = this.beginPreparation(play);
       var preparation = signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal;
       var immediate = typeof track === "function" ? null : __spreadValues({}, toPlaybackQueueSnapshot(track));
-      return this.stagePages(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee146() {
-        var snapshot, _t121, _t122, _t123, _t124;
-        return _regenerator().w(function (_context146) {
-          while (1) switch (_context146.n) {
+      return this.stagePages(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee148() {
+        var snapshot, _t126, _t127, _t128, _t129;
+        return _regenerator().w(function (_context148) {
+          while (1) switch (_context148.n) {
             case 0:
               if (!(immediate != null)) {
-                _context146.n = 1;
+                _context148.n = 1;
                 break;
               }
-              _t121 = immediate;
-              _context146.n = 3;
+              _t126 = immediate;
+              _context148.n = 3;
               break;
             case 1:
-              _t122 = __spreadValues;
-              _t123 = {};
-              _t124 = toPlaybackQueueSnapshot;
-              _context146.n = 2;
+              _t127 = __spreadValues;
+              _t128 = {};
+              _t129 = toPlaybackQueueSnapshot;
+              _context148.n = 2;
               return track(preparation);
             case 2:
-              _t121 = _t122(_t123, _t124(_context146.v));
+              _t126 = _t127(_t128, _t129(_context148.v));
             case 3:
-              snapshot = _t121;
+              snapshot = _t126;
               this.guard(intent, signal);
-              _context146.n = 4;
+              _context148.n = 4;
               return append([__spreadValues({
                 id: snapshot.id
               }, snapshot.source === "local" ? {
@@ -16977,9 +17124,9 @@ var TwilightPortableCore = function (exports) {
                 snapshot
               })]);
             case 4:
-              return _context146.a(2);
+              return _context148.a(2);
           }
-        }, _callee146, this);
+        }, _callee148, this);
       })), {
         position,
         play,
@@ -16990,61 +17137,61 @@ var TwilightPortableCore = function (exports) {
      * queue. Preparation failures never mutate the live queue; native commit
      * failures are not reasons to try another source. */
     fromUnifiedTrack(select, signal, beforeAdopt) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee151() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee153() {
         var intent, current2, run;
-        return _regenerator().w(function (_context151) {
-          while (1) switch (_context151.p = _context151.n) {
+        return _regenerator().w(function (_context153) {
+          while (1) switch (_context153.p = _context153.n) {
             case 0:
               intent = this.beginPreparation();
               current2 = signal ? AbortSignal.any([this.preview.signal, signal]) : this.preview.signal;
-              run = () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee150() {
+              run = () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee152() {
                 var selection, prepared, snapshot;
-                return _regenerator().w(function (_context150) {
-                  while (1) switch (_context150.n) {
+                return _regenerator().w(function (_context152) {
+                  while (1) switch (_context152.n) {
                     case 0:
                       this.guard(intent, signal);
-                      _context150.n = 1;
-                      return select(current2, track => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee147() {
+                      _context152.n = 1;
+                      return select(current2, track => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee149() {
                         var _a, prepared2;
-                        return _regenerator().w(function (_context147) {
-                          while (1) switch (_context147.n) {
+                        return _regenerator().w(function (_context149) {
+                          while (1) switch (_context149.n) {
                             case 0:
                               this.guard(intent, signal);
-                              _context147.n = 1;
+                              _context149.n = 1;
                               return this.prepareSource(__spreadProps(__spreadValues({}, track), {
                                 sourceSelection: "explicit"
                               }), current2);
                             case 1:
-                              prepared2 = _context147.v;
+                              prepared2 = _context149.v;
                               this.guard(intent, signal);
                               (_a = prepared2.confirm) == null ? void 0 : _a.call(prepared2);
                               if (isSourceCurrent(prepared2.resolved, this.options.now())) {
-                                _context147.n = 2;
+                                _context149.n = 2;
                                 break;
                               }
                               throw new Error("Audio source expired before playback");
                             case 2:
-                              return _context147.a(2, prepared2);
+                              return _context149.a(2, prepared2);
                           }
-                        }, _callee147, this);
+                        }, _callee149, this);
                       })));
                     case 1:
-                      selection = _context150.v;
+                      selection = _context152.v;
                       this.guard(intent, signal);
                       if (selection.prepared) {
-                        _context150.n = 2;
+                        _context152.n = 2;
                         break;
                       }
-                      return _context150.a(2, selection.result);
+                      return _context152.a(2, selection.result);
                     case 2:
                       prepared = selection.prepared;
                       snapshot = __spreadValues({}, toPlaybackQueueSnapshot(prepared.track));
-                      _context150.n = 3;
-                      return this.stagePages(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee148() {
-                        return _regenerator().w(function (_context148) {
-                          while (1) switch (_context148.n) {
+                      _context152.n = 3;
+                      return this.stagePages(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee150() {
+                        return _regenerator().w(function (_context150) {
+                          while (1) switch (_context150.n) {
                             case 0:
-                              _context148.n = 1;
+                              _context150.n = 1;
                               return append([__spreadValues({
                                 id: snapshot.id
                               }, snapshot.source === "local" ? {
@@ -17053,140 +17200,140 @@ var TwilightPortableCore = function (exports) {
                                 snapshot
                               })]);
                             case 1:
-                              return _context148.a(2);
+                              return _context150.a(2);
                           }
-                        }, _callee148);
+                        }, _callee150);
                       })), {
                         preparedSource: prepared,
-                        beforeAdopt: () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee149() {
+                        beforeAdopt: () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee151() {
                           var _a;
-                          return _regenerator().w(function (_context149) {
-                            while (1) switch (_context149.n) {
+                          return _regenerator().w(function (_context151) {
+                            while (1) switch (_context151.n) {
                               case 0:
-                                _context149.n = 1;
+                                _context151.n = 1;
                                 return beforeAdopt == null ? void 0 : beforeAdopt();
                               case 1:
                                 this.guard(intent, signal);
                                 (_a = prepared.confirm) == null ? void 0 : _a.call(prepared);
                                 if (isSourceCurrent(prepared.resolved, this.options.now())) {
-                                  _context149.n = 2;
+                                  _context151.n = 2;
                                   break;
                                 }
                                 throw new Error("Audio source expired before playback");
                               case 2:
-                                return _context149.a(2);
+                                return _context151.a(2);
                             }
-                          }, _callee149, this);
+                          }, _callee151, this);
                         }))
                       }, intent, signal);
                     case 3:
-                      return _context150.a(2, selection.result);
+                      return _context152.a(2, selection.result);
                   }
-                }, _callee150, this);
+                }, _callee152, this);
               }));
-              _context151.p = 1;
+              _context153.p = 1;
               if (!this.sourceBarrier) {
-                _context151.n = 2;
+                _context153.n = 2;
                 break;
               }
-              _context151.n = 2;
+              _context153.n = 2;
               return this.sourceBarrier;
             case 2:
               this.guard(intent, signal);
-              _context151.n = 3;
+              _context153.n = 3;
               return this.options.resources ? this.options.resources.use(run) : run();
             case 3:
-              return _context151.a(2, _context151.v);
+              return _context153.a(2, _context153.v);
             case 4:
-              _context151.p = 4;
+              _context153.p = 4;
               this.finishPreparation(intent);
               if (intent === this.intent) this.startMaintenance();
-              return _context151.f(4);
+              return _context153.f(4);
             case 5:
-              return _context151.a(2);
+              return _context153.a(2);
           }
-        }, _callee151, this, [[1,, 4, 5]]);
+        }, _callee153, this, [[1,, 4, 5]]);
       }));
     }
     applyTrackRate(previous, track) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee152() {
-        var _a, _b, _c, _d;
-        return _regenerator().w(function (_context152) {
-          while (1) switch (_context152.n) {
-            case 0:
-              if (!((_a = this.options.cast) == null ? void 0 : _a.active())) {
-                _context152.n = 1;
-                break;
-              }
-              return _context152.a(2);
-            case 1:
-              if (!((track == null ? void 0 : track.source) === "podcast")) {
-                _context152.n = 3;
-                break;
-              }
-              _context152.n = 2;
-              return this.options.engine.setPlaybackRate((_d = (_c = (_b = this.options).podcastPlaybackRate) == null ? void 0 : _c.call(_b)) != null ? _d : 1);
-            case 2:
-              _context152.n = 4;
-              break;
-            case 3:
-              if (!((previous == null ? void 0 : previous.source) === "podcast")) {
-                _context152.n = 4;
-                break;
-              }
-              _context152.n = 4;
-              return this.options.engine.setPlaybackRate(1);
-            case 4:
-              return _context152.a(2);
-          }
-        }, _callee152, this);
-      }));
-    }
-    setRate(rate) {
       return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee154() {
-        var _a;
+        var _a, _b, _c, _d;
         return _regenerator().w(function (_context154) {
           while (1) switch (_context154.n) {
             case 0:
               if (!((_a = this.options.cast) == null ? void 0 : _a.active())) {
-                _context154.n = 2;
-                break;
-              }
-              if (!(rate !== 1)) {
                 _context154.n = 1;
                 break;
               }
-              throw new Error("Cast does not support changing playback speed");
-            case 1:
               return _context154.a(2);
+            case 1:
+              if (!((track == null ? void 0 : track.source) === "podcast")) {
+                _context154.n = 3;
+                break;
+              }
+              _context154.n = 2;
+              return this.options.engine.setPlaybackRate((_d = (_c = (_b = this.options).podcastPlaybackRate) == null ? void 0 : _c.call(_b)) != null ? _d : 1);
             case 2:
-              _context154.n = 3;
-              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee153() {
-                var info;
-                return _regenerator().w(function (_context153) {
-                  while (1) switch (_context153.n) {
-                    case 0:
-                      _context153.n = 1;
-                      return this.options.engine.setPlaybackRate(rate);
-                    case 1:
-                      _context153.n = 2;
-                      return this.options.engine.getPlaybackInfo();
-                    case 2:
-                      info = _context153.v;
-                      this.info = this.restored && this.info ? __spreadProps(__spreadValues({}, this.info), {
-                        playbackRate: info.playbackRate
-                      }) : info;
-                    case 3:
-                      return _context153.a(2);
-                  }
-                }, _callee153, this);
-              })));
+              _context154.n = 4;
+              break;
             case 3:
-              this.publish();
+              if (!((previous == null ? void 0 : previous.source) === "podcast")) {
+                _context154.n = 4;
+                break;
+              }
+              _context154.n = 4;
+              return this.options.engine.setPlaybackRate(1);
             case 4:
               return _context154.a(2);
           }
         }, _callee154, this);
+      }));
+    }
+    setRate(rate) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee156() {
+        var _a;
+        return _regenerator().w(function (_context156) {
+          while (1) switch (_context156.n) {
+            case 0:
+              if (!((_a = this.options.cast) == null ? void 0 : _a.active())) {
+                _context156.n = 2;
+                break;
+              }
+              if (!(rate !== 1)) {
+                _context156.n = 1;
+                break;
+              }
+              throw new Error("Cast does not support changing playback speed");
+            case 1:
+              return _context156.a(2);
+            case 2:
+              _context156.n = 3;
+              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee155() {
+                var info;
+                return _regenerator().w(function (_context155) {
+                  while (1) switch (_context155.n) {
+                    case 0:
+                      _context155.n = 1;
+                      return this.options.engine.setPlaybackRate(rate);
+                    case 1:
+                      _context155.n = 2;
+                      return this.options.engine.getPlaybackInfo();
+                    case 2:
+                      info = _context155.v;
+                      this.info = this.restored && this.info ? __spreadProps(__spreadValues({}, this.info), {
+                        playbackRate: info.playbackRate
+                      }) : info;
+                    case 3:
+                      return _context155.a(2);
+                  }
+                }, _callee155, this);
+              })));
+            case 3:
+              this.publish();
+            case 4:
+              return _context156.a(2);
+          }
+        }, _callee156, this);
       }));
     }
     resetAbLoopState(occurrenceId = (_g => (_g = (_f => (_f = this.currentTrack) == null ? void 0 : _f.queueEntryId)()) != null ? _g : null)()) {
@@ -17200,46 +17347,46 @@ var TwilightPortableCore = function (exports) {
       };
     }
     clearAbLoop() {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee155() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee157() {
         var _a, _b, _c, active;
-        return _regenerator().w(function (_context155) {
-          while (1) switch (_context155.n) {
+        return _regenerator().w(function (_context157) {
+          while (1) switch (_context157.n) {
             case 0:
               active = this.abLoop.a !== null || this.abLoop.b !== null;
               this.resetAbLoopState();
               if (!(active && !((_a = this.options.cast) == null ? void 0 : _a.active()))) {
-                _context155.n = 1;
+                _context157.n = 1;
                 break;
               }
-              _context155.n = 1;
+              _context157.n = 1;
               return (_c = (_b = this.options.engine).setLoopRangeConfirmed) == null ? void 0 : _c.call(_b, -1, -1);
             case 1:
-              return _context155.a(2);
+              return _context157.a(2);
           }
-        }, _callee155, this);
+        }, _callee157, this);
       }));
     }
     updateTrack(track) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee156() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee158() {
         var _a, _b;
-        return _regenerator().w(function (_context156) {
-          while (1) switch (_context156.n) {
+        return _regenerator().w(function (_context158) {
+          while (1) switch (_context158.n) {
             case 0:
               if (!((track == null ? void 0 : track.queueEntryId) !== ((_a = this.currentTrack) == null ? void 0 : _a.queueEntryId))) {
-                _context156.n = 2;
+                _context158.n = 2;
                 break;
               }
               this.resetStreamBuffering();
-              _context156.n = 1;
+              _context158.n = 1;
               return this.clearAbLoop();
             case 1:
               this.resetAbLoopState((_b = track == null ? void 0 : track.queueEntryId) != null ? _b : null);
             case 2:
               this.currentTrack = track;
             case 3:
-              return _context156.a(2);
+              return _context158.a(2);
           }
-        }, _callee156, this);
+        }, _callee158, this);
       }));
     }
     abLoopLive() {
@@ -17247,24 +17394,24 @@ var TwilightPortableCore = function (exports) {
       return !!track && (track.source === "radio" || track.duration <= 0 && !!(track.streamUrl || /^https?:\/\//i.test(track.filePath || "")));
     }
     configureAbLoop(command) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee158() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee160() {
         var intent;
-        return _regenerator().w(function (_context158) {
-          while (1) switch (_context158.n) {
+        return _regenerator().w(function (_context160) {
+          while (1) switch (_context160.n) {
             case 0:
               intent = this.intent;
-              return _context158.a(2, this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee157() {
-                var _a, _b, _c, _d, _e, _f, _g, action, a, b, time, position, valid, native, _t125, _t126;
-                return _regenerator().w(function (_context157) {
-                  while (1) switch (_context157.p = _context157.n) {
+              return _context160.a(2, this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee159() {
+                var _a, _b, _c, _d, _e, _f, _g, action, a, b, time, position, valid, native, _t130, _t131;
+                return _regenerator().w(function (_context159) {
+                  while (1) switch (_context159.p = _context159.n) {
                     case 0:
                       this.guard(intent);
-                      _context157.n = 1;
+                      _context159.n = 1;
                       return this.nativeSelection();
                     case 1:
                       this.guard(intent);
                       if (!(command.revision !== this.abLoop.revision || command.occurrenceId !== ((_a = this.currentTrack) == null ? void 0 : _a.queueEntryId))) {
-                        _context157.n = 2;
+                        _context159.n = 2;
                         break;
                       }
                       throw Object.assign(new Error("A-B loop occurrence or revision changed"), {
@@ -17274,10 +17421,10 @@ var TwilightPortableCore = function (exports) {
                       action = command.action;
                       if (action === "toggle") action = this.abLoopLive() || this.abLoop.b !== null ? "clear" : this.abLoop.a === null ? "a" : "b";
                       if (!(action !== "clear" && this.abLoopLive())) {
-                        _context157.n = 3;
+                        _context159.n = 3;
                         break;
                       }
-                      return _context157.a(2, __spreadValues({}, this.abLoop));
+                      return _context159.a(2, __spreadValues({}, this.abLoop));
                     case 3:
                       a = this.abLoop.a, b = this.abLoop.b;
                       time = (_d = (_c = command.position) != null ? _c : (_b = this.info) == null ? void 0 : _b.position) != null ? _d : 0;
@@ -17293,24 +17440,24 @@ var TwilightPortableCore = function (exports) {
                         if (position > a) b = position;
                       }
                       if (!(a === this.abLoop.a && b === this.abLoop.b)) {
-                        _context157.n = 4;
+                        _context159.n = 4;
                         break;
                       }
-                      return _context157.a(2, __spreadValues({}, this.abLoop));
+                      return _context159.a(2, __spreadValues({}, this.abLoop));
                     case 4:
-                      _context157.p = 4;
+                      _context159.p = 4;
                       valid = a !== null && b !== null && b > a;
-                      _t125 = !((_e = this.options.cast) == null ? void 0 : _e.active()) && !this.restored;
-                      if (!_t125) {
-                        _context157.n = 6;
+                      _t130 = !((_e = this.options.cast) == null ? void 0 : _e.active()) && !this.restored;
+                      if (!_t130) {
+                        _context159.n = 6;
                         break;
                       }
-                      _context157.n = 5;
+                      _context159.n = 5;
                       return (_g = (_f = this.options.engine).setLoopRangeConfirmed) == null ? void 0 : _g.call(_f, valid ? a : -1, valid ? b : -1);
                     case 5:
-                      _t125 = _context157.v;
+                      _t130 = _context159.v;
                     case 6:
-                      native = _t125;
+                      native = _t130;
                       this.abLoop = {
                         revision: this.abLoop.revision + 1,
                         occurrenceId: command.occurrenceId,
@@ -17319,119 +17466,119 @@ var TwilightPortableCore = function (exports) {
                         mode: valid ? native ? "native" : "soft" : a === null ? "off" : "pending"
                       };
                       this.publish();
-                      return _context157.a(2, __spreadValues({}, this.abLoop));
+                      return _context159.a(2, __spreadValues({}, this.abLoop));
                     case 7:
-                      _context157.p = 7;
-                      _t126 = _context157.v;
-                      _context157.n = 8;
-                      return this.failStopped(_t126);
+                      _context159.p = 7;
+                      _t131 = _context159.v;
+                      _context159.n = 8;
+                      return this.failStopped(_t131);
                     case 8:
                       this.publish();
-                      throw _t126;
+                      throw _t131;
                     case 9:
-                      return _context157.a(2);
+                      return _context159.a(2);
                   }
-                }, _callee157, this, [[4, 7]]);
+                }, _callee159, this, [[4, 7]]);
               }))));
-          }
-        }, _callee158, this);
-      }));
-    }
-    enforceAbLoop(intent) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee160() {
-        var _a, _b, loop, seek;
-        return _regenerator().w(function (_context160) {
-          while (1) switch (_context160.n) {
-            case 0:
-              loop = this.abLoop;
-              if (!(this.stopped || intent !== this.intent || this.restored || this.uncertain || loop.mode !== "soft" || loop.a === null || loop.b === null || loop.occurrenceId !== ((_a = this.currentTrack) == null ? void 0 : _a.queueEntryId) || ((_b = this.info) == null ? void 0 : _b.state) !== "playing" || this.info.position + 0.02 < loop.b || this.abLoopLive())) {
-                _context160.n = 1;
-                break;
-              }
-              return _context160.a(2, false);
-            case 1:
-              seek = () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee159() {
-                var _a2, _t127;
-                return _regenerator().w(function (_context159) {
-                  while (1) switch (_context159.n) {
-                    case 0:
-                      if (!(intent !== this.intent || this.abLoop !== loop)) {
-                        _context159.n = 1;
-                        break;
-                      }
-                      return _context159.a(2, false);
-                    case 1:
-                      if (!((_a2 = this.options.cast) == null ? void 0 : _a2.active())) {
-                        _context159.n = 3;
-                        break;
-                      }
-                      _t127 = this;
-                      _context159.n = 2;
-                      return this.options.cast.control("seek", loop.a);
-                    case 2:
-                      _t127.acceptCast.call(_t127, _context159.v);
-                      _context159.n = 7;
-                      break;
-                    case 3:
-                      if (this.options.engine.seekConfirmed) {
-                        _context159.n = 4;
-                        break;
-                      }
-                      throw new Error("Confirmed native Seek is unavailable");
-                    case 4:
-                      _context159.n = 5;
-                      return this.options.engine.seekConfirmed(loop.a);
-                    case 5:
-                      _context159.n = 6;
-                      return this.options.engine.getPlaybackInfo();
-                    case 6:
-                      this.info = _context159.v;
-                    case 7:
-                      return _context159.a(2, true);
-                  }
-                }, _callee159, this);
-              }));
-              return _context160.a(2, this.options.runTransport ? this.options.runTransport(seek) : seek());
           }
         }, _callee160, this);
       }));
     }
+    enforceAbLoop(intent) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee162() {
+        var _a, _b, loop, seek;
+        return _regenerator().w(function (_context162) {
+          while (1) switch (_context162.n) {
+            case 0:
+              loop = this.abLoop;
+              if (!(this.stopped || intent !== this.intent || this.restored || this.uncertain || loop.mode !== "soft" || loop.a === null || loop.b === null || loop.occurrenceId !== ((_a = this.currentTrack) == null ? void 0 : _a.queueEntryId) || ((_b = this.info) == null ? void 0 : _b.state) !== "playing" || this.info.position + 0.02 < loop.b || this.abLoopLive())) {
+                _context162.n = 1;
+                break;
+              }
+              return _context162.a(2, false);
+            case 1:
+              seek = () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee161() {
+                var _a2, _t132;
+                return _regenerator().w(function (_context161) {
+                  while (1) switch (_context161.n) {
+                    case 0:
+                      if (!(intent !== this.intent || this.abLoop !== loop)) {
+                        _context161.n = 1;
+                        break;
+                      }
+                      return _context161.a(2, false);
+                    case 1:
+                      if (!((_a2 = this.options.cast) == null ? void 0 : _a2.active())) {
+                        _context161.n = 3;
+                        break;
+                      }
+                      _t132 = this;
+                      _context161.n = 2;
+                      return this.options.cast.control("seek", loop.a);
+                    case 2:
+                      _t132.acceptCast.call(_t132, _context161.v);
+                      _context161.n = 7;
+                      break;
+                    case 3:
+                      if (this.options.engine.seekConfirmed) {
+                        _context161.n = 4;
+                        break;
+                      }
+                      throw new Error("Confirmed native Seek is unavailable");
+                    case 4:
+                      _context161.n = 5;
+                      return this.options.engine.seekConfirmed(loop.a);
+                    case 5:
+                      _context161.n = 6;
+                      return this.options.engine.getPlaybackInfo();
+                    case 6:
+                      this.info = _context161.v;
+                    case 7:
+                      return _context161.a(2, true);
+                  }
+                }, _callee161, this);
+              }));
+              return _context162.a(2, this.options.runTransport ? this.options.runTransport(seek) : seek());
+          }
+        }, _callee162, this);
+      }));
+    }
     play(position, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee161() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee163() {
         var intent;
-        return _regenerator().w(function (_context161) {
-          while (1) switch (_context161.p = _context161.n) {
+        return _regenerator().w(function (_context163) {
+          while (1) switch (_context163.p = _context163.n) {
             case 0:
               intent = this.beginPreparation();
-              _context161.p = 1;
-              _context161.n = 2;
+              _context163.p = 1;
+              _context163.n = 2;
               return this.playIntent(intent, position, signal);
             case 2:
-              _context161.p = 2;
+              _context163.p = 2;
               this.finishPreparation(intent);
-              return _context161.f(2);
+              return _context163.f(2);
             case 3:
-              return _context161.a(2);
+              return _context163.a(2);
           }
-        }, _callee161, this, [[1,, 2, 3]]);
+        }, _callee163, this, [[1,, 2, 3]]);
       }));
     }
     playIntent(intent, position, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee164() {
-        var _a, _b, _c, _d, reference, base, window, start, _t131;
-        return _regenerator().w(function (_context164) {
-          while (1) switch (_context164.p = _context164.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee166() {
+        var _a, _b, _c, _d, reference, base, window, start, _t136;
+        return _regenerator().w(function (_context166) {
+          while (1) switch (_context166.p = _context166.n) {
             case 0:
               reference = this.controller.reference();
               if (!(!reference || !this.currentTrack)) {
-                _context164.n = 1;
+                _context166.n = 1;
                 break;
               }
               throw new Error("No track selected");
             case 1:
               base = this.controller.window.value;
               if (base) {
-                _context164.n = 2;
+                _context166.n = 2;
                 break;
               }
               throw new Error("No playback window");
@@ -17439,119 +17586,119 @@ var TwilightPortableCore = function (exports) {
               window = this.detachedHeartTrack ? this.detachedWindow(base) : base;
               start = (_b = position != null ? position : (_a = this.info) == null ? void 0 : _a.position) != null ? _b : 0;
               if (!((_c = this.options.cast) == null ? void 0 : _c.active())) {
-                _context164.n = 5;
+                _context166.n = 5;
                 break;
               }
               if (!(this.restored || this.uncertain || this.options.cast.state().phase !== "ready")) {
-                _context164.n = 3;
+                _context166.n = 3;
                 break;
               }
-              return _context164.a(2, this.load(window, intent, true, start, signal));
+              return _context166.a(2, this.load(window, intent, true, start, signal));
             case 3:
-              _context164.n = 4;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee162() {
-                var _a2, _b2, _c2, _t128, _t129;
-                return _regenerator().w(function (_context162) {
-                  while (1) switch (_context162.p = _context162.n) {
+              _context166.n = 4;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee164() {
+                var _a2, _b2, _c2, _t133, _t134;
+                return _regenerator().w(function (_context164) {
+                  while (1) switch (_context164.p = _context164.n) {
                     case 0:
                       this.guard(intent, signal);
-                      _context162.p = 1;
+                      _context164.p = 1;
                       if (!(position !== void 0 && ((_a2 = this.currentTrack) == null ? void 0 : _a2.source) !== "radio")) {
-                        _context162.n = 2;
+                        _context164.n = 2;
                         break;
                       }
-                      _context162.n = 2;
+                      _context164.n = 2;
                       return this.options.cast.control("seek", position);
                     case 2:
-                      _t128 = this;
-                      _context162.n = 3;
+                      _t133 = this;
+                      _context164.n = 3;
                       return this.options.cast.control("play");
                     case 3:
-                      _t128.acceptCast.call(_t128, _context162.v);
+                      _t133.acceptCast.call(_t133, _context164.v);
                       if (position !== void 0) (_c2 = (_b2 = this.options).playbackStarted) == null ? void 0 : _c2.call(_b2);
-                      _context162.n = 6;
+                      _context164.n = 6;
                       break;
                     case 4:
-                      _context162.p = 4;
-                      _t129 = _context162.v;
-                      _context162.n = 5;
-                      return this.failStopped(_t129);
+                      _context164.p = 4;
+                      _t134 = _context164.v;
+                      _context164.n = 5;
+                      return this.failStopped(_t134);
                     case 5:
-                      throw _t129;
+                      throw _t134;
                     case 6:
-                      return _context162.a(2);
+                      return _context164.a(2);
                   }
-                }, _callee162, this, [[1, 4]]);
+                }, _callee164, this, [[1, 4]]);
               })));
             case 4:
               this.publish();
-              return _context164.a(2);
+              return _context166.a(2);
             case 5:
               if (!(this.restored || this.uncertain || !this.options.engine.getQueueToken())) {
-                _context164.n = 6;
+                _context166.n = 6;
                 break;
               }
-              return _context164.a(2, this.load(window, intent, true, start, signal));
+              return _context166.a(2, this.load(window, intent, true, start, signal));
             case 6:
-              _context164.p = 6;
-              _context164.n = 7;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee163() {
-                var _a2, _b2, _c2, _d2, _e, source, result, _t130;
-                return _regenerator().w(function (_context163) {
-                  while (1) switch (_context163.p = _context163.n) {
+              _context166.p = 6;
+              _context166.n = 7;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee165() {
+                var _a2, _b2, _c2, _d2, _e, source, result, _t135;
+                return _regenerator().w(function (_context165) {
+                  while (1) switch (_context165.p = _context165.n) {
                     case 0:
                       this.guard(intent, signal);
                       source = (_c2 = this.options.engine.getQueueSnapshot()[(_b2 = (_a2 = this.info) == null ? void 0 : _a2.queueIndex) != null ? _b2 : 0]) == null ? void 0 : _c2.source;
                       if (source) {
-                        _context163.n = 1;
+                        _context165.n = 1;
                         break;
                       }
                       throw new Error("Native occurrence unavailable");
                     case 1:
-                      _context163.p = 1;
-                      _context163.n = 2;
+                      _context165.p = 1;
+                      _context165.n = 2;
                       return this.options.engine.play(source, start, () => intent === this.intent && !(signal == null ? void 0 : signal.aborted));
                     case 2:
-                      result = _context163.v;
+                      result = _context165.v;
                       if (!(!result.nativeStarted || result.superseded)) {
-                        _context163.n = 3;
+                        _context165.n = 3;
                         break;
                       }
                       throw nativeStartFailure(result);
                     case 3:
                       if (position !== void 0) (_e = (_d2 = this.options).playbackStarted) == null ? void 0 : _e.call(_d2);
-                      _context163.n = 4;
+                      _context165.n = 4;
                       return this.options.engine.getPlaybackInfo();
                     case 4:
-                      this.info = _context163.v;
-                      _context163.n = 7;
+                      this.info = _context165.v;
+                      _context165.n = 7;
                       break;
                     case 5:
-                      _context163.p = 5;
-                      _t130 = _context163.v;
-                      _context163.n = 6;
-                      return this.failStopped(_t130);
+                      _context165.p = 5;
+                      _t135 = _context165.v;
+                      _context165.n = 6;
+                      return this.failStopped(_t135);
                     case 6:
-                      throw _t130;
+                      throw _t135;
                     case 7:
-                      return _context163.a(2);
+                      return _context165.a(2);
                   }
-                }, _callee163, this, [[1, 5]]);
+                }, _callee165, this, [[1, 5]]);
               })));
             case 7:
-              _context164.n = 10;
+              _context166.n = 10;
               break;
             case 8:
-              _context164.p = 8;
-              _t131 = _context164.v;
+              _context166.p = 8;
+              _t136 = _context166.v;
               this.guard(intent, signal);
-              if (!(!(_t131 instanceof NativeSourceRejected) || !((_d = this.options.sources) == null ? void 0 : _d.recover))) {
-                _context164.n = 9;
+              if (!(!(_t136 instanceof NativeSourceRejected) || !((_d = this.options.sources) == null ? void 0 : _d.recover))) {
+                _context166.n = 9;
                 break;
               }
-              throw _t131;
+              throw _t136;
             case 9:
-              return _context164.a(2, this.load(window, intent, true, start, signal, {
+              return _context166.a(2, this.load(window, intent, true, start, signal, {
                 recover: this.currentTrack,
                 allowRecovery: false
               }));
@@ -17559,135 +17706,135 @@ var TwilightPortableCore = function (exports) {
               this.startMaintenance();
               this.publish();
             case 11:
-              return _context164.a(2);
+              return _context166.a(2);
           }
-        }, _callee164, this, [[6, 8]]);
+        }, _callee166, this, [[6, 8]]);
       }));
     }
     pause() {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee165() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee167() {
         var intent;
-        return _regenerator().w(function (_context165) {
-          while (1) switch (_context165.p = _context165.n) {
+        return _regenerator().w(function (_context167) {
+          while (1) switch (_context167.p = _context167.n) {
             case 0:
               intent = this.revoke();
               this.requestedState = "paused";
-              _context165.p = 1;
-              _context165.n = 2;
+              _context167.p = 1;
+              _context167.n = 2;
               return this.pauseTransport();
             case 2:
-              _context165.p = 2;
+              _context167.p = 2;
               this.finishPreparation(intent);
-              return _context165.f(2);
+              return _context167.f(2);
             case 3:
-              return _context165.a(2);
+              return _context167.a(2);
           }
-        }, _callee165, this, [[1,, 2, 3]]);
+        }, _callee167, this, [[1,, 2, 3]]);
       }));
     }
     pauseTransport() {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee167() {
-        return _regenerator().w(function (_context167) {
-          while (1) switch (_context167.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee169() {
+        return _regenerator().w(function (_context169) {
+          while (1) switch (_context169.n) {
             case 0:
-              _context167.n = 1;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee166() {
-                var _a, _b, _c, _t132, _t133;
-                return _regenerator().w(function (_context166) {
-                  while (1) switch (_context166.p = _context166.n) {
+              _context169.n = 1;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee168() {
+                var _a, _b, _c, _t137, _t138;
+                return _regenerator().w(function (_context168) {
+                  while (1) switch (_context168.p = _context168.n) {
                     case 0:
-                      _context166.p = 0;
+                      _context168.p = 0;
                       if (!((_a = this.options.cast) == null ? void 0 : _a.active())) {
-                        _context166.n = 5;
+                        _context168.n = 5;
                         break;
                       }
                       if (!(this.options.cast.state().phase === "ready")) {
-                        _context166.n = 2;
+                        _context168.n = 2;
                         break;
                       }
-                      _t132 = this;
-                      _context166.n = 1;
+                      _t137 = this;
+                      _context168.n = 1;
                       return this.options.cast.control("pause");
                     case 1:
-                      _t132.acceptCast.call(_t132, _context166.v);
-                      _context166.n = 4;
+                      _t137.acceptCast.call(_t137, _context168.v);
+                      _context168.n = 4;
                       break;
                     case 2:
-                      _context166.n = 3;
+                      _context168.n = 3;
                       return this.options.cast.stop();
                     case 3:
                       if (this.info) this.info = __spreadProps(__spreadValues({}, this.info), {
                         state: "paused"
                       });
                     case 4:
-                      _context166.n = 9;
+                      _context168.n = 9;
                       break;
                     case 5:
-                      _context166.n = 6;
+                      _context168.n = 6;
                       return this.options.engine.pause();
                     case 6:
                       if (!(!this.restored && !((_b = this.options.cast) == null ? void 0 : _b.active()))) {
-                        _context166.n = 8;
+                        _context168.n = 8;
                         break;
                       }
-                      _context166.n = 7;
+                      _context168.n = 7;
                       return this.options.engine.getPlaybackInfo();
                     case 7:
-                      this.info = _context166.v;
+                      this.info = _context168.v;
                     case 8:
                       if (!(((_c = this.info) == null ? void 0 : _c.state) === "playing")) {
-                        _context166.n = 9;
+                        _context168.n = 9;
                         break;
                       }
                       throw new Error("Native Pause was not acknowledged");
                     case 9:
-                      _context166.n = 12;
+                      _context168.n = 12;
                       break;
                     case 10:
-                      _context166.p = 10;
-                      _t133 = _context166.v;
-                      _context166.n = 11;
-                      return this.failStopped(_t133);
+                      _context168.p = 10;
+                      _t138 = _context168.v;
+                      _context168.n = 11;
+                      return this.failStopped(_t138);
                     case 11:
-                      throw _t133;
+                      throw _t138;
                     case 12:
-                      _context166.p = 12;
+                      _context168.p = 12;
                       this.publish();
-                      return _context166.f(12);
+                      return _context168.f(12);
                     case 13:
-                      return _context166.a(2);
+                      return _context168.a(2);
                   }
-                }, _callee166, this, [[0, 10, 12, 13]]);
+                }, _callee168, this, [[0, 10, 12, 13]]);
               })));
             case 1:
               this.publish();
-              _context167.n = 2;
+              _context169.n = 2;
               return this.flush();
             case 2:
-              return _context167.a(2);
+              return _context169.a(2);
           }
-        }, _callee167, this);
+        }, _callee169, this);
       }));
     }
     stop() {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee168() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee170() {
         var intent;
-        return _regenerator().w(function (_context168) {
-          while (1) switch (_context168.p = _context168.n) {
+        return _regenerator().w(function (_context170) {
+          while (1) switch (_context170.p = _context170.n) {
             case 0:
               intent = this.revoke();
               this.requestedState = "stopped";
-              _context168.p = 1;
-              _context168.n = 2;
+              _context170.p = 1;
+              _context170.n = 2;
               return this.stopTransport();
             case 2:
-              _context168.p = 2;
+              _context170.p = 2;
               this.finishPreparation(intent);
-              return _context168.f(2);
+              return _context170.f(2);
             case 3:
-              return _context168.a(2);
+              return _context170.a(2);
           }
-        }, _callee168, this, [[1,, 2, 3]]);
+        }, _callee170, this, [[1,, 2, 3]]);
       }));
     }
     assertAudioAvailable() {
@@ -17695,14 +17842,14 @@ var TwilightPortableCore = function (exports) {
     }
     /** Revoke prepared sources; preserve the logical cursor and resume position without autoplay. */
     recoverAudio(restart) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee170() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee172() {
         var _a, intent;
-        return _regenerator().w(function (_context170) {
-          while (1) switch (_context170.p = _context170.n) {
+        return _regenerator().w(function (_context172) {
+          while (1) switch (_context172.p = _context172.n) {
             case 0:
               this.assertAudioAvailable();
               if (!((_a = this.options.cast) == null ? void 0 : _a.active())) {
-                _context170.n = 1;
+                _context172.n = 1;
                 break;
               }
               throw new Error("Stop casting before restarting the local audio engine");
@@ -17711,134 +17858,134 @@ var TwilightPortableCore = function (exports) {
               intent = this.revoke();
               this.resetAbLoopState();
               this.restored = true;
-              _context170.p = 2;
-              _context170.n = 3;
+              _context172.p = 2;
+              _context172.n = 3;
               return this.commit(() => {
-                var recover = () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee169() {
-                  var _t134;
-                  return _regenerator().w(function (_context169) {
-                    while (1) switch (_context169.p = _context169.n) {
+                var recover = () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee171() {
+                  var _t139;
+                  return _regenerator().w(function (_context171) {
+                    while (1) switch (_context171.p = _context171.n) {
                       case 0:
-                        _context169.p = 0;
-                        _context169.n = 1;
+                        _context171.p = 0;
+                        _context171.n = 1;
                         return restart();
                       case 1:
                         this.uncertain = false;
                         this.error = null;
-                        _context169.n = 3;
+                        _context171.n = 3;
                         break;
                       case 2:
-                        _context169.p = 2;
-                        _t134 = _context169.v;
+                        _context171.p = 2;
+                        _t139 = _context171.v;
                         this.uncertain = true;
-                        this.error = errorText(_t134);
-                        throw _t134;
+                        this.error = errorText(_t139);
+                        throw _t139;
                       case 3:
-                        _context169.p = 3;
+                        _context171.p = 3;
                         this.observed = null;
                         if (this.info) this.info = __spreadProps(__spreadValues({}, this.info), {
                           state: "stopped",
                           nativePlaybackActive: false
                         });
                         this.publish();
-                        return _context169.f(3);
+                        return _context171.f(3);
                       case 4:
-                        return _context169.a(2);
+                        return _context171.a(2);
                     }
-                  }, _callee169, this, [[0, 2, 3, 4]]);
+                  }, _callee171, this, [[0, 2, 3, 4]]);
                 }));
                 return this.options.runTransport ? this.options.runTransport(recover) : recover();
               });
             case 3:
-              _context170.p = 3;
+              _context172.p = 3;
               this.recoveringAudio = false;
               this.finishPreparation(intent);
-              _context170.n = 4;
+              _context172.n = 4;
               return this.flush();
             case 4:
-              return _context170.f(3);
+              return _context172.f(3);
             case 5:
-              return _context170.a(2);
+              return _context172.a(2);
           }
-        }, _callee170, this, [[2,, 3, 5]]);
+        }, _callee172, this, [[2,, 3, 5]]);
       }));
     }
     stopTransport(current2 = () => true) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee172() {
-        return _regenerator().w(function (_context172) {
-          while (1) switch (_context172.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee174() {
+        return _regenerator().w(function (_context174) {
+          while (1) switch (_context174.n) {
             case 0:
-              _context172.n = 1;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee171() {
-                var _a, _b, _t135;
-                return _regenerator().w(function (_context171) {
-                  while (1) switch (_context171.p = _context171.n) {
+              _context174.n = 1;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee173() {
+                var _a, _b, _t140;
+                return _regenerator().w(function (_context173) {
+                  while (1) switch (_context173.p = _context173.n) {
                     case 0:
                       if (current2()) {
-                        _context171.n = 1;
+                        _context173.n = 1;
                         break;
                       }
-                      return _context171.a(2);
+                      return _context173.a(2);
                     case 1:
-                      _context171.p = 1;
-                      _context171.n = 2;
+                      _context173.p = 1;
+                      _context173.n = 2;
                       return this.clearAbLoop();
                     case 2:
-                      _context171.n = 3;
+                      _context173.n = 3;
                       return (_a = this.options.cast) == null ? void 0 : _a.stop();
                     case 3:
-                      _context171.n = 4;
+                      _context173.n = 4;
                       return this.options.engine.stop();
                     case 4:
                       if (!(((_b = this.options.cast) == null ? void 0 : _b.active()) && this.info)) {
-                        _context171.n = 5;
+                        _context173.n = 5;
                         break;
                       }
                       this.info = __spreadProps(__spreadValues({}, this.info), {
                         state: "stopped",
                         position: 0
                       });
-                      _context171.n = 7;
+                      _context173.n = 7;
                       break;
                     case 5:
-                      _context171.n = 6;
+                      _context173.n = 6;
                       return this.options.engine.getPlaybackInfo();
                     case 6:
-                      this.info = _context171.v;
+                      this.info = _context173.v;
                     case 7:
                       if (!(this.info.state !== "stopped")) {
-                        _context171.n = 8;
+                        _context173.n = 8;
                         break;
                       }
                       throw new Error("Native Stop was not acknowledged");
                     case 8:
                       this.restored = true;
-                      _context171.n = 11;
+                      _context173.n = 11;
                       break;
                     case 9:
-                      _context171.p = 9;
-                      _t135 = _context171.v;
-                      _context171.n = 10;
-                      return this.failStopped(_t135);
+                      _context173.p = 9;
+                      _t140 = _context173.v;
+                      _context173.n = 10;
+                      return this.failStopped(_t140);
                     case 10:
-                      throw _t135;
+                      throw _t140;
                     case 11:
-                      _context171.p = 11;
+                      _context173.p = 11;
                       this.publish();
-                      return _context171.f(11);
+                      return _context173.f(11);
                     case 12:
-                      return _context171.a(2);
+                      return _context173.a(2);
                   }
-                }, _callee171, this, [[1, 9, 11, 12]]);
+                }, _callee173, this, [[1, 9, 11, 12]]);
               })));
             case 1:
               this.publish();
-              _context172.n = 2;
+              _context174.n = 2;
               return this.flush();
             case 2:
-              return _context172.a(2);
+              return _context174.a(2);
           }
-        }, _callee172, this);
+        }, _callee174, this);
       }));
     }
     quiesceForSleep() {
@@ -17852,114 +17999,114 @@ var TwilightPortableCore = function (exports) {
       this.startMaintenance();
     }
     setSleepTimerGain(gain) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee173() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee175() {
         var _a, _b, _c, _d;
-        return _regenerator().w(function (_context173) {
-          while (1) switch (_context173.n) {
+        return _regenerator().w(function (_context175) {
+          while (1) switch (_context175.n) {
             case 0:
               if (!((_a = this.options.cast) == null ? void 0 : _a.active())) {
-                _context173.n = 2;
+                _context175.n = 2;
                 break;
               }
               if (!(this.options.cast.state().phase === "ready")) {
-                _context173.n = 1;
+                _context175.n = 1;
                 break;
               }
               (_d = this.castSleepVolume) != null ? _d : this.castSleepVolume = (_c = (_b = this.info) == null ? void 0 : _b.volume) != null ? _c : 1;
-              _context173.n = 1;
+              _context175.n = 1;
               return this.options.cast.control("volume", this.castSleepVolume * gain);
             case 1:
               if (gain === 1) this.castSleepVolume = null;
-              _context173.n = 4;
+              _context175.n = 4;
               break;
             case 2:
               if (this.options.setNativeSleepGain) {
-                _context173.n = 3;
+                _context175.n = 3;
                 break;
               }
               throw new Error("Native sleep gain unavailable");
             case 3:
-              _context173.n = 4;
+              _context175.n = 4;
               return this.options.setNativeSleepGain(gain);
             case 4:
-              return _context173.a(2);
+              return _context175.a(2);
           }
-        }, _callee173, this);
+        }, _callee175, this);
       }));
     }
     seek(position) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee175() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee177() {
         var intent;
-        return _regenerator().w(function (_context175) {
-          while (1) switch (_context175.n) {
+        return _regenerator().w(function (_context177) {
+          while (1) switch (_context177.n) {
             case 0:
               intent = this.revoke();
-              _context175.n = 1;
-              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee174() {
-                var _a, _b, _t136, _t137;
-                return _regenerator().w(function (_context174) {
-                  while (1) switch (_context174.p = _context174.n) {
+              _context177.n = 1;
+              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee176() {
+                var _a, _b, _t141, _t142;
+                return _regenerator().w(function (_context176) {
+                  while (1) switch (_context176.p = _context176.n) {
                     case 0:
                       this.guard(intent);
                       if (!(this.restored && this.info)) {
-                        _context174.n = 1;
+                        _context176.n = 1;
                         break;
                       }
                       this.info = __spreadProps(__spreadValues({}, this.info), {
                         position
                       });
-                      _context174.n = 10;
+                      _context176.n = 10;
                       break;
                     case 1:
                       if (!((_a = this.options.cast) == null ? void 0 : _a.active())) {
-                        _context174.n = 7;
+                        _context176.n = 7;
                         break;
                       }
                       if (!(((_b = this.currentTrack) == null ? void 0 : _b.source) === "radio")) {
-                        _context174.n = 2;
+                        _context176.n = 2;
                         break;
                       }
                       throw new Error("Live radio cannot seek");
                     case 2:
-                      _context174.p = 2;
-                      _t136 = this;
-                      _context174.n = 3;
+                      _context176.p = 2;
+                      _t141 = this;
+                      _context176.n = 3;
                       return this.options.cast.control("seek", position);
                     case 3:
-                      _t136.acceptCast.call(_t136, _context174.v);
-                      _context174.n = 6;
+                      _t141.acceptCast.call(_t141, _context176.v);
+                      _context176.n = 6;
                       break;
                     case 4:
-                      _context174.p = 4;
-                      _t137 = _context174.v;
-                      _context174.n = 5;
-                      return this.failStopped(_t137);
+                      _context176.p = 4;
+                      _t142 = _context176.v;
+                      _context176.n = 5;
+                      return this.failStopped(_t142);
                     case 5:
                       this.publish();
-                      throw _t137;
+                      throw _t142;
                     case 6:
-                      _context174.n = 10;
+                      _context176.n = 10;
                       break;
                     case 7:
-                      _context174.n = 8;
+                      _context176.n = 8;
                       return this.options.engine.seek(position);
                     case 8:
-                      _context174.n = 9;
+                      _context176.n = 9;
                       return this.options.engine.getPlaybackInfo();
                     case 9:
-                      this.info = _context174.v;
+                      this.info = _context176.v;
                     case 10:
-                      return _context174.a(2);
+                      return _context176.a(2);
                   }
-                }, _callee174, this, [[2, 4]]);
+                }, _callee176, this, [[2, 4]]);
               })));
             case 1:
               this.startMaintenance();
               this.publish();
             case 2:
-              return _context175.a(2);
+              return _context177.a(2);
           }
-        }, _callee175, this);
+        }, _callee177, this);
       }));
     }
     automaticQueue() {
@@ -17970,40 +18117,40 @@ var TwilightPortableCore = function (exports) {
     /** A recommendation skip is not an explicit selection of a named song.
      * Inspect at most 100 existing occurrences and request at most one refill. */
     navigateAutomatic(direction, signal, natural = false) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee177() {
-        var _a, _b, intent, current2, selection, reference, cursor, budget, visited, pass, candidates, row, _row, mask, index, owner, added, _t138;
-        return _regenerator().w(function (_context177) {
-          while (1) switch (_context177.p = _context177.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee179() {
+        var _a, _b, intent, current2, selection, reference, cursor, budget, visited, pass, candidates, row, _row, mask, index, owner, added, _t143;
+        return _regenerator().w(function (_context179) {
+          while (1) switch (_context179.p = _context179.n) {
             case 0:
               intent = this.beginPreparation();
               current2 = AbortSignal.any([this.preview.signal, ...(signal ? [signal] : [])]);
-              _context177.p = 1;
-              _context177.n = 2;
-              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee176() {
+              _context179.p = 1;
+              _context179.n = 2;
+              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee178() {
                 var native;
-                return _regenerator().w(function (_context176) {
-                  while (1) switch (_context176.n) {
+                return _regenerator().w(function (_context178) {
+                  while (1) switch (_context178.n) {
                     case 0:
                       this.guard(intent, current2);
-                      _context176.n = 1;
+                      _context178.n = 1;
                       return this.nativeSelection();
                     case 1:
-                      native = _context176.v;
-                      return _context176.a(2, {
+                      native = _context178.v;
+                      return _context178.a(2, {
                         native,
                         reference: this.controller.reference()
                       });
                   }
-                }, _callee176, this);
+                }, _callee178, this);
               })));
             case 2:
-              selection = _context177.v;
+              selection = _context179.v;
               reference = selection.reference;
               if (reference) {
-                _context177.n = 3;
+                _context179.n = 3;
                 break;
               }
-              return _context177.a(2);
+              return _context179.a(2);
             case 3:
               cursor = reference.index, budget = 100;
               visited = /* @__PURE__ */new Set();
@@ -18011,7 +18158,7 @@ var TwilightPortableCore = function (exports) {
               pass = 0;
             case 4:
               if (!(pass < 2 && budget > 0)) {
-                _context177.n = 19;
+                _context179.n = 19;
                 break;
               }
               candidates = [];
@@ -18025,46 +18172,46 @@ var TwilightPortableCore = function (exports) {
               }
             case 5:
               if (!(budget > 0)) {
-                _context177.n = 8;
+                _context179.n = 8;
                 break;
               }
-              _context177.n = 6;
+              _context179.n = 6;
               return this.options.queues.readNeighbor(reference.id, reference.revision, cursor, direction, !natural || this.mode === "listLoop" || this.mode === "shuffle");
             case 6:
-              _row = _context177.v;
+              _row = _context179.v;
               this.guard(intent, current2);
               if (!(!(_row == null ? void 0 : _row.track) || visited.has(_row.queueEntryId))) {
-                _context177.n = 7;
+                _context179.n = 7;
                 break;
               }
-              return _context177.a(3, 8);
+              return _context179.a(3, 8);
             case 7:
               visited.add(_row.queueEntryId);
               cursor = _row.position;
               budget--;
               candidates.push(_row);
-              _context177.n = 5;
+              _context179.n = 5;
               break;
             case 8:
-              _context177.n = 9;
+              _context179.n = 9;
               return automaticPlaybackMask(candidates.map(row => libraryQueueTrack(row.track, row.queueEntryId)), this.options.automaticPlaybackAllowed, current2);
             case 9:
-              mask = _context177.v;
+              mask = _context179.v;
               this.guard(intent, current2);
               index = 0;
             case 10:
               if (!(index < candidates.length)) {
-                _context177.n = 15;
+                _context179.n = 15;
                 break;
               }
               if (mask[index]) {
-                _context177.n = 11;
+                _context179.n = 11;
                 break;
               }
-              return _context177.a(3, 14);
+              return _context179.a(3, 14);
             case 11:
-              _context177.p = 11;
-              _context177.n = 12;
+              _context179.p = 11;
+              _context179.n = 12;
               return this.load(this.targetWindow(candidates[index]), intent, true, 0, current2, {
                 selection: {
                   expected: reference,
@@ -18074,136 +18221,73 @@ var TwilightPortableCore = function (exports) {
                 automaticOrigin: reference.entryId
               });
             case 12:
-              return _context177.a(2);
+              return _context179.a(2);
             case 13:
-              _context177.p = 13;
-              _t138 = _context177.v;
-              if (_t138 instanceof AutomaticPlaybackRejected) {
-                _context177.n = 14;
+              _context179.p = 13;
+              _t143 = _context179.v;
+              if (_t143 instanceof AutomaticPlaybackRejected) {
+                _context179.n = 14;
                 break;
               }
-              throw _t138;
+              throw _t143;
             case 14:
               index++;
-              _context177.n = 10;
+              _context179.n = 10;
               break;
             case 15:
               if (!(pass || direction < 0 || !budget)) {
-                _context177.n = 16;
+                _context179.n = 16;
                 break;
               }
-              return _context177.a(3, 19);
+              return _context179.a(3, 19);
             case 16:
               owner = ((_b = this.personalized) == null ? void 0 : _b.state()) ? this.personalized : this.heart;
-              _context177.n = 17;
+              _context179.n = 17;
               return owner == null ? void 0 : owner.refill();
             case 17:
-              added = _context177.v;
+              added = _context179.v;
               this.guard(intent, current2);
               reference = this.controller.reference();
               if (added) {
-                _context177.n = 18;
+                _context179.n = 18;
                 break;
               }
-              return _context177.a(3, 19);
+              return _context179.a(3, 19);
             case 18:
               pass++;
-              _context177.n = 4;
+              _context179.n = 4;
               break;
             case 19:
               this.error = "No available tracks for automatic playback";
               this.publish();
-              _context177.n = 20;
+              _context179.n = 20;
               return this.flush();
             case 20:
-              _context177.p = 20;
+              _context179.p = 20;
               this.finishPreparation(intent);
               if (intent === this.intent) this.startMaintenance();
-              return _context177.f(20);
+              return _context179.f(20);
             case 21:
-              return _context177.a(2);
+              return _context179.a(2);
           }
-        }, _callee177, this, [[11, 13], [1,, 20, 21]]);
+        }, _callee179, this, [[11, 13], [1,, 20, 21]]);
       }));
     }
     navigate(direction, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee179() {
-        var intent, selection, reference, native, target;
-        return _regenerator().w(function (_context179) {
-          while (1) switch (_context179.p = _context179.n) {
-            case 0:
-              if (!this.automaticQueue()) {
-                _context179.n = 1;
-                break;
-              }
-              return _context179.a(2, this.navigateAutomatic(direction, signal));
-            case 1:
-              intent = this.beginPreparation();
-              _context179.p = 2;
-              _context179.n = 3;
-              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee178() {
-                var native2;
-                return _regenerator().w(function (_context178) {
-                  while (1) switch (_context178.n) {
-                    case 0:
-                      this.guard(intent, signal);
-                      _context178.n = 1;
-                      return this.nativeSelection();
-                    case 1:
-                      native2 = _context178.v;
-                      return _context178.a(2, {
-                        native: native2,
-                        reference: this.controller.reference()
-                      });
-                  }
-                }, _callee178, this);
-              })));
-            case 3:
-              selection = _context179.v;
-              reference = selection.reference, native = selection.native;
-              if (reference) {
-                _context179.n = 4;
-                break;
-              }
-              return _context179.a(2);
-            case 4:
-              _context179.n = 5;
-              return this.options.queues.readNeighbor(reference.id, reference.revision, reference.index, direction, true);
-            case 5:
-              target = _context179.v;
-              this.guard(intent, signal);
-              if (!(target == null ? void 0 : target.track)) {
-                _context179.n = 6;
-                break;
-              }
-              _context179.n = 6;
-              return this.load(this.targetWindow(target), intent, true, 0, signal, {
-                selection: {
-                  expected: reference,
-                  native
-                }
-              });
-            case 6:
-              _context179.p = 6;
-              this.finishPreparation(intent);
-              if (intent === this.intent) this.startMaintenance();
-              return _context179.f(6);
-            case 7:
-              return _context179.a(2);
-          }
-        }, _callee179, this, [[2,, 6, 7]]);
-      }));
-    }
-    select(request, signal) {
       return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee181() {
-        var _a, intent, native, page2, target;
+        var intent, selection, reference, native, target;
         return _regenerator().w(function (_context181) {
           while (1) switch (_context181.p = _context181.n) {
             case 0:
-              this.assertReference(request);
+              if (!this.automaticQueue()) {
+                _context181.n = 1;
+                break;
+              }
+              return _context181.a(2, this.navigateAutomatic(direction, signal));
+            case 1:
               intent = this.beginPreparation();
-              _context181.p = 1;
-              _context181.n = 2;
+              _context181.p = 2;
+              _context181.n = 3;
               return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee180() {
                 var native2;
                 return _regenerator().w(function (_context180) {
@@ -18214,22 +18298,85 @@ var TwilightPortableCore = function (exports) {
                       return this.nativeSelection();
                     case 1:
                       native2 = _context180.v;
-                      this.assertReference(request);
-                      return _context180.a(2, native2);
+                      return _context180.a(2, {
+                        native: native2,
+                        reference: this.controller.reference()
+                      });
                   }
                 }, _callee180, this);
               })));
+            case 3:
+              selection = _context181.v;
+              reference = selection.reference, native = selection.native;
+              if (reference) {
+                _context181.n = 4;
+                break;
+              }
+              return _context181.a(2);
+            case 4:
+              _context181.n = 5;
+              return this.options.queues.readNeighbor(reference.id, reference.revision, reference.index, direction, true);
+            case 5:
+              target = _context181.v;
+              this.guard(intent, signal);
+              if (!(target == null ? void 0 : target.track)) {
+                _context181.n = 6;
+                break;
+              }
+              _context181.n = 6;
+              return this.load(this.targetWindow(target), intent, true, 0, signal, {
+                selection: {
+                  expected: reference,
+                  native
+                }
+              });
+            case 6:
+              _context181.p = 6;
+              this.finishPreparation(intent);
+              if (intent === this.intent) this.startMaintenance();
+              return _context181.f(6);
+            case 7:
+              return _context181.a(2);
+          }
+        }, _callee181, this, [[2,, 6, 7]]);
+      }));
+    }
+    select(request, signal) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee183() {
+        var _a, intent, native, page2, target;
+        return _regenerator().w(function (_context183) {
+          while (1) switch (_context183.p = _context183.n) {
+            case 0:
+              this.assertReference(request);
+              intent = this.beginPreparation();
+              _context183.p = 1;
+              _context183.n = 2;
+              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee182() {
+                var native2;
+                return _regenerator().w(function (_context182) {
+                  while (1) switch (_context182.n) {
+                    case 0:
+                      this.guard(intent, signal);
+                      _context182.n = 1;
+                      return this.nativeSelection();
+                    case 1:
+                      native2 = _context182.v;
+                      this.assertReference(request);
+                      return _context182.a(2, native2);
+                  }
+                }, _callee182, this);
+              })));
             case 2:
-              native = _context181.v;
-              _context181.n = 3;
+              native = _context183.v;
+              _context183.n = 3;
               return this.options.queues.readQueue(request.id, request.index, 1, {
                 expectedRevision: request.revision
               });
             case 3:
-              page2 = _context181.v;
+              page2 = _context183.v;
               this.guard(intent, signal);
               if (!(((_a = page2.items[0]) == null ? void 0 : _a.queueEntryId) !== request.occurrenceId)) {
-                _context181.n = 4;
+                _context183.n = 4;
                 break;
               }
               throw Object.assign(new Error("Queue occurrence changed"), {
@@ -18238,10 +18385,10 @@ var TwilightPortableCore = function (exports) {
             case 4:
               target = page2.items[0];
               if (!target.track) {
-                _context181.n = 5;
+                _context183.n = 5;
                 break;
               }
-              _context181.n = 5;
+              _context183.n = 5;
               return this.load(this.targetWindow(target), intent, true, 0, signal, {
                 selection: {
                   expected: request,
@@ -18249,14 +18396,14 @@ var TwilightPortableCore = function (exports) {
                 }
               });
             case 5:
-              _context181.p = 5;
+              _context183.p = 5;
               this.finishPreparation(intent);
               if (intent === this.intent) this.startMaintenance();
-              return _context181.f(5);
+              return _context183.f(5);
             case 6:
-              return _context181.a(2);
+              return _context183.a(2);
           }
-        }, _callee181, this, [[1,, 5, 6]]);
+        }, _callee183, this, [[1,, 5, 6]]);
       }));
     }
     assertReference(expected) {
@@ -18277,47 +18424,47 @@ var TwilightPortableCore = function (exports) {
       });
     }
     observeDepartingTrack(nextTrack) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee182() {
-        var _a, _b, _c, current2, info, active, _t139;
-        return _regenerator().w(function (_context182) {
-          while (1) switch (_context182.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee184() {
+        var _a, _b, _c, current2, info, active, _t144;
+        return _regenerator().w(function (_context184) {
+          while (1) switch (_context184.n) {
             case 0:
               current2 = this.currentTrack;
               if (!(!current2 || current2.id === (nextTrack == null ? void 0 : nextTrack.id) && current2.queueEntryId === (nextTrack == null ? void 0 : nextTrack.queueEntryId))) {
-                _context182.n = 1;
+                _context184.n = 1;
                 break;
               }
-              return _context182.a(2);
+              return _context184.a(2);
             case 1:
               if (!(!this.restored && !this.uncertain)) {
-                _context182.n = 6;
+                _context184.n = 6;
                 break;
               }
               if (!((_a = this.options.cast) == null ? void 0 : _a.active())) {
-                _context182.n = 4;
+                _context184.n = 4;
                 break;
               }
               if (!(this.options.cast.state().phase === "ready")) {
-                _context182.n = 3;
+                _context184.n = 3;
                 break;
               }
-              _t139 = this;
-              _context182.n = 2;
+              _t144 = this;
+              _context184.n = 2;
               return this.options.cast.read();
             case 2:
-              _t139.acceptCast.call(_t139, _context182.v);
+              _t144.acceptCast.call(_t144, _context184.v);
             case 3:
-              _context182.n = 6;
+              _context184.n = 6;
               break;
             case 4:
               if (!this.options.engine.getQueueToken()) {
-                _context182.n = 6;
+                _context184.n = 6;
                 break;
               }
-              _context182.n = 5;
+              _context184.n = 5;
               return this.options.engine.getPlaybackInfo();
             case 5:
-              info = _context182.v;
+              info = _context184.v;
               active = this.options.engine.getQueueSnapshot()[info.queueIndex];
               if (active && active.id === current2.id && (!active.queueEntryId || active.queueEntryId === current2.queueEntryId)) {
                 this.info = info;
@@ -18327,28 +18474,28 @@ var TwilightPortableCore = function (exports) {
                 playMode: this.mode
               }));
             case 7:
-              return _context182.a(2);
+              return _context184.a(2);
           }
-        }, _callee182, this);
+        }, _callee184, this);
       }));
     }
     nativeSelection() {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee183() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee185() {
         var _a, _b, _c, info, item;
-        return _regenerator().w(function (_context183) {
-          while (1) switch (_context183.n) {
+        return _regenerator().w(function (_context185) {
+          while (1) switch (_context185.n) {
             case 0:
               if (!(((_a = this.options.cast) == null ? void 0 : _a.active()) || this.restored || this.uncertain || !this.options.engine.getQueueToken())) {
-                _context183.n = 1;
+                _context185.n = 1;
                 break;
               }
-              return _context183.a(2, null);
+              return _context185.a(2, null);
             case 1:
-              _context183.n = 2;
+              _context185.n = 2;
               return this.options.engine.getPlaybackInfo();
             case 2:
-              info = _context183.v;
-              _context183.n = 3;
+              info = _context185.v;
+              _context185.n = 3;
               return this.acceptNative(info);
             case 3:
               this.info = info;
@@ -18356,29 +18503,29 @@ var TwilightPortableCore = function (exports) {
                 playMode: this.mode
               }));
               item = this.options.engine.getQueueSnapshot()[info.queueIndex];
-              return _context183.a(2, item ? {
+              return _context185.a(2, item ? {
                 queueToken: this.options.engine.getQueueToken(),
                 index: info.queueIndex,
                 id: item.id,
                 source: item.source
               } : null);
           }
-        }, _callee183, this);
+        }, _callee185, this);
       }));
     }
     fenceNative(expected) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee184() {
-        var current2, guarded, _t140, _t141;
-        return _regenerator().w(function (_context184) {
-          while (1) switch (_context184.p = _context184.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee186() {
+        var current2, guarded, _t145, _t146;
+        return _regenerator().w(function (_context186) {
+          while (1) switch (_context186.p = _context186.n) {
             case 0:
               current2 = this.options.engine.getQueueSnapshot()[expected.index];
-              _context184.p = 1;
+              _context186.p = 1;
               if (!current2) {
-                _context184.n = 3;
+                _context186.n = 3;
                 break;
               }
-              _context184.n = 2;
+              _context186.n = 2;
               return this.options.engine.rebindQueue({
                 expected,
                 items: [__spreadProps(__spreadValues({}, current2), {
@@ -18388,25 +18535,25 @@ var TwilightPortableCore = function (exports) {
                 playMode: "sequential"
               });
             case 2:
-              _t140 = _context184.v;
-              _context184.n = 4;
+              _t145 = _context186.v;
+              _context186.n = 4;
               break;
             case 3:
-              _t140 = null;
+              _t145 = null;
             case 4:
-              guarded = _t140;
-              _context184.n = 7;
+              guarded = _t145;
+              _context186.n = 7;
               break;
             case 5:
-              _context184.p = 5;
-              _t141 = _context184.v;
-              _context184.n = 6;
-              return this.failStopped(_t141);
+              _context186.p = 5;
+              _t146 = _context186.v;
+              _context186.n = 6;
+              return this.failStopped(_t146);
             case 6:
-              throw _t141;
+              throw _t146;
             case 7:
               if (guarded) {
-                _context184.n = 8;
+                _context186.n = 8;
                 break;
               }
               throw Object.assign(new Error("Playback occurrence advanced during source resolution"), {
@@ -18415,33 +18562,33 @@ var TwilightPortableCore = function (exports) {
             case 8:
               this.mapping = [this.detachedHeartTrack ? -1 : this.controller.reference().index];
             case 9:
-              return _context184.a(2);
+              return _context186.a(2);
           }
-        }, _callee184, this, [[1, 5]]);
+        }, _callee186, this, [[1, 5]]);
       }));
     }
     failStopped(error) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee185() {
-        var _a, _b, stopped, fatal, _t142;
-        return _regenerator().w(function (_context185) {
-          while (1) switch (_context185.p = _context185.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee187() {
+        var _a, _b, stopped, fatal, _t147;
+        return _regenerator().w(function (_context187) {
+          while (1) switch (_context187.p = _context187.n) {
             case 0:
               this.uncertain = true;
               this.error = errorText(error);
               this.resetAbLoopState();
-              _context185.p = 1;
-              _context185.n = 2;
+              _context187.p = 1;
+              _context187.n = 2;
               return (_a = this.options.cast) == null ? void 0 : _a.stop();
             case 2:
-              _context185.n = 3;
+              _context187.n = 3;
               return this.options.engine.stop();
             case 3:
-              _context185.n = 4;
+              _context187.n = 4;
               return this.options.engine.getPlaybackInfo();
             case 4:
-              stopped = _context185.v;
+              stopped = _context187.v;
               if (!(stopped.state !== "stopped")) {
-                _context185.n = 5;
+                _context187.n = 5;
                 break;
               }
               throw new Error("Native Stop was not acknowledged");
@@ -18449,25 +18596,25 @@ var TwilightPortableCore = function (exports) {
               this.info = ((_b = this.options.cast) == null ? void 0 : _b.active()) && this.info ? __spreadProps(__spreadValues({}, this.info), {
                 state: "stopped"
               }) : stopped;
-              _context185.n = 7;
+              _context187.n = 7;
               break;
             case 6:
-              _context185.p = 6;
-              _t142 = _context185.v;
-              fatal = new Error(`Cannot confirm audio stopped: ${errorText(_t142)}`);
+              _context187.p = 6;
+              _t147 = _context187.v;
+              fatal = new Error(`Cannot confirm audio stopped: ${errorText(_t147)}`);
               this.options.fatal(fatal);
               throw fatal;
             case 7:
-              return _context185.a(2);
+              return _context187.a(2);
           }
-        }, _callee185, this, [[1, 6]]);
+        }, _callee187, this, [[1, 6]]);
       }));
     }
     edit(_0, _1, _2) {
-      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee187(id2, revision2, edit2, nextMode = this.mode) {
+      return __async$i(this, arguments, /*#__PURE__*/_regenerator().m(function _callee189(id2, revision2, edit2, nextMode = this.mode) {
         var _a, intent;
-        return _regenerator().w(function (_context187) {
-          while (1) switch (_context187.p = _context187.n) {
+        return _regenerator().w(function (_context189) {
+          while (1) switch (_context189.p = _context189.n) {
             case 0:
               this.assertReference({
                 id: id2,
@@ -18481,219 +18628,219 @@ var TwilightPortableCore = function (exports) {
                 }
               }
               intent = this.revoke();
-              _context187.p = 1;
-              _context187.n = 2;
-              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee186() {
-                var _a2, _b, _c, native, previous, result, selected, _t143, _t144, _t145, _t146, _t147, _t148;
-                return _regenerator().w(function (_context186) {
-                  while (1) switch (_context186.p = _context186.n) {
+              _context189.p = 1;
+              _context189.n = 2;
+              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee188() {
+                var _a2, _b, _c, native, previous, result, selected, _t148, _t149, _t150, _t151, _t152, _t153;
+                return _regenerator().w(function (_context188) {
+                  while (1) switch (_context188.p = _context188.n) {
                     case 0:
                       this.guard(intent);
-                      _context186.n = 1;
+                      _context188.n = 1;
                       return this.nativeSelection();
                     case 1:
-                      native = _context186.v;
+                      native = _context188.v;
                       this.assertReference({
                         id: id2,
                         revision: revision2
                       });
                       if (!native) {
-                        _context186.n = 2;
+                        _context188.n = 2;
                         break;
                       }
-                      _context186.n = 2;
+                      _context188.n = 2;
                       return this.fenceNative(native);
                     case 2:
                       this.guard(intent);
                       previous = this.currentTrack;
-                      _context186.p = 3;
+                      _context188.p = 3;
                       if (!(edit2.kind === "undo")) {
-                        _context186.n = 5;
+                        _context188.n = 5;
                         break;
                       }
-                      _context186.n = 4;
+                      _context188.n = 4;
                       return this.controller.undo(nextMode, {
                         id: id2,
                         revision: revision2
                       });
                     case 4:
-                      _t143 = _context186.v;
-                      _context186.n = 7;
+                      _t148 = _context188.v;
+                      _context188.n = 7;
                       break;
                     case 5:
-                      _context186.n = 6;
+                      _context188.n = 6;
                       return this.controller.edit(edit2, nextMode, {
                         id: id2,
                         revision: revision2
                       });
                     case 6:
-                      _t143 = _context186.v;
+                      _t148 = _context188.v;
                     case 7:
-                      result = _t143;
+                      result = _t148;
                       selected = this.controller.track(result);
                       this.mode = nextMode;
                       if (!selected) this.detachedHeartTrack = false;
                       if (this.detachedHeartTrack) {
-                        _context186.n = 8;
+                        _context188.n = 8;
                         break;
                       }
-                      _context186.n = 8;
+                      _context188.n = 8;
                       return this.updateTrack(selected);
                     case 8:
                       if (!(!this.detachedHeartTrack && ((selected == null ? void 0 : selected.queueEntryId) !== (previous == null ? void 0 : previous.queueEntryId) || !selected))) {
-                        _context186.n = 14;
+                        _context188.n = 14;
                         break;
                       }
-                      _context186.n = 9;
+                      _context188.n = 9;
                       return (_a2 = this.options.cast) == null ? void 0 : _a2.stop();
                     case 9:
-                      _context186.n = 10;
+                      _context188.n = 10;
                       return this.options.engine.stop();
                     case 10:
-                      _t144 = __spreadProps;
-                      _t145 = __spreadValues;
-                      _t146 = {};
+                      _t149 = __spreadProps;
+                      _t150 = __spreadValues;
+                      _t151 = {};
                       if (!((_b = this.options.cast) == null ? void 0 : _b.active())) {
-                        _context186.n = 11;
+                        _context188.n = 11;
                         break;
                       }
-                      _t147 = this.info;
-                      _context186.n = 13;
+                      _t152 = this.info;
+                      _context188.n = 13;
                       break;
                     case 11:
-                      _context186.n = 12;
+                      _context188.n = 12;
                       return this.options.engine.getPlaybackInfo();
                     case 12:
-                      _t147 = _context186.v;
+                      _t152 = _context188.v;
                     case 13:
-                      this.info = _t144(_t145(_t146, _t147), {
+                      this.info = _t149(_t150(_t151, _t152), {
                         state: selected ? "paused" : "stopped",
                         position: 0,
                         duration: (_c = selected == null ? void 0 : selected.duration) != null ? _c : 0
                       });
                       this.restored = true;
                     case 14:
-                      _context186.n = 17;
+                      _context188.n = 17;
                       break;
                     case 15:
-                      _context186.p = 15;
-                      _t148 = _context186.v;
-                      _context186.n = 16;
-                      return this.failStopped(_t148);
+                      _context188.p = 15;
+                      _t153 = _context188.v;
+                      _context188.n = 16;
+                      return this.failStopped(_t153);
                     case 16:
-                      throw _t148;
+                      throw _t153;
                     case 17:
-                      return _context186.a(2);
+                      return _context188.a(2);
                   }
-                }, _callee186, this, [[3, 15]]);
+                }, _callee188, this, [[3, 15]]);
               })));
             case 2:
               this.publish();
-              _context187.n = 3;
+              _context189.n = 3;
               return this.flush();
             case 3:
-              _context187.p = 3;
+              _context189.p = 3;
               if (intent === this.intent) this.startMaintenance();
-              return _context187.f(3);
+              return _context189.f(3);
             case 4:
-              return _context187.a(2);
+              return _context189.a(2);
           }
-        }, _callee187, this, [[1,, 3, 4]]);
+        }, _callee189, this, [[1,, 3, 4]]);
       }));
     }
     setMode(mode, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee188() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee190() {
         var reference;
-        return _regenerator().w(function (_context188) {
-          while (1) switch (_context188.n) {
+        return _regenerator().w(function (_context190) {
+          while (1) switch (_context190.n) {
             case 0:
               if (!(mode === this.mode)) {
-                _context188.n = 1;
+                _context190.n = 1;
                 break;
               }
-              return _context188.a(2);
+              return _context190.a(2);
             case 1:
               if (!(mode === "heart")) {
-                _context188.n = 2;
+                _context190.n = 2;
                 break;
               }
-              return _context188.a(2, this.enterHeart(signal));
+              return _context190.a(2, this.enterHeart(signal));
             case 2:
               if (!(this.mode === "heart")) {
-                _context188.n = 4;
+                _context190.n = 4;
                 break;
               }
-              _context188.n = 3;
+              _context190.n = 3;
               return this.exitHeart(signal);
             case 3:
               if (!(mode === "sequential")) {
-                _context188.n = 4;
+                _context190.n = 4;
                 break;
               }
-              return _context188.a(2);
+              return _context190.a(2);
             case 4:
               reference = this.controller.reference();
               if (!reference) {
-                _context188.n = 6;
+                _context190.n = 6;
                 break;
               }
-              _context188.n = 5;
+              _context190.n = 5;
               return this.edit(reference.id, reference.revision, {
                 kind: "mode",
                 mode
               }, mode);
             case 5:
-              _context188.n = 7;
+              _context190.n = 7;
               break;
             case 6:
               this.mode = mode;
               this.publish();
             case 7:
-              return _context188.a(2);
+              return _context190.a(2);
           }
-        }, _callee188, this);
+        }, _callee190, this);
       }));
     }
     /** Explicit read recovery after an unknown SQL/native result. It never
      * replays the failed edit or resumes audio. */
     refresh() {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee190() {
-        return _regenerator().w(function (_context190) {
-          while (1) switch (_context190.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee192() {
+        return _regenerator().w(function (_context192) {
+          while (1) switch (_context192.n) {
             case 0:
               this.revoke();
-              _context190.n = 1;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee189() {
+              _context192.n = 1;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee191() {
                 var _a, _b, _c, _d, _e, _f, info, error, window;
-                return _regenerator().w(function (_context189) {
-                  while (1) switch (_context189.n) {
+                return _regenerator().w(function (_context191) {
+                  while (1) switch (_context191.n) {
                     case 0:
-                      _context189.n = 1;
+                      _context191.n = 1;
                       return this.clearAbLoop();
                     case 1:
-                      _context189.n = 2;
+                      _context191.n = 2;
                       return (_a = this.options.cast) == null ? void 0 : _a.stop();
                     case 2:
-                      _context189.n = 3;
+                      _context191.n = 3;
                       return this.options.engine.stop();
                     case 3:
-                      _context189.n = 4;
+                      _context191.n = 4;
                       return this.options.engine.getPlaybackInfo();
                     case 4:
-                      info = _context189.v;
+                      info = _context191.v;
                       if (!(info.state !== "stopped")) {
-                        _context189.n = 5;
+                        _context191.n = 5;
                         break;
                       }
                       error = new Error("Native Stop was not acknowledged");
                       this.options.fatal(error);
                       throw error;
                     case 5:
-                      _context189.n = 6;
+                      _context191.n = 6;
                       return this.controller.refresh(this.mode);
                     case 6:
-                      window = _context189.v;
-                      _context189.n = 7;
+                      window = _context191.v;
+                      _context191.n = 7;
                       return this.updateTrack(this.controller.track(window));
                     case 7:
                       if (window && this.mode !== "heart") this.mode = libraryQueueResumeMode(window.queue, this.mode);
@@ -18709,119 +18856,119 @@ var TwilightPortableCore = function (exports) {
                       (_e = this.personalized) == null ? void 0 : _e.recover();
                       (_f = this.heart) == null ? void 0 : _f.recover();
                     case 8:
-                      return _context189.a(2);
-                  }
-                }, _callee189, this);
-              })));
-            case 1:
-              this.publish();
-              _context190.n = 2;
-              return this.flush();
-            case 2:
-              return _context190.a(2);
-          }
-        }, _callee190, this);
-      }));
-    }
-    setVolume(volume2) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee192() {
-        return _regenerator().w(function (_context192) {
-          while (1) switch (_context192.n) {
-            case 0:
-              this.interruptSleep();
-              _context192.n = 1;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee191() {
-                return _regenerator().w(function (_context191) {
-                  while (1) switch (_context191.n) {
-                    case 0:
-                      _context191.n = 1;
-                      return this.setUserVolume(volume2);
-                    case 1:
                       return _context191.a(2);
                   }
                 }, _callee191, this);
               })));
             case 1:
+              this.publish();
+              _context192.n = 2;
+              return this.flush();
+            case 2:
               return _context192.a(2);
           }
         }, _callee192, this);
       }));
     }
-    /** System clients submit intent; Core chooses from current or pending state. */
-    control(action, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee195() {
-        var _a, _b, work, _t149;
-        return _regenerator().w(function (_context195) {
-          while (1) switch (_context195.n) {
+    setVolume(volume2) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee194() {
+        return _regenerator().w(function (_context194) {
+          while (1) switch (_context194.n) {
             case 0:
-              _t149 = action.type;
-              _context195.n = _t149 === "toggle-play" ? 1 : _t149 === "play" ? 2 : _t149 === "pause" ? 3 : _t149 === "stop" ? 4 : _t149 === "previous" ? 5 : _t149 === "next" ? 6 : _t149 === "seek" ? 7 : _t149 === "set-volume" ? 8 : _t149 === "queue-jump" ? 9 : _t149 === "volume-step" ? 10 : _t149 === "set-play-mode" ? 11 : _t149 === "cycle-play-mode" ? 11 : 12;
-              break;
-            case 1:
-              return _context195.a(2, ((_b = this.requestedState) != null ? _b : (_a = this.info) == null ? void 0 : _a.state) === "playing" ? this.pause() : this.play(void 0, signal));
-            case 2:
-              return _context195.a(2, this.play(void 0, signal));
-            case 3:
-              return _context195.a(2, this.pause());
-            case 4:
-              return _context195.a(2, this.stop());
-            case 5:
-              return _context195.a(2, this.navigate(-1, signal));
-            case 6:
-              return _context195.a(2, this.navigate(1, signal));
-            case 7:
-              return _context195.a(2, this.seek(action.value));
-            case 8:
-              return _context195.a(2, this.setVolume(action.value));
-            case 9:
-              return _context195.a(2, this.select(action, signal));
-            case 10:
               this.interruptSleep();
-              return _context195.a(2, this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee193() {
-                var _a2, _b2, delta, volume2;
+              _context194.n = 1;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee193() {
                 return _regenerator().w(function (_context193) {
                   while (1) switch (_context193.n) {
                     case 0:
-                      delta = action.direction === "volumeUp" ? 0.05 : -0.05;
-                      volume2 = Math.min(1, Math.max(0, Math.round((((_b2 = (_a2 = this.info) == null ? void 0 : _a2.volume) != null ? _b2 : 0) + delta) * 100) / 100));
                       _context193.n = 1;
                       return this.setUserVolume(volume2);
                     case 1:
                       return _context193.a(2);
                   }
                 }, _callee193, this);
+              })));
+            case 1:
+              return _context194.a(2);
+          }
+        }, _callee194, this);
+      }));
+    }
+    /** System clients submit intent; Core chooses from current or pending state. */
+    control(action, signal) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee197() {
+        var _a, _b, work, _t154;
+        return _regenerator().w(function (_context197) {
+          while (1) switch (_context197.n) {
+            case 0:
+              _t154 = action.type;
+              _context197.n = _t154 === "toggle-play" ? 1 : _t154 === "play" ? 2 : _t154 === "pause" ? 3 : _t154 === "stop" ? 4 : _t154 === "previous" ? 5 : _t154 === "next" ? 6 : _t154 === "seek" ? 7 : _t154 === "set-volume" ? 8 : _t154 === "queue-jump" ? 9 : _t154 === "volume-step" ? 10 : _t154 === "set-play-mode" ? 11 : _t154 === "cycle-play-mode" ? 11 : 12;
+              break;
+            case 1:
+              return _context197.a(2, ((_b = this.requestedState) != null ? _b : (_a = this.info) == null ? void 0 : _a.state) === "playing" ? this.pause() : this.play(void 0, signal));
+            case 2:
+              return _context197.a(2, this.play(void 0, signal));
+            case 3:
+              return _context197.a(2, this.pause());
+            case 4:
+              return _context197.a(2, this.stop());
+            case 5:
+              return _context197.a(2, this.navigate(-1, signal));
+            case 6:
+              return _context197.a(2, this.navigate(1, signal));
+            case 7:
+              return _context197.a(2, this.seek(action.value));
+            case 8:
+              return _context197.a(2, this.setVolume(action.value));
+            case 9:
+              return _context197.a(2, this.select(action, signal));
+            case 10:
+              this.interruptSleep();
+              return _context197.a(2, this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee195() {
+                var _a2, _b2, delta, volume2;
+                return _regenerator().w(function (_context195) {
+                  while (1) switch (_context195.n) {
+                    case 0:
+                      delta = action.direction === "volumeUp" ? 0.05 : -0.05;
+                      volume2 = Math.min(1, Math.max(0, Math.round((((_b2 = (_a2 = this.info) == null ? void 0 : _a2.volume) != null ? _b2 : 0) + delta) * 100) / 100));
+                      _context195.n = 1;
+                      return this.setUserVolume(volume2);
+                    case 1:
+                      return _context195.a(2);
+                  }
+                }, _callee195, this);
               }))));
             case 11:
-              work = this.modeControls.then(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee194() {
+              work = this.modeControls.then(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee196() {
                 var _a2, modes2, mode;
-                return _regenerator().w(function (_context194) {
-                  while (1) switch (_context194.n) {
+                return _regenerator().w(function (_context196) {
+                  while (1) switch (_context196.n) {
                     case 0:
                       signal == null ? void 0 : signal.throwIfAborted();
                       modes2 = ["sequential", "listLoop", "repeat", "shuffle"];
                       if ((_a2 = this.heart) == null ? void 0 : _a2.state().available) modes2.push("heart");
                       mode = action.type === "set-play-mode" ? action.value : modes2[(modes2.indexOf(this.mode) + 1) % modes2.length];
-                      _context194.n = 1;
+                      _context196.n = 1;
                       return this.setMode(mode, signal);
                     case 1:
-                      return _context194.a(2);
+                      return _context196.a(2);
                   }
-                }, _callee194, this);
+                }, _callee196, this);
               })));
               this.modeControls = work.catch(() => {});
-              return _context195.a(2, work);
+              return _context197.a(2, work);
             case 12:
-              return _context195.a(2);
+              return _context197.a(2);
           }
-        }, _callee195, this);
+        }, _callee197, this);
       }));
     }
     setUserVolume(volume2) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee196() {
-        return _regenerator().w(function (_context196) {
-          while (1) switch (_context196.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee198() {
+        return _regenerator().w(function (_context198) {
+          while (1) switch (_context198.n) {
             case 0:
-              _context196.n = 1;
+              _context198.n = 1;
               return this.applyVolume(volume2);
             case 1:
               if (this.info && this.info.volume > 0) {
@@ -18830,86 +18977,86 @@ var TwilightPortableCore = function (exports) {
               }
               this.publish();
             case 2:
-              return _context196.a(2);
+              return _context198.a(2);
           }
-        }, _callee196, this);
+        }, _callee198, this);
       }));
     }
     configureMute(muted) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee198() {
-        return _regenerator().w(function (_context198) {
-          while (1) switch (_context198.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee200() {
+        return _regenerator().w(function (_context200) {
+          while (1) switch (_context200.n) {
             case 0:
               this.interruptSleep();
-              _context198.n = 1;
-              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee197() {
+              _context200.n = 1;
+              return this.transport(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee199() {
                 var _a, _b, volume2, next;
-                return _regenerator().w(function (_context197) {
-                  while (1) switch (_context197.n) {
+                return _regenerator().w(function (_context199) {
+                  while (1) switch (_context199.n) {
                     case 0:
                       volume2 = (_b = (_a = this.info) == null ? void 0 : _a.volume) != null ? _b : 0;
                       next = muted != null ? muted : !this.muted && volume2 > 0;
                       if (next && volume2 > 0) this.lastAudibleVolume = volume2;
-                      _context197.n = 1;
+                      _context199.n = 1;
                       return this.applyVolume(next ? 0 : Math.max(0.01, this.lastAudibleVolume));
                     case 1:
                       this.muted = next;
                       if (this.info && this.info.volume > 0) this.lastAudibleVolume = this.info.volume;
                       this.publish();
                     case 2:
-                      return _context197.a(2);
+                      return _context199.a(2);
                   }
-                }, _callee197, this);
+                }, _callee199, this);
               })));
             case 1:
-              return _context198.a(2);
+              return _context200.a(2);
           }
-        }, _callee198, this);
+        }, _callee200, this);
       }));
     }
     applyVolume(volume2) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee199() {
-        var _a, actual, _t150, _t151;
-        return _regenerator().w(function (_context199) {
-          while (1) switch (_context199.p = _context199.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee201() {
+        var _a, actual, _t155, _t156;
+        return _regenerator().w(function (_context201) {
+          while (1) switch (_context201.p = _context201.n) {
             case 0:
               if (!((_a = this.options.cast) == null ? void 0 : _a.active())) {
-                _context199.n = 6;
+                _context201.n = 6;
                 break;
               }
-              _context199.p = 1;
-              _t150 = this;
-              _context199.n = 2;
+              _context201.p = 1;
+              _t155 = this;
+              _context201.n = 2;
               return this.options.cast.control("volume", volume2);
             case 2:
-              _t150.acceptCast.call(_t150, _context199.v);
-              _context199.n = 5;
+              _t155.acceptCast.call(_t155, _context201.v);
+              _context201.n = 5;
               break;
             case 3:
-              _context199.p = 3;
-              _t151 = _context199.v;
-              _context199.n = 4;
-              return this.failStopped(_t151);
+              _context201.p = 3;
+              _t156 = _context201.v;
+              _context201.n = 4;
+              return this.failStopped(_t156);
             case 4:
               this.publish();
-              throw _t151;
+              throw _t156;
             case 5:
-              return _context199.a(2);
+              return _context201.a(2);
             case 6:
-              _context199.n = 7;
+              _context201.n = 7;
               return this.options.engine.setVolume(volume2);
             case 7:
-              _context199.n = 8;
+              _context201.n = 8;
               return this.options.engine.getPlaybackInfo();
             case 8:
-              actual = _context199.v;
+              actual = _context201.v;
               this.info = this.restored && this.info ? __spreadProps(__spreadValues({}, this.info), {
                 volume: actual.volume
               }) : actual;
             case 9:
-              return _context199.a(2);
+              return _context201.a(2);
           }
-        }, _callee199, this, [[1, 3]]);
+        }, _callee201, this, [[1, 3]]);
       }));
     }
     clearHeart() {
@@ -18934,26 +19081,26 @@ var TwilightPortableCore = function (exports) {
       });
     }
     startLiked(command, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee200() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee202() {
         var owner, intent, current2, liked;
-        return _regenerator().w(function (_context200) {
-          while (1) switch (_context200.p = _context200.n) {
+        return _regenerator().w(function (_context202) {
+          while (1) switch (_context202.p = _context202.n) {
             case 0:
               owner = this.heart;
               if (owner) {
-                _context200.n = 1;
+                _context202.n = 1;
                 break;
               }
               throw new Error("NCM provider runtime unavailable");
             case 1:
               intent = this.beginPreparation(command.play !== false);
               current2 = AbortSignal.any([this.preview.signal, ...(signal ? [signal] : [])]);
-              _context200.p = 2;
-              _context200.n = 3;
+              _context202.p = 2;
+              _context202.n = 3;
               return owner.liked(current2, command.selectedId);
             case 3:
-              liked = _context200.v;
-              _context200.n = 4;
+              liked = _context202.v;
+              _context202.n = 4;
               return this.stagePages(liked.produce, {
                 mode: this.mode === "heart" ? "sequential" : this.mode,
                 order: "original",
@@ -18965,79 +19112,79 @@ var TwilightPortableCore = function (exports) {
                 })
               }, intent, current2);
             case 4:
-              _context200.p = 4;
+              _context202.p = 4;
               this.finishPreparation(intent);
               if (intent === this.intent) this.startMaintenance();
-              return _context200.f(4);
+              return _context202.f(4);
             case 5:
-              return _context200.a(2);
+              return _context202.a(2);
           }
-        }, _callee200, this, [[2,, 4, 5]]);
+        }, _callee202, this, [[2,, 4, 5]]);
       }));
     }
     enterHeart(signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee203() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee205() {
         var _a, owner, context, intent, current2, selection, batch, seen, additions;
-        return _regenerator().w(function (_context203) {
-          while (1) switch (_context203.p = _context203.n) {
+        return _regenerator().w(function (_context205) {
+          while (1) switch (_context205.p = _context205.n) {
             case 0:
               owner = this.heart, context = owner == null ? void 0 : owner.persisted();
               if (!(!(owner == null ? void 0 : owner.state().available) || !context || this.detachedHeartTrack)) {
-                _context203.n = 1;
+                _context205.n = 1;
                 break;
               }
               throw new Error("Heart mode requires the NCM liked playlist context");
             case 1:
               intent = this.beginPreparation(((_a = this.info) == null ? void 0 : _a.state) === "playing");
               current2 = AbortSignal.any([this.preview.signal, ...(signal ? [signal] : [])]);
-              _context203.p = 2;
-              _context203.n = 3;
-              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee201() {
+              _context205.p = 2;
+              _context205.n = 3;
+              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee203() {
                 var native;
-                return _regenerator().w(function (_context201) {
-                  while (1) switch (_context201.n) {
+                return _regenerator().w(function (_context203) {
+                  while (1) switch (_context203.n) {
                     case 0:
                       this.guard(intent, current2);
-                      _context201.n = 1;
+                      _context203.n = 1;
                       return this.nativeSelection();
                     case 1:
-                      native = _context201.v;
-                      return _context201.a(2, {
+                      native = _context203.v;
+                      return _context203.a(2, {
                         native,
                         reference: this.controller.reference(),
                         track: this.currentTrack
                       });
                   }
-                }, _callee201, this);
+                }, _callee203, this);
               })));
             case 3:
-              selection = _context203.v;
-              _context203.n = 4;
+              selection = _context205.v;
+              _context205.n = 4;
               return owner.fetch(context.likedPlaylistId, selection.track, current2);
             case 4:
-              batch = _context203.v;
+              batch = _context205.v;
               this.guard(intent, current2);
               seen = /* @__PURE__ */new Set([selection.track.id]);
               additions = batch.filter(track => !seen.has(track.id) && !!seen.add(track.id));
               if (additions.length) {
-                _context203.n = 6;
+                _context205.n = 6;
                 break;
               }
               if (!(this.mode !== "sequential")) {
-                _context203.n = 5;
+                _context205.n = 5;
                 break;
               }
-              _context203.n = 5;
+              _context205.n = 5;
               return this.restoreHeartBase(this.controller, context.likedPlaylistId, selection, intent, current2);
             case 5:
-              return _context203.a(2);
+              return _context205.a(2);
             case 6:
-              _context203.n = 7;
-              return this.switchHeartQueue(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee202() {
-                return _regenerator().w(function (_context202) {
-                  while (1) switch (_context202.n) {
+              _context205.n = 7;
+              return this.switchHeartQueue(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee204() {
+                return _regenerator().w(function (_context204) {
+                  while (1) switch (_context204.n) {
                     case 0:
-                      _context202.n = 1;
+                      _context204.n = 1;
                       return append([selection.track, ...additions].map((track, index) => ({
                         id: track.id,
                         occurrenceId: index ? crypto.randomUUID() : track.queueEntryId,
@@ -19047,9 +19194,9 @@ var TwilightPortableCore = function (exports) {
                         })
                       })));
                     case 1:
-                      return _context202.a(2);
+                      return _context204.a(2);
                   }
-                }, _callee202);
+                }, _callee204);
               })), () => 0, intent, current2, selection, previous => {
                 this.heartBase = previous;
                 this.mode = "heart";
@@ -19060,25 +19207,25 @@ var TwilightPortableCore = function (exports) {
                 });
               });
             case 7:
-              _context203.p = 7;
+              _context205.p = 7;
               this.finishPreparation(intent);
               if (intent === this.intent) this.startMaintenance();
-              return _context203.f(7);
+              return _context205.f(7);
             case 8:
-              return _context203.a(2);
+              return _context205.a(2);
           }
-        }, _callee203, this, [[2,, 7, 8]]);
+        }, _callee205, this, [[2,, 7, 8]]);
       }));
     }
     exitHeart(signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee205() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee207() {
         var _a, base, context, intent, current2, selection;
-        return _regenerator().w(function (_context205) {
-          while (1) switch (_context205.p = _context205.n) {
+        return _regenerator().w(function (_context207) {
+          while (1) switch (_context207.p = _context207.n) {
             case 0:
               base = this.heartBase, context = (_a = this.heart) == null ? void 0 : _a.persisted();
               if (!(!base || !(context == null ? void 0 : context.baseQueue))) {
-                _context205.n = 1;
+                _context207.n = 1;
                 break;
               }
               throw new Error("Heart base queue unavailable");
@@ -19087,53 +19234,53 @@ var TwilightPortableCore = function (exports) {
               this.heart.attach(context);
               intent = this.revoke();
               current2 = AbortSignal.any([this.preview.signal, ...(signal ? [signal] : [])]);
-              _context205.p = 2;
-              _context205.n = 3;
-              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee204() {
+              _context207.p = 2;
+              _context207.n = 3;
+              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee206() {
                 var native;
-                return _regenerator().w(function (_context204) {
-                  while (1) switch (_context204.n) {
+                return _regenerator().w(function (_context206) {
+                  while (1) switch (_context206.n) {
                     case 0:
                       this.guard(intent, current2);
-                      _context204.n = 1;
+                      _context206.n = 1;
                       return this.nativeSelection();
                     case 1:
-                      native = _context204.v;
-                      return _context204.a(2, {
+                      native = _context206.v;
+                      return _context206.a(2, {
                         native,
                         reference: this.controller.reference(),
                         track: this.currentTrack
                       });
                   }
-                }, _callee204, this);
+                }, _callee206, this);
               })));
             case 3:
-              selection = _context205.v;
-              _context205.n = 4;
+              selection = _context207.v;
+              _context207.n = 4;
               return this.restoreHeartBase(base, context.likedPlaylistId, selection, intent, current2);
             case 4:
-              _context205.p = 4;
+              _context207.p = 4;
               this.heartTransition = false;
               if (intent === this.intent) this.startMaintenance();
-              return _context205.f(4);
+              return _context207.f(4);
             case 5:
-              return _context205.a(2);
+              return _context207.a(2);
           }
-        }, _callee205, this, [[2,, 4, 5]]);
+        }, _callee207, this, [[2,, 4, 5]]);
       }));
     }
     restoreHeartBase(base, likedPlaylistId, selection, intent, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee206() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee208() {
         var restored;
-        return _regenerator().w(function (_context206) {
-          while (1) switch (_context206.n) {
+        return _regenerator().w(function (_context208) {
+          while (1) switch (_context208.n) {
             case 0:
-              _context206.n = 1;
+              _context208.n = 1;
               return this.options.queues.restoreHeartBaseQueue(base.reference(), selection.track.id);
             case 1:
-              restored = _context206.v;
+              restored = _context208.v;
               this.guard(intent, signal);
-              _context206.n = 2;
+              _context208.n = 2;
               return this.switchHeartQueue(restored.queue, () => 0, intent, signal, selection, previous => {
                 previous.dispose();
                 this.heartBase = null;
@@ -19146,17 +19293,17 @@ var TwilightPortableCore = function (exports) {
                 this.detachedHeartTrack = !restored.matched;
               });
             case 2:
-              return _context206.a(2);
+              return _context208.a(2);
           }
-        }, _callee206, this);
+        }, _callee208, this);
       }));
     }
     /** A queue-only handoff. Source IO and hidden construction never occupy the transport lane. */
     switchHeartQueue(produce, selectedIndex, intent, signal, selection, onAdopt) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee210() {
-        var candidate, adopted, dispatched, handoff, reference, window, _t153, _t154, _t155, _t156;
-        return _regenerator().w(function (_context210) {
-          while (1) switch (_context210.p = _context210.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee212() {
+        var candidate, adopted, dispatched, handoff, reference, window, _t158, _t159, _t160, _t161;
+        return _regenerator().w(function (_context212) {
+          while (1) switch (_context212.p = _context212.n) {
             case 0:
               candidate = createLibraryPlaybackController(__spreadProps(__spreadValues({}, this.options.queues), {
                 buildQueue: command => this.options.queues.restoreNamedPlaybackQueue(__spreadValues(__spreadValues({}, command), command.kind === "begin" ? {
@@ -19164,24 +19311,24 @@ var TwilightPortableCore = function (exports) {
                 } : {}))
               }));
               adopted = false, dispatched = false;
-              handoff = (window, activate, retain) => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee209() {
-                return _regenerator().w(function (_context209) {
-                  while (1) switch (_context209.n) {
+              handoff = (window, activate, retain) => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee211() {
+                return _regenerator().w(function (_context211) {
+                  while (1) switch (_context211.n) {
                     case 0:
-                      _context209.n = 1;
-                      return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee208() {
-                        var _a, _b, _c, previous, adopt, native, detached, entryId, result, _t152;
-                        return _regenerator().w(function (_context208) {
-                          while (1) switch (_context208.p = _context208.n) {
+                      _context211.n = 1;
+                      return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee210() {
+                        var _a, _b, _c, previous, adopt, native, detached, entryId, result, _t157;
+                        return _regenerator().w(function (_context210) {
+                          while (1) switch (_context210.p = _context210.n) {
                             case 0:
                               this.guard(intent, signal);
-                              _context208.n = 1;
+                              _context210.n = 1;
                               return this.nativeSelection();
                             case 1:
                               this.guard(intent, signal);
                               this.assertReference(selection.reference);
                               if (!(((_a = this.controller.reference()) == null ? void 0 : _a.entryId) !== selection.reference.entryId)) {
-                                _context208.n = 2;
+                                _context210.n = 2;
                                 break;
                               }
                               throw Object.assign(new Error("Heart seed advanced during recommendation lookup"), {
@@ -19189,33 +19336,33 @@ var TwilightPortableCore = function (exports) {
                               });
                             case 2:
                               previous = this.controller;
-                              adopt = () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee207() {
+                              adopt = () => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee209() {
                                 var _a2, _b2;
-                                return _regenerator().w(function (_context207) {
-                                  while (1) switch (_context207.n) {
+                                return _regenerator().w(function (_context209) {
+                                  while (1) switch (_context209.n) {
                                     case 0:
                                       if (!adopted) {
-                                        _context207.n = 1;
+                                        _context209.n = 1;
                                         break;
                                       }
-                                      return _context207.a(2);
+                                      return _context209.a(2);
                                     case 1:
                                       activate();
                                       this.controller = candidate;
                                       adopted = true;
                                       onAdopt(previous);
-                                      _context207.n = 2;
+                                      _context209.n = 2;
                                       return this.updateTrack(this.detachedHeartTrack ? selection.track : candidate.track(window));
                                     case 2:
                                       if (this.currentTrack && this.currentTrack.id === selection.track.id && this.currentTrack.queueEntryId !== selection.track.queueEntryId) (_b2 = (_a2 = this.options).occurrenceRebound) == null ? void 0 : _b2.call(_a2, selection.track, this.currentTrack);
                                       this.mapping = [this.detachedHeartTrack ? -1 : window.queue.index];
                                     case 3:
-                                      return _context207.a(2);
+                                      return _context209.a(2);
                                   }
-                                }, _callee207, this);
+                                }, _callee209, this);
                               }));
                               if (!selection.native) {
-                                _context208.n = 10;
+                                _context210.n = 10;
                                 break;
                               }
                               native = this.options.engine.getQueueSnapshot()[selection.native.index];
@@ -19223,8 +19370,8 @@ var TwilightPortableCore = function (exports) {
                               entryId = detached ? selection.track.queueEntryId : window.items[0].queueEntryId;
                               retain();
                               dispatched = true;
-                              _context208.p = 3;
-                              _context208.n = 4;
+                              _context210.p = 3;
+                              _context210.n = 4;
                               return this.options.engine.rebindQueue({
                                 expected: selection.native,
                                 items: [__spreadProps(__spreadValues({}, native), {
@@ -19235,27 +19382,27 @@ var TwilightPortableCore = function (exports) {
                                 playMode: "sequential"
                               });
                             case 4:
-                              result = _context208.v;
-                              _context208.n = 9;
+                              result = _context210.v;
+                              _context210.n = 9;
                               break;
                             case 5:
-                              _context208.p = 5;
-                              _t152 = _context208.v;
-                              _context208.n = 6;
+                              _context210.p = 5;
+                              _t157 = _context210.v;
+                              _context210.n = 6;
                               return adopt();
                             case 6:
-                              _context208.p = 6;
-                              _context208.n = 7;
-                              return this.failStopped(_t152);
+                              _context210.p = 6;
+                              _context210.n = 7;
+                              return this.failStopped(_t157);
                             case 7:
-                              _context208.p = 7;
+                              _context210.p = 7;
                               this.publish();
-                              return _context208.f(7);
+                              return _context210.f(7);
                             case 8:
-                              throw _t152;
+                              throw _t157;
                             case 9:
                               if (result) {
-                                _context208.n = 10;
+                                _context210.n = 10;
                                 break;
                               }
                               throw Object.assign(new Error("Native occurrence changed before heart handoff"), {
@@ -19264,54 +19411,54 @@ var TwilightPortableCore = function (exports) {
                             case 10:
                               dispatched = true;
                               retain();
-                              _context208.n = 11;
+                              _context210.n = 11;
                               return adopt();
                             case 11:
                               if (!(!this.restored && !((_c = this.options.cast) == null ? void 0 : _c.active()))) {
-                                _context208.n = 13;
+                                _context210.n = 13;
                                 break;
                               }
-                              _context208.n = 12;
+                              _context210.n = 12;
                               return this.options.engine.getPlaybackInfo();
                             case 12:
-                              this.info = _context208.v;
+                              this.info = _context210.v;
                             case 13:
                               this.publish();
                             case 14:
-                              return _context208.a(2);
+                              return _context210.a(2);
                           }
-                        }, _callee208, this, [[6,, 7, 8], [3, 5]]);
+                        }, _callee210, this, [[6,, 7, 8], [3, 5]]);
                       })));
                     case 1:
-                      return _context209.a(2);
+                      return _context211.a(2);
                   }
-                }, _callee209, this);
+                }, _callee211, this);
               }));
-              _context210.p = 1;
+              _context212.p = 1;
               if (!(typeof produce === "function")) {
-                _context210.n = 4;
+                _context212.n = 4;
                 break;
               }
-              _t153 = candidate;
-              _t154 = produce;
-              _context210.n = 2;
+              _t158 = candidate;
+              _t159 = produce;
+              _context212.n = 2;
               return this.options.queues.libraryRevision();
             case 2:
-              _t155 = _context210.v;
-              _t156 = selectedIndex;
-              _context210.n = 3;
-              return _t153.stagePages.call(_t153, _t154, {
+              _t160 = _context212.v;
+              _t161 = selectedIndex;
+              _context212.n = 3;
+              return _t158.stagePages.call(_t158, _t159, {
                 id: `core-restore-${crypto.randomUUID()}`,
-                contentRevision: _t155,
+                contentRevision: _t160,
                 order: "original",
-                selectedIndex: _t156
+                selectedIndex: _t161
               }, "sequential", handoff, {
                 guard: () => {
                   if (!dispatched) this.guard(intent, signal);
                 }
               });
             case 3:
-              _context210.n = 7;
+              _context212.n = 7;
               break;
             case 4:
               reference = {
@@ -19320,111 +19467,111 @@ var TwilightPortableCore = function (exports) {
                 index: produce.index,
                 entryId: produce.selectedEntryId
               };
-              _context210.n = 5;
+              _context212.n = 5;
               return candidate.adoptStopped(reference, "sequential", () => intent === this.intent && !signal.aborted);
             case 5:
-              window = _context210.v;
+              window = _context212.v;
               this.guard(intent, signal);
               if (window) {
-                _context210.n = 6;
+                _context212.n = 6;
                 break;
               }
               throw new Error("Heart base queue changed before adoption");
             case 6:
-              _context210.n = 7;
+              _context212.n = 7;
               return handoff(window, () => {}, () => {});
             case 7:
-              _context210.n = 8;
+              _context212.n = 8;
               return this.flush();
             case 8:
-              _context210.p = 8;
+              _context212.p = 8;
               if (!adopted) candidate.dispose();
-              return _context210.f(8);
+              return _context212.f(8);
             case 9:
-              return _context210.a(2);
+              return _context212.a(2);
           }
-        }, _callee210, this, [[1,, 8, 9]]);
+        }, _callee212, this, [[1,, 8, 9]]);
       }));
     }
     refillHeart(expected) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee211() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee213() {
         var _a;
-        return _regenerator().w(function (_context211) {
-          while (1) switch (_context211.n) {
+        return _regenerator().w(function (_context213) {
+          while (1) switch (_context213.n) {
             case 0:
               this.assertReference(expected);
               if ((_a = this.heart) == null ? void 0 : _a.state().active) {
-                _context211.n = 1;
+                _context213.n = 1;
                 break;
               }
               throw new Error("No active heart queue");
             case 1:
-              return _context211.a(2, this.heart.refill(true));
+              return _context213.a(2, this.heart.refill(true));
           }
-        }, _callee211, this);
+        }, _callee213, this);
       }));
     }
     startPersonalized(command, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee212() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee214() {
         var owner, intent;
-        return _regenerator().w(function (_context212) {
-          while (1) switch (_context212.p = _context212.n) {
+        return _regenerator().w(function (_context214) {
+          while (1) switch (_context214.p = _context214.n) {
             case 0:
               owner = this.personalized;
               if (owner) {
-                _context212.n = 1;
+                _context214.n = 1;
                 break;
               }
               throw new Error("Personalized provider runtime is unavailable");
             case 1:
               intent = this.beginPreparation(command.play !== false);
-              _context212.p = 2;
-              _context212.n = 3;
+              _context214.p = 2;
+              _context214.n = 3;
               return this.startPersonalizedIntent(owner, command, intent, signal);
             case 3:
-              _context212.p = 3;
+              _context214.p = 3;
               this.finishPreparation(intent);
-              return _context212.f(3);
+              return _context214.f(3);
             case 4:
-              return _context212.a(2);
+              return _context214.a(2);
           }
-        }, _callee212, this, [[2,, 3, 4]]);
+        }, _callee214, this, [[2,, 3, 4]]);
       }));
     }
     startPersonalizedIntent(owner, command, intent, signal) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee214() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee216() {
         var current2, tracks2, selected, ordered, originalPositions;
-        return _regenerator().w(function (_context214) {
-          while (1) switch (_context214.n) {
+        return _regenerator().w(function (_context216) {
+          while (1) switch (_context216.n) {
             case 0:
               current2 = AbortSignal.any([this.preview.signal, ...(signal ? [signal] : [])]);
-              _context214.n = 1;
+              _context216.n = 1;
               return owner.initial(command.providerId, command.key, current2, command.selectedId);
             case 1:
-              tracks2 = _context214.v;
+              tracks2 = _context216.v;
               this.guard(intent, current2);
               selected = command.selectedId ? tracks2.find(track => track.id === command.selectedId) : tracks2[0];
               if (selected) {
-                _context214.n = 2;
+                _context216.n = 2;
                 break;
               }
               throw new Error("Selected recommendation is unavailable");
             case 2:
               ordered = [selected, ...shuffleArray(tracks2.filter(track => track !== selected))];
               originalPositions = new Map(tracks2.map((track, index) => [track.id, index]));
-              _context214.n = 3;
-              return this.stagePages(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee213() {
+              _context216.n = 3;
+              return this.stagePages(append => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee215() {
                 var offset;
-                return _regenerator().w(function (_context213) {
-                  while (1) switch (_context213.n) {
+                return _regenerator().w(function (_context215) {
+                  while (1) switch (_context215.n) {
                     case 0:
                       offset = 0;
                     case 1:
                       if (!(offset < ordered.length)) {
-                        _context213.n = 3;
+                        _context215.n = 3;
                         break;
                       }
-                      _context213.n = 2;
+                      _context215.n = 2;
                       return append(ordered.slice(offset, offset + 200).map(track => ({
                         id: track.id,
                         snapshot: __spreadValues({}, track),
@@ -19432,12 +19579,12 @@ var TwilightPortableCore = function (exports) {
                       })));
                     case 2:
                       offset += 200;
-                      _context213.n = 1;
+                      _context215.n = 1;
                       break;
                     case 3:
-                      return _context213.a(2);
+                      return _context215.a(2);
                   }
-                }, _callee213);
+                }, _callee215);
               })), {
                 mode: "shuffle",
                 play: command.play !== false,
@@ -19449,182 +19596,182 @@ var TwilightPortableCore = function (exports) {
                 })
               }, intent, current2);
             case 3:
-              return _context214.a(2);
+              return _context216.a(2);
           }
-        }, _callee214, this);
+        }, _callee216, this);
       }));
     }
     refillPersonalized(expected) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee215() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee217() {
         var _a;
-        return _regenerator().w(function (_context215) {
-          while (1) switch (_context215.n) {
+        return _regenerator().w(function (_context217) {
+          while (1) switch (_context217.n) {
             case 0:
               this.assertReference(expected);
               if ((_a = this.personalized) == null ? void 0 : _a.state()) {
-                _context215.n = 1;
+                _context217.n = 1;
                 break;
               }
               throw new Error("No active personalized stream");
             case 1:
-              return _context215.a(2, this.personalized.refill(true));
+              return _context217.a(2, this.personalized.refill(true));
           }
-        }, _callee215, this);
+        }, _callee217, this);
       }));
     }
     extendPersonalized(id2, tracks2, current2) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee218() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee220() {
         var _this2, _a, added, _loop2, offset;
-        return _regenerator().w(function (_context218) {
-          while (1) switch (_context218.n) {
+        return _regenerator().w(function (_context220) {
+          while (1) switch (_context220.n) {
             case 0:
               _this2 = this;
               added = 0;
-              _loop2 = /*#__PURE__*/_regenerator().m(function _callee217(offset) {
-                return _regenerator().w(function (_context217) {
-                  while (1) switch (_context217.n) {
+              _loop2 = /*#__PURE__*/_regenerator().m(function _callee219(offset) {
+                return _regenerator().w(function (_context219) {
+                  while (1) switch (_context219.n) {
                     case 0:
-                      _context217.n = 1;
-                      return _this2.commit(() => __async$i(_this2, null, /*#__PURE__*/_regenerator().m(function _callee216() {
-                        var _a2, _b, previous, window, _t157;
-                        return _regenerator().w(function (_context216) {
-                          while (1) switch (_context216.p = _context216.n) {
+                      _context219.n = 1;
+                      return _this2.commit(() => __async$i(_this2, null, /*#__PURE__*/_regenerator().m(function _callee218() {
+                        var _a2, _b, previous, window, _t162;
+                        return _regenerator().w(function (_context218) {
+                          while (1) switch (_context218.p = _context218.n) {
                             case 0:
                               if (!(!current2() || ((_a2 = this.controller.reference()) == null ? void 0 : _a2.id) !== id2)) {
-                                _context216.n = 1;
+                                _context218.n = 1;
                                 break;
                               }
-                              return _context216.a(2);
+                              return _context218.a(2);
                             case 1:
-                              _context216.n = 2;
+                              _context218.n = 2;
                               return this.nativeSelection();
                             case 2:
                               if (!(!current2() || ((_b = this.controller.reference()) == null ? void 0 : _b.id) !== id2)) {
-                                _context216.n = 3;
+                                _context218.n = 3;
                                 break;
                               }
-                              return _context216.a(2);
+                              return _context218.a(2);
                             case 3:
                               previous = this.controller.snapshot.value.total;
-                              _context216.p = 4;
-                              _context216.n = 5;
+                              _context218.p = 4;
+                              _context218.n = 5;
                               return this.controller.extend(tracks2.slice(offset, offset + 200).map(track => ({
                                 id: track.id,
                                 snapshot: __spreadValues({}, track)
                               })), this.mode);
                             case 5:
-                              window = _context216.v;
+                              window = _context218.v;
                               if (window) {
-                                _context216.n = 6;
+                                _context218.n = 6;
                                 break;
                               }
                               throw new Error("Automatic queue extension was not acknowledged");
                             case 6:
                               added += window.queue.total - previous;
-                              _context216.n = 7;
+                              _context218.n = 7;
                               return this.updateTrack(this.controller.track(window));
                             case 7:
                               this.publish();
-                              _context216.n = 10;
+                              _context218.n = 10;
                               break;
                             case 8:
-                              _context216.p = 8;
-                              _t157 = _context216.v;
-                              _context216.n = 9;
-                              return this.failStopped(_t157);
+                              _context218.p = 8;
+                              _t162 = _context218.v;
+                              _context218.n = 9;
+                              return this.failStopped(_t162);
                             case 9:
-                              throw _t157;
+                              throw _t162;
                             case 10:
-                              return _context216.a(2);
+                              return _context218.a(2);
                           }
-                        }, _callee216, this, [[4, 8]]);
+                        }, _callee218, this, [[4, 8]]);
                       })));
                     case 1:
                       if (current2()) {
-                        _context217.n = 2;
+                        _context219.n = 2;
                         break;
                       }
-                      return _context217.a(2, 1);
+                      return _context219.a(2, 1);
                     case 2:
-                      return _context217.a(2);
+                      return _context219.a(2);
                   }
-                }, _callee217);
+                }, _callee219);
               });
               offset = 0;
             case 1:
               if (!(offset < tracks2.length)) {
-                _context218.n = 4;
+                _context220.n = 4;
                 break;
               }
-              return _context218.d(_regeneratorValues(_loop2(offset)), 2);
+              return _context220.d(_regeneratorValues(_loop2(offset)), 2);
             case 2:
-              if (!_context218.v) {
-                _context218.n = 3;
+              if (!_context220.v) {
+                _context220.n = 3;
                 break;
               }
-              return _context218.a(3, 4);
+              return _context220.a(3, 4);
             case 3:
               offset += 200;
-              _context218.n = 1;
+              _context220.n = 1;
               break;
             case 4:
               if (!added) {
-                _context218.n = 5;
+                _context220.n = 5;
                 break;
               }
               void ((_a = this.maintainer) == null ? void 0 : _a.tick());
-              _context218.n = 5;
+              _context220.n = 5;
               return this.flush();
             case 5:
-              return _context218.a(2, added);
+              return _context220.a(2, added);
           }
-        }, _callee218, this);
+        }, _callee220, this);
       }));
     }
     /** Invalidate prepared sources and pin every acknowledged native resource.
      * Filesystem IO stays outside the transport lane, so Pause/Stop remain usable. */
     maintainSources(action) {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee220() {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee222() {
         var _a, _b, resume, intent, release, sources;
-        return _regenerator().w(function (_context220) {
-          while (1) switch (_context220.p = _context220.n) {
+        return _regenerator().w(function (_context222) {
+          while (1) switch (_context222.p = _context222.n) {
             case 0:
               resume = (_a = this.maintainer) == null ? void 0 : _a.isActive();
               intent = this.revoke();
               this.sourceBarrier = new Promise(resolve => {
                 release = resolve;
               });
-              _context220.p = 1;
-              _context220.n = 2;
-              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee219() {
+              _context222.p = 1;
+              _context222.n = 2;
+              return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee221() {
                 var actual;
-                return _regenerator().w(function (_context219) {
-                  while (1) switch (_context219.n) {
+                return _regenerator().w(function (_context221) {
+                  while (1) switch (_context221.n) {
                     case 0:
-                      _context219.n = 1;
+                      _context221.n = 1;
                       return this.options.engine.getPlaybackInfo();
                     case 1:
-                      actual = _context219.v;
-                      return _context219.a(2, [...this.options.engine.getQueueSnapshot().map(item => item.source), actual.source]);
+                      actual = _context221.v;
+                      return _context221.a(2, [...this.options.engine.getQueueSnapshot().map(item => item.source), actual.source]);
                   }
-                }, _callee219, this);
+                }, _callee221, this);
               })));
             case 2:
-              sources = _context220.v;
-              _context220.n = 3;
+              sources = _context222.v;
+              _context222.n = 3;
               return action(sources);
             case 3:
-              return _context220.a(2, _context220.v);
+              return _context222.a(2, _context222.v);
             case 4:
-              _context220.p = 4;
+              _context222.p = 4;
               this.sourceBarrier = null;
               release();
               if (((_b = this.info) == null ? void 0 : _b.state) === "playing" || intent === this.intent && resume) this.startMaintenance();
-              return _context220.f(4);
+              return _context222.f(4);
             case 5:
-              return _context220.a(2);
+              return _context222.a(2);
           }
-        }, _callee220, this, [[1,, 4, 5]]);
+        }, _callee222, this, [[1,, 4, 5]]);
       }));
     }
     scheduleSave() {
@@ -19637,73 +19784,73 @@ var TwilightPortableCore = function (exports) {
       });
     }
     captureWorkspace() {
-      return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee221() {
-        var _a, reference, _t158;
-        return _regenerator().w(function (_context221) {
-          while (1) switch (_context221.n) {
+      return this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee223() {
+        var _a, reference, _t163;
+        return _regenerator().w(function (_context223) {
+          while (1) switch (_context223.n) {
             case 0:
               if (!(this.uncertain || this.stopped)) {
-                _context221.n = 1;
+                _context223.n = 1;
                 break;
               }
               throw new Error("Playback selection is unavailable");
             case 1:
-              _context221.n = 2;
+              _context223.n = 2;
               return this.nativeSelection();
             case 2:
               if (!(((_a = this.options.cast) == null ? void 0 : _a.state().phase) === "ready")) {
-                _context221.n = 4;
+                _context223.n = 4;
                 break;
               }
-              _t158 = this;
-              _context221.n = 3;
+              _t163 = this;
+              _context223.n = 3;
               return this.options.cast.read();
             case 3:
-              _t158.acceptCast.call(_t158, _context221.v);
+              _t163.acceptCast.call(_t163, _context223.v);
             case 4:
               reference = this.controller.reference();
               if (!(!reference || !this.info)) {
-                _context221.n = 5;
+                _context223.n = 5;
                 break;
               }
               throw new Error("No active queue to save");
             case 5:
               this.publish();
-              return _context221.a(2, {
+              return _context223.a(2, {
                 reference,
                 position: this.detachedHeartTrack ? 0 : Math.max(0, this.info.position),
                 mode: this.mode
               });
           }
-        }, _callee221, this);
+        }, _callee223, this);
       })));
     }
     flush() {
-      var capture = this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee222() {
+      var capture = this.commit(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee224() {
         var _a, _b, _c, reference;
-        return _regenerator().w(function (_context222) {
-          while (1) switch (_context222.n) {
+        return _regenerator().w(function (_context224) {
+          while (1) switch (_context224.n) {
             case 0:
               if (!(!this.initialized || this.stopped || !this.info || this.uncertain)) {
-                _context222.n = 1;
+                _context224.n = 1;
                 break;
               }
-              return _context222.a(2, void 0);
+              return _context224.a(2, void 0);
             case 1:
               if (!(this.options.resumeMode() === "off" || !this.currentTrack)) {
-                _context222.n = 2;
+                _context224.n = 2;
                 break;
               }
-              return _context222.a(2, null);
+              return _context224.a(2, null);
             case 2:
               reference = this.controller.reference();
               if (reference) {
-                _context222.n = 3;
+                _context224.n = 3;
                 break;
               }
-              return _context222.a(2, null);
+              return _context224.a(2, null);
             case 3:
-              return _context222.a(2, structuredClone(__spreadValues(__spreadValues({
+              return _context224.a(2, structuredClone(__spreadValues(__spreadValues({
                 version: 1,
                 savedAt: new Date(this.options.now()).toISOString(),
                 mode: this.options.resumeMode(),
@@ -19719,119 +19866,119 @@ var TwilightPortableCore = function (exports) {
                 sleepTimer: this.options.sleepTimer.persisted()
               } : {})));
           }
-        }, _callee222, this);
+        }, _callee224, this);
       })));
-      var save = this.persistence.then(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee223() {
+      var save = this.persistence.then(() => __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee225() {
         var session, saved2, saved;
-        return _regenerator().w(function (_context223) {
-          while (1) switch (_context223.n) {
+        return _regenerator().w(function (_context225) {
+          while (1) switch (_context225.n) {
             case 0:
-              _context223.n = 1;
+              _context225.n = 1;
               return capture;
             case 1:
-              session = _context223.v;
+              session = _context225.v;
               if (!(session === void 0)) {
-                _context223.n = 2;
+                _context225.n = 2;
                 break;
               }
-              return _context223.a(2);
+              return _context225.a(2);
             case 2:
               if (!(session === null)) {
-                _context223.n = 4;
+                _context225.n = 4;
                 break;
               }
-              _context223.n = 3;
+              _context225.n = 3;
               return this.options.repository.clear(this.revision);
             case 3:
-              saved2 = _context223.v;
+              saved2 = _context225.v;
               this.lastSavedAt = this.options.now();
               this.revision = saved2.revision;
-              return _context223.a(2);
+              return _context225.a(2);
             case 4:
-              _context223.n = 5;
+              _context225.n = 5;
               return this.options.repository.save(session, this.revision);
             case 5:
-              saved = _context223.v;
+              saved = _context225.v;
               this.revision = saved.revision;
               this.lastSavedAt = this.options.now();
             case 6:
-              return _context223.a(2);
+              return _context225.a(2);
           }
-        }, _callee223, this);
+        }, _callee225, this);
       })));
       this.persistence = save.catch(() => {});
       return save;
     }
     shutdown() {
-      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee224() {
-        var _a, _b, _c, _d, _e, _t159;
-        return _regenerator().w(function (_context224) {
-          while (1) switch (_context224.n) {
+      return __async$i(this, null, /*#__PURE__*/_regenerator().m(function _callee226() {
+        var _a, _b, _c, _d, _e, _t164;
+        return _regenerator().w(function (_context226) {
+          while (1) switch (_context226.n) {
             case 0:
               if (!this.stopped) {
-                _context224.n = 1;
+                _context226.n = 1;
                 break;
               }
-              return _context224.a(2);
+              return _context226.a(2);
             case 1:
-              _context224.n = 2;
+              _context226.n = 2;
               return (_a = this.personalized) == null ? void 0 : _a.shutdown();
             case 2:
               this.options.engine.off("playback-info", this.listen);
               this.options.engine.off("playback-sample", this.listen);
               this.options.engine.off("audio-service-crash", this.crash);
-              _context224.n = 3;
+              _context226.n = 3;
               return (_b = this.heart) == null ? void 0 : _b.shutdown();
             case 3:
               this.revoke();
-              _context224.n = 4;
+              _context226.n = 4;
               return this.mutation;
             case 4:
-              _context224.n = 5;
+              _context226.n = 5;
               return this.observing;
             case 5:
               if (!(!this.restored && !this.uncertain)) {
-                _context224.n = 9;
+                _context226.n = 9;
                 break;
               }
               if (!((_c = this.options.cast) == null ? void 0 : _c.active())) {
-                _context224.n = 7;
+                _context226.n = 7;
                 break;
               }
-              _t159 = this;
-              _context224.n = 6;
+              _t164 = this;
+              _context226.n = 6;
               return this.options.cast.read();
             case 6:
-              _t159.acceptCast.call(_t159, _context224.v);
-              _context224.n = 9;
+              _t164.acceptCast.call(_t164, _context226.v);
+              _context226.n = 9;
               break;
             case 7:
-              _context224.n = 8;
+              _context226.n = 8;
               return this.options.engine.getPlaybackInfo();
             case 8:
-              this.info = _context224.v;
+              this.info = _context226.v;
             case 9:
               this.publish();
-              _context224.n = 10;
+              _context226.n = 10;
               return this.flush();
             case 10:
-              _context224.n = 11;
+              _context226.n = 11;
               return this.clearAbLoop();
             case 11:
               this.stopped = true;
-              _context224.n = 12;
+              _context226.n = 12;
               return (_d = this.options.cast) == null ? void 0 : _d.shutdown();
             case 12:
-              _context224.n = 13;
+              _context226.n = 13;
               return this.options.engine.stop();
             case 13:
               this.resetStreamBuffering();
               this.controller.dispose();
               (_e = this.heartBase) == null ? void 0 : _e.dispose();
             case 14:
-              return _context224.a(2);
+              return _context226.a(2);
           }
-        }, _callee224, this);
+        }, _callee226, this);
       }));
     }
   }
@@ -19882,17 +20029,17 @@ var TwilightPortableCore = function (exports) {
       this.options = options;
     }
     insert(command, signal) {
-      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee225() {
+      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee227() {
         var items;
-        return _regenerator().w(function (_context225) {
-          while (1) switch (_context225.n) {
+        return _regenerator().w(function (_context227) {
+          while (1) switch (_context227.n) {
             case 0:
-              _context225.n = 1;
+              _context227.n = 1;
               return this.options.resolve(command.items, signal);
             case 1:
-              items = _context225.v;
+              items = _context227.v;
               signal.throwIfAborted();
-              _context225.n = 2;
+              _context227.n = 2;
               return this.options.playback.edit(command.id, command.revision, {
                 kind: "insert",
                 afterEntryId: command.afterEntryId,
@@ -19906,48 +20053,48 @@ var TwilightPortableCore = function (exports) {
                 })
               });
             case 2:
-              return _context225.a(2, this.options.playback.snapshot().queue);
+              return _context227.a(2, this.options.playback.snapshot().queue);
           }
-        }, _callee225, this);
+        }, _callee227, this);
       }));
     }
     submit(clientId, command) {
-      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee226() {
-        var submission, items, _t160;
-        return _regenerator().w(function (_context226) {
-          while (1) switch (_context226.p = _context226.n) {
+      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee228() {
+        var submission, items, _t165;
+        return _regenerator().w(function (_context228) {
+          while (1) switch (_context228.p = _context228.n) {
             case 0:
               if (!(command.kind === "begin")) {
-                _context226.n = 1;
+                _context228.n = 1;
                 break;
               }
-              return _context226.a(2, this.begin(clientId, command));
+              return _context228.a(2, this.begin(clientId, command));
             case 1:
               submission = this.submissions.get(command.id);
               if (!(!submission || submission.clientId !== clientId)) {
-                _context226.n = 2;
+                _context228.n = 2;
                 break;
               }
               throw new Error("队列提交已结束，请重新选择");
             case 2:
               if (!(command.kind === "abort")) {
-                _context226.n = 4;
+                _context228.n = 4;
                 break;
               }
               submission.controller.abort(new Error("队列提交已取消"));
-              _context226.n = 3;
+              _context228.n = 3;
               return submission.work.catch(() => {});
             case 3:
-              return _context226.a(2, this.reply(submission, "aborted"));
+              return _context228.a(2, this.reply(submission, "aborted"));
             case 4:
               if (!(submission.busy || submission.committing)) {
-                _context226.n = 5;
+                _context228.n = 5;
                 break;
               }
               throw new Error("请等待上一批队列提交完成");
             case 5:
               if (!(command.sequence !== submission.sequence + 1)) {
-                _context226.n = 6;
+                _context228.n = 6;
                 break;
               }
               throw new Error("队列批次已变化，不可重放旧批次");
@@ -19955,32 +20102,32 @@ var TwilightPortableCore = function (exports) {
               submission.controller.signal.throwIfAborted();
               submission.busy = true;
               submission.cancelTimer();
-              _context226.p = 7;
+              _context228.p = 7;
               if (!(command.kind === "append")) {
-                _context226.n = 11;
+                _context228.n = 11;
                 break;
               }
               if (!(submission.total + command.items.length > LIBRARY_QUEUE_BUILD_MAX_ENTRIES)) {
-                _context226.n = 8;
+                _context228.n = 8;
                 break;
               }
               throw new Error("队列已达到容量上限");
             case 8:
-              _context226.n = 9;
+              _context228.n = 9;
               return this.options.resolve(command.items, submission.controller.signal);
             case 9:
-              items = _context226.v;
+              items = _context228.v;
               submission.controller.signal.throwIfAborted();
-              _context226.n = 10;
+              _context228.n = 10;
               return submission.append(items);
             case 10:
               submission.sequence = command.sequence;
               submission.total += items.length;
               this.arm(submission);
-              return _context226.a(2, this.reply(submission, "building"));
+              return _context228.a(2, this.reply(submission, "building"));
             case 11:
               if (!(submission.selectedIndex >= submission.total)) {
-                _context226.n = 12;
+                _context228.n = 12;
                 break;
               }
               throw new Error("队列选中项不存在");
@@ -19988,35 +20135,35 @@ var TwilightPortableCore = function (exports) {
               submission.committing = true;
               submission.sequence = command.sequence;
               submission.finish();
-              _context226.n = 13;
+              _context228.n = 13;
               return submission.work;
             case 13:
-              return _context226.a(2, this.reply(submission, "committed"));
+              return _context228.a(2, this.reply(submission, "committed"));
             case 14:
-              _context226.p = 14;
-              _t160 = _context226.v;
-              submission.controller.abort(_t160);
-              _context226.n = 15;
+              _context228.p = 14;
+              _t165 = _context228.v;
+              submission.controller.abort(_t165);
+              _context228.n = 15;
               return submission.work.catch(() => {});
             case 15:
-              throw _t160;
+              throw _t165;
             case 16:
-              _context226.p = 16;
+              _context228.p = 16;
               submission.busy = false;
-              return _context226.f(16);
+              return _context228.f(16);
             case 17:
-              return _context226.a(2);
+              return _context228.a(2);
           }
-        }, _callee226, this, [[7, 14, 16, 17]]);
+        }, _callee228, this, [[7, 14, 16, 17]]);
       }));
     }
     begin(clientId, command) {
-      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee228() {
+      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee230() {
         var controller, ready, started, finish, complete, submission;
-        return _regenerator().w(function (_context228) {
-          while (1) switch (_context228.n) {
+        return _regenerator().w(function (_context230) {
+          while (1) switch (_context230.n) {
             case 0:
-              _context228.n = 1;
+              _context230.n = 1;
               return this.disconnect(clientId);
             case 1:
               controller = new AbortController();
@@ -20045,18 +20192,18 @@ var TwilightPortableCore = function (exports) {
                 cancelTimer: () => {}
               };
               this.submissions.set(submission.id, submission);
-              submission.work = this.options.playback.fromPages(append => __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee227() {
-                return _regenerator().w(function (_context227) {
-                  while (1) switch (_context227.n) {
+              submission.work = this.options.playback.fromPages(append => __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee229() {
+                return _regenerator().w(function (_context229) {
+                  while (1) switch (_context229.n) {
                     case 0:
                       submission.append = append;
                       ready();
-                      _context227.n = 1;
+                      _context229.n = 1;
                       return complete;
                     case 1:
-                      return _context227.a(2);
+                      return _context229.a(2);
                   }
-                }, _callee227);
+                }, _callee229);
               })), {
                 selectedIndex: command.selectedIndex,
                 position: command.position,
@@ -20065,20 +20212,20 @@ var TwilightPortableCore = function (exports) {
                 submission.cancelTimer();
                 this.submissions.delete(submission.id);
               });
-              _context228.n = 2;
+              _context230.n = 2;
               return Promise.race([started, submission.work]);
             case 2:
               if (submission.append) {
-                _context228.n = 3;
+                _context230.n = 3;
                 break;
               }
               throw new Error("无法创建队列");
             case 3:
               void submission.work.catch(() => {});
               this.arm(submission);
-              return _context228.a(2, this.reply(submission, "building"));
+              return _context230.a(2, this.reply(submission, "building"));
           }
-        }, _callee228, this);
+        }, _callee230, this);
       }));
     }
     reply(submission, state) {
@@ -20095,69 +20242,69 @@ var TwilightPortableCore = function (exports) {
       }, LIBRARY_QUEUE_BUILD_IDLE_MS);
     }
     disconnect(clientId) {
-      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee229() {
-        var work, _iterator20, _step20, submission, _t161;
-        return _regenerator().w(function (_context229) {
-          while (1) switch (_context229.p = _context229.n) {
+      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee231() {
+        var work, _iterator20, _step20, submission, _t166;
+        return _regenerator().w(function (_context231) {
+          while (1) switch (_context231.p = _context231.n) {
             case 0:
               work = [];
               _iterator20 = _createForOfIteratorHelper(this.submissions.values());
-              _context229.p = 1;
+              _context231.p = 1;
               _iterator20.s();
             case 2:
               if ((_step20 = _iterator20.n()).done) {
-                _context229.n = 5;
+                _context231.n = 5;
                 break;
               }
               submission = _step20.value;
               if (!(submission.clientId !== clientId || submission.committing)) {
-                _context229.n = 3;
+                _context231.n = 3;
                 break;
               }
-              return _context229.a(3, 4);
+              return _context231.a(3, 4);
             case 3:
               submission.controller.abort(new Error("队列提交窗口已断开"));
               work.push(submission.work);
             case 4:
-              _context229.n = 2;
+              _context231.n = 2;
               break;
             case 5:
-              _context229.n = 7;
+              _context231.n = 7;
               break;
             case 6:
-              _context229.p = 6;
-              _t161 = _context229.v;
-              _iterator20.e(_t161);
+              _context231.p = 6;
+              _t166 = _context231.v;
+              _iterator20.e(_t166);
             case 7:
-              _context229.p = 7;
+              _context231.p = 7;
               _iterator20.f();
-              return _context229.f(7);
+              return _context231.f(7);
             case 8:
-              _context229.n = 9;
+              _context231.n = 9;
               return Promise.allSettled(work);
             case 9:
-              return _context229.a(2);
+              return _context231.a(2);
           }
-        }, _callee229, this, [[1, 6, 7, 8]]);
+        }, _callee231, this, [[1, 6, 7, 8]]);
       }));
     }
     shutdown() {
-      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee230() {
+      return __async$h(this, null, /*#__PURE__*/_regenerator().m(function _callee232() {
         var submissions, _i12, _submissions, submission;
-        return _regenerator().w(function (_context230) {
-          while (1) switch (_context230.n) {
+        return _regenerator().w(function (_context232) {
+          while (1) switch (_context232.n) {
             case 0:
               submissions = [...this.submissions.values()];
               for (_i12 = 0, _submissions = submissions; _i12 < _submissions.length; _i12++) {
                 submission = _submissions[_i12];
                 submission.controller.abort(new Error("Core is shutting down"));
               }
-              _context230.n = 1;
+              _context232.n = 1;
               return Promise.allSettled(submissions.map(submission => submission.work));
             case 1:
-              return _context230.a(2);
+              return _context232.a(2);
           }
-        }, _callee230, this);
+        }, _callee232, this);
       }));
     }
   }
@@ -20598,17 +20745,17 @@ var TwilightPortableCore = function (exports) {
       return this.revision;
     }
     initialize() {
-      return __async$g(this, null, /*#__PURE__*/_regenerator().m(function _callee231() {
+      return __async$g(this, null, /*#__PURE__*/_regenerator().m(function _callee233() {
         var _a, next, after, revision2, page2, _iterator32, _step32, row, _row$key$split, _row$key$split2, scope, kind;
-        return _regenerator().w(function (_context231) {
-          while (1) switch (_context231.n) {
+        return _regenerator().w(function (_context233) {
+          while (1) switch (_context233.n) {
             case 0:
               next = emptyMusicVersions();
             case 1:
-              _context231.n = 2;
+              _context233.n = 2;
               return this.database.coreStateRead("versions", after, 128, revision2);
             case 2:
-              page2 = _context231.v;
+              page2 = _context233.v;
               revision2 = page2.revision;
               _iterator32 = _createForOfIteratorHelper(page2.rows);
               try {
@@ -20625,16 +20772,16 @@ var TwilightPortableCore = function (exports) {
               after = (_a = page2.next) != null ? _a : void 0;
             case 3:
               if (after !== void 0) {
-                _context231.n = 1;
+                _context233.n = 1;
                 break;
               }
             case 4:
               this.adopt(parseMusicVersions(JSON.stringify(next)), revision2);
               this.uncertain = false;
             case 5:
-              return _context231.a(2);
+              return _context233.a(2);
           }
-        }, _callee231, this);
+        }, _callee233, this);
       }));
     }
     adopt(next, revision2) {
@@ -20674,91 +20821,91 @@ var TwilightPortableCore = function (exports) {
       });
     }
     page(query2) {
-      return __async$g(this, null, /*#__PURE__*/_regenerator().m(function _callee232() {
+      return __async$g(this, null, /*#__PURE__*/_regenerator().m(function _callee234() {
         var _a, _b, items, offset;
-        return _regenerator().w(function (_context232) {
-          while (1) switch (_context232.n) {
+        return _regenerator().w(function (_context234) {
+          while (1) switch (_context234.n) {
             case 0:
               if (!this.uncertain) {
-                _context232.n = 1;
+                _context234.n = 1;
                 break;
               }
-              _context232.n = 1;
+              _context234.n = 1;
               return this.initialize();
             case 1:
               this.fence(query2.revision);
               items = this.document[query2.scope][query2.kind], offset = (_a = query2.offset) != null ? _a : 0;
-              return _context232.a(2, structuredClone({
+              return _context234.a(2, structuredClone({
                 revision: this.revision,
                 total: items.length,
                 offset,
                 items: items.slice(offset, offset + ((_b = query2.limit) != null ? _b : 128))
               }));
           }
-        }, _callee232, this);
+        }, _callee234, this);
       }));
     }
     edit(edit2, signal) {
-      var work = this.tail.catch(() => void 0).then(() => __async$g(this, null, /*#__PURE__*/_regenerator().m(function _callee233() {
-        var next, revision2, _t162;
-        return _regenerator().w(function (_context233) {
-          while (1) switch (_context233.p = _context233.n) {
+      var work = this.tail.catch(() => void 0).then(() => __async$g(this, null, /*#__PURE__*/_regenerator().m(function _callee235() {
+        var next, revision2, _t167;
+        return _regenerator().w(function (_context235) {
+          while (1) switch (_context235.p = _context235.n) {
             case 0:
               signal == null ? void 0 : signal.throwIfAborted();
               if (!this.uncertain) {
-                _context233.n = 1;
+                _context235.n = 1;
                 break;
               }
-              _context233.n = 1;
+              _context235.n = 1;
               return this.initialize();
             case 1:
               this.fence(edit2.revision);
               next = editMusicVersions(this.document, edit2.scope, edit2.operation, edit2.keys, edit2.label, this.newId);
-              _context233.p = 2;
-              _context233.n = 3;
+              _context235.p = 2;
+              _context235.n = 3;
               return this.database.coreVersionsReplace(next, this.revision);
             case 3:
-              revision2 = _context233.v;
+              revision2 = _context235.v;
               this.adopt(next, revision2);
               this.changed();
-              return _context233.a(2, {
+              return _context235.a(2, {
                 revision: revision2
               });
             case 4:
-              _context233.p = 4;
-              _t162 = _context233.v;
+              _context235.p = 4;
+              _t167 = _context235.v;
               this.uncertain = true;
-              _context233.n = 5;
+              _context235.n = 5;
               return this.initialize();
             case 5:
               this.changed();
-              throw _t162;
+              throw _t167;
             case 6:
-              return _context233.a(2);
+              return _context235.a(2);
           }
-        }, _callee233, this, [[2, 4]]);
+        }, _callee235, this, [[2, 4]]);
       })));
       this.tail = work;
       return work;
     }
     flush() {
-      return __async$g(this, null, /*#__PURE__*/_regenerator().m(function _callee234() {
-        return _regenerator().w(function (_context234) {
-          while (1) switch (_context234.n) {
+      return __async$g(this, null, /*#__PURE__*/_regenerator().m(function _callee236() {
+        return _regenerator().w(function (_context236) {
+          while (1) switch (_context236.n) {
             case 0:
-              _context234.n = 1;
+              _context236.n = 1;
               return this.tail.catch(() => void 0);
             case 1:
               if (!this.uncertain) {
-                _context234.n = 2;
+                _context236.n = 2;
                 break;
               }
-              _context234.n = 2;
+              _context236.n = 2;
               return this.initialize();
             case 2:
-              return _context234.a(2);
+              return _context236.a(2);
           }
-        }, _callee234, this);
+        }, _callee236, this);
       }));
     }
   }
@@ -21052,45 +21199,45 @@ var TwilightPortableCore = function (exports) {
       if (this.retryable) this.schedule(this.options.flushDelayMs);else this.publish("error");
     }
     flush() {
-      return __async$f(this, null, /*#__PURE__*/_regenerator().m(function _callee235() {
+      return __async$f(this, null, /*#__PURE__*/_regenerator().m(function _callee237() {
         var failuresAtStart;
-        return _regenerator().w(function (_context235) {
-          while (1) switch (_context235.n) {
+        return _regenerator().w(function (_context237) {
+          while (1) switch (_context237.n) {
             case 0:
               this.clearScheduledFlush();
-              _context235.n = 1;
+              _context237.n = 1;
               return Promise.resolve();
             case 1:
               if (this.retryable) {
-                _context235.n = 2;
+                _context237.n = 2;
                 break;
               }
-              return _context235.a(2, false);
+              return _context237.a(2, false);
             case 2:
               failuresAtStart = this.failureCount;
             case 3:
-              _context235.n = 4;
+              _context237.n = 4;
               return this.commitPending();
             case 4:
-              _context235.n = 5;
+              _context237.n = 5;
               return this.writeChain;
             case 5:
               if (!(this.failureCount > failuresAtStart)) {
-                _context235.n = 6;
+                _context237.n = 6;
                 break;
               }
-              return _context235.a(3, 8);
+              return _context237.a(3, 8);
             case 6:
               this.clearScheduledFlush();
             case 7:
               if (this.pendingSnapshot !== null) {
-                _context235.n = 3;
+                _context237.n = 3;
                 break;
               }
             case 8:
-              return _context235.a(2, !this.dirty);
+              return _context237.a(2, !this.dirty);
           }
-        }, _callee235, this);
+        }, _callee237, this);
       }));
     }
     dispose() {
@@ -21098,11 +21245,11 @@ var TwilightPortableCore = function (exports) {
     }
     /** Read authority first. Check, queue reset and publication share one turn. */
     discardPending(check, apply) {
-      return __async$f(this, null, /*#__PURE__*/_regenerator().m(function _callee236() {
-        return _regenerator().w(function (_context236) {
-          while (1) switch (_context236.n) {
+      return __async$f(this, null, /*#__PURE__*/_regenerator().m(function _callee238() {
+        return _regenerator().w(function (_context238) {
+          while (1) switch (_context238.n) {
             case 0:
-              _context236.n = 1;
+              _context238.n = 1;
               return this.writeChain;
             case 1:
               check();
@@ -21116,9 +21263,9 @@ var TwilightPortableCore = function (exports) {
               apply();
               if (!this.dirty) this.publish("idle");
             case 2:
-              return _context236.a(2);
+              return _context238.a(2);
           }
-        }, _callee236, this);
+        }, _callee238, this);
       }));
     }
     schedule(delayMs, publishPending = true) {
@@ -21133,45 +21280,45 @@ var TwilightPortableCore = function (exports) {
       }
     }
     commitPending() {
-      return __async$f(this, null, /*#__PURE__*/_regenerator().m(function _callee238() {
+      return __async$f(this, null, /*#__PURE__*/_regenerator().m(function _callee240() {
         var snapshot, base;
-        return _regenerator().w(function (_context238) {
-          while (1) switch (_context238.n) {
+        return _regenerator().w(function (_context240) {
+          while (1) switch (_context240.n) {
             case 0:
               if (this.retryable) {
-                _context238.n = 1;
+                _context240.n = 1;
                 break;
               }
-              return _context238.a(2);
+              return _context240.a(2);
             case 1:
               if (!this.writing) {
-                _context238.n = 3;
+                _context240.n = 3;
                 break;
               }
-              _context238.n = 2;
+              _context240.n = 2;
               return this.writeChain;
             case 2:
-              return _context238.a(2);
+              return _context240.a(2);
             case 3:
               snapshot = this.pendingSnapshot;
               base = this.pendingBase;
               if (!(snapshot === null || base === null)) {
-                _context238.n = 4;
+                _context240.n = 4;
                 break;
               }
               if (!this.dirty) this.publish("idle");
-              return _context238.a(2);
+              return _context240.a(2);
             case 4:
               this.pendingSnapshot = null;
               this.pendingBase = null;
               this.writing = true;
-              this.writeChain = Promise.resolve().then(() => __async$f(this, null, /*#__PURE__*/_regenerator().m(function _callee237() {
-                var _a, _b, _t163;
-                return _regenerator().w(function (_context237) {
-                  while (1) switch (_context237.p = _context237.n) {
+              this.writeChain = Promise.resolve().then(() => __async$f(this, null, /*#__PURE__*/_regenerator().m(function _callee239() {
+                var _a, _b, _t168;
+                return _regenerator().w(function (_context239) {
+                  while (1) switch (_context239.p = _context239.n) {
                     case 0:
-                      _context237.p = 0;
-                      _context237.n = 1;
+                      _context239.p = 0;
+                      _context239.n = 1;
                       return this.options.write(snapshot, base);
                     case 1:
                       if (this.pendingSnapshot === null) {
@@ -21180,11 +21327,11 @@ var TwilightPortableCore = function (exports) {
                         this.lastError = null;
                         this.publish("idle");
                       }
-                      _context237.n = 3;
+                      _context239.n = 3;
                       break;
                     case 2:
-                      _context237.p = 2;
-                      _t163 = _context237.v;
+                      _context239.p = 2;
+                      _t168 = _context239.v;
                       if (this.pendingSnapshot === null) {
                         this.pendingSnapshot = snapshot;
                         this.pendingBase = base;
@@ -21193,26 +21340,26 @@ var TwilightPortableCore = function (exports) {
                       }
                       this.dirty = true;
                       this.failureCount += 1;
-                      this.lastError = describeError(_t163);
-                      this.retryable = ((_b = (_a = this.options).shouldRetry) == null ? void 0 : _b.call(_a, _t163)) !== false;
+                      this.lastError = describeError(_t168);
+                      this.retryable = ((_b = (_a = this.options).shouldRetry) == null ? void 0 : _b.call(_a, _t168)) !== false;
                       this.publish("error");
                       if (this.retryable) this.schedule(this.options.retryDelayMs, false);else this.clearScheduledFlush();
                     case 3:
-                      return _context237.a(2);
+                      return _context239.a(2);
                   }
-                }, _callee237, this, [[0, 2]]);
+                }, _callee239, this, [[0, 2]]);
               }))).finally(() => {
                 this.writing = false;
                 if (this.retryable && this.pendingSnapshot !== null && this.timer === null) {
                   this.schedule(this.options.flushDelayMs);
                 }
               });
-              _context238.n = 5;
+              _context240.n = 5;
               return this.writeChain;
             case 5:
-              return _context238.a(2);
+              return _context240.a(2);
           }
-        }, _callee238, this);
+        }, _callee240, this);
       }));
     }
     clearScheduledFlush() {
@@ -21757,25 +21904,25 @@ var TwilightPortableCore = function (exports) {
       return Array.isArray(value);
     }
     function loadPlaylistEnvelopeForConflict() {
-      return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee239() {
+      return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee241() {
         var loaded;
-        return _regenerator().w(function (_context239) {
-          while (1) switch (_context239.n) {
+        return _regenerator().w(function (_context241) {
+          while (1) switch (_context241.n) {
             case 0:
-              _context239.n = 1;
+              _context241.n = 1;
               return runtime.repository.load();
             case 1:
-              loaded = _context239.v;
-              return _context239.a(2, isVersionedDataEnvelope(loaded, isPlaylistData) ? loaded : null);
+              loaded = _context241.v;
+              return _context241.a(2, isVersionedDataEnvelope(loaded, isPlaylistData) ? loaded : null);
           }
-        }, _callee239);
+        }, _callee241);
       }));
     }
     function persistPlaylistSnapshot(snapshot, base) {
-      return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee240() {
-        var expectedRevision, desired, recoveredConflictRevision, attempt, saved, current2, _t164, _t165;
-        return _regenerator().w(function (_context240) {
-          while (1) switch (_context240.p = _context240.n) {
+      return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee242() {
+        var expectedRevision, desired, recoveredConflictRevision, attempt, saved, current2, _t169, _t170;
+        return _regenerator().w(function (_context242) {
+          while (1) switch (_context242.p = _context242.n) {
             case 0:
               expectedRevision = playlistsRevision;
               desired = playlistDataEqual(base, playlistAuthoritativeSnapshot) ? snapshot : replayPlaylistTransaction(base, snapshot, playlistAuthoritativeSnapshot);
@@ -21783,14 +21930,14 @@ var TwilightPortableCore = function (exports) {
               attempt = 0;
             case 1:
               if (!(attempt < 3)) {
-                _context240.n = 11;
+                _context242.n = 11;
                 break;
               }
-              _context240.p = 2;
-              _context240.n = 3;
+              _context242.p = 2;
+              _context242.n = 3;
               return runtime.repository.save(desired, expectedRevision);
             case 3:
-              saved = _context240.v;
+              saved = _context242.v;
               if (isVersionedDataEnvelope(saved, isPlaylistData)) {
                 playlistsRevision = saved.revision;
                 playlistAuthoritativeSnapshot = clonePlaylistSnapshot(saved.data);
@@ -21809,35 +21956,35 @@ var TwilightPortableCore = function (exports) {
                   recoveredAt: new Date(runtime.now()).toISOString()
                 };
               }
-              return _context240.a(2);
+              return _context242.a(2);
             case 4:
-              _context240.p = 4;
-              _t164 = _context240.v;
-              if (isPersistentDataRevisionConflict(_t164)) {
-                _context240.n = 5;
+              _context242.p = 4;
+              _t169 = _context242.v;
+              if (isPersistentDataRevisionConflict(_t169)) {
+                _context242.n = 5;
                 break;
               }
-              throw _t164;
+              throw _t169;
             case 5:
-              if (!isVersionedDataEnvelope(_t164.current, isPlaylistData)) {
-                _context240.n = 6;
+              if (!isVersionedDataEnvelope(_t169.current, isPlaylistData)) {
+                _context242.n = 6;
                 break;
               }
-              _t165 = _t164.current;
-              _context240.n = 8;
+              _t170 = _t169.current;
+              _context242.n = 8;
               break;
             case 6:
-              _context240.n = 7;
+              _context242.n = 7;
               return loadPlaylistEnvelopeForConflict();
             case 7:
-              _t165 = _context240.v;
+              _t170 = _context242.v;
             case 8:
-              current2 = _t165;
+              current2 = _t170;
               if (current2) {
-                _context240.n = 9;
+                _context242.n = 9;
                 break;
               }
-              throw _t164;
+              throw _t169;
             case 9:
               desired = replayPlaylistTransaction(base, snapshot, current2.data);
               playlistsRevision = current2.revision;
@@ -21845,88 +21992,88 @@ var TwilightPortableCore = function (exports) {
               recoveredConflictRevision = current2.revision;
             case 10:
               attempt++;
-              _context240.n = 1;
+              _context242.n = 1;
               break;
             case 11:
               throw new Error("Playlist persistence revision conflict did not settle after 3 retries");
             case 12:
-              return _context240.a(2);
+              return _context242.a(2);
           }
-        }, _callee240, null, [[2, 4]]);
+        }, _callee242, null, [[2, 4]]);
       }));
     }
     function savePlaylists() {
-      return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee241() {
-        return _regenerator().w(function (_context241) {
-          while (1) switch (_context241.n) {
-            case 0:
-              queuePlaylistPersistence();
-            case 1:
-              return _context241.a(2);
-          }
-        }, _callee241);
-      }));
-    }
-    function flushPlaylists() {
-      return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee242() {
-        return _regenerator().w(function (_context242) {
-          while (1) switch (_context242.n) {
-            case 0:
-              return _context242.a(2, getPlaylistPersistence().flush());
-          }
-        }, _callee242);
-      }));
-    }
-    function loadPlaylists() {
       return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee243() {
-        var loadedResult;
         return _regenerator().w(function (_context243) {
           while (1) switch (_context243.n) {
             case 0:
-              _context243.n = 1;
-              return runtime.repository.load();
+              queuePlaylistPersistence();
             case 1:
-              loadedResult = _context243.v;
-              applyLoadedPlaylists(loadedResult);
-            case 2:
               return _context243.a(2);
           }
         }, _callee243);
       }));
     }
-    function reloadPlaylistsDiscardingChanges() {
+    function flushPlaylists() {
       return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee244() {
-        var before, loadedResult, saved, prepared;
         return _regenerator().w(function (_context244) {
           while (1) switch (_context244.n) {
             case 0:
+              return _context244.a(2, getPlaylistPersistence().flush());
+          }
+        }, _callee244);
+      }));
+    }
+    function loadPlaylists() {
+      return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee245() {
+        var loadedResult;
+        return _regenerator().w(function (_context245) {
+          while (1) switch (_context245.n) {
+            case 0:
+              _context245.n = 1;
+              return runtime.repository.load();
+            case 1:
+              loadedResult = _context245.v;
+              applyLoadedPlaylists(loadedResult);
+            case 2:
+              return _context245.a(2);
+          }
+        }, _callee245);
+      }));
+    }
+    function reloadPlaylistsDiscardingChanges() {
+      return __async$e(this, null, /*#__PURE__*/_regenerator().m(function _callee246() {
+        var before, loadedResult, saved, prepared;
+        return _regenerator().w(function (_context246) {
+          while (1) switch (_context246.n) {
+            case 0:
               if (!(playlistPersistenceStatus.value.canRetry !== false)) {
-                _context244.n = 1;
+                _context246.n = 1;
                 break;
               }
               throw new Error("当前没有需要重新读取的歌单成员冲突");
             case 1:
               before = clonePlaylistSnapshot();
-              _context244.n = 2;
+              _context246.n = 2;
               return runtime.repository.load();
             case 2:
-              loadedResult = _context244.v;
+              loadedResult = _context246.v;
               saved = isVersionedDataEnvelope(loadedResult, isPlaylistData) ? loadedResult.data : loadedResult;
               if (isRecoveryData(saved)) {
-                _context244.n = 3;
+                _context246.n = 3;
                 break;
               }
               throw new Error("未读取到有效歌单，已保留未保存的修改");
             case 3:
               prepared = prepareLoadedPlaylists(loadedResult);
-              _context244.n = 4;
+              _context246.n = 4;
               return getPlaylistPersistence().discardPending(() => {
                 if (playlistPersistenceStatus.value.canRetry !== false || !playlistDataEqual(before, playlists.value)) throw new Error("读取期间歌单又有变化，已保留未保存的修改，请重试");
               }, () => applyPreparedPlaylists(prepared));
             case 4:
-              return _context244.a(2);
+              return _context246.a(2);
           }
-        }, _callee244);
+        }, _callee246);
       }));
     }
     function isRecoveryData(value) {
@@ -22286,27 +22433,27 @@ var TwilightPortableCore = function (exports) {
         return localLogicalTrackMapCache;
       }
       var result = /* @__PURE__ */new Map();
-      var localInputs = /*#__PURE__*/_regenerator().m(function _callee245() {
-        var _iterator49, _step49, track, _t166;
-        return _regenerator().w(function (_context245) {
-          while (1) switch (_context245.p = _context245.n) {
+      var localInputs = /*#__PURE__*/_regenerator().m(function _callee247() {
+        var _iterator49, _step49, track, _t171;
+        return _regenerator().w(function (_context247) {
+          while (1) switch (_context247.p = _context247.n) {
             case 0:
               _iterator49 = _createForOfIteratorHelper(tracks2.value);
-              _context245.p = 1;
+              _context247.p = 1;
               _iterator49.s();
             case 2:
               if ((_step49 = _iterator49.n()).done) {
-                _context245.n = 5;
+                _context247.n = 5;
                 break;
               }
               track = _step49.value;
               if (!(getTrackSource(track) !== "local")) {
-                _context245.n = 3;
+                _context247.n = 3;
                 break;
               }
-              return _context245.a(3, 4);
+              return _context247.a(3, 4);
             case 3:
-              _context245.n = 4;
+              _context247.n = 4;
               return {
                 track,
                 source: "local",
@@ -22314,23 +22461,23 @@ var TwilightPortableCore = function (exports) {
                 providerAvailable: true
               };
             case 4:
-              _context245.n = 2;
+              _context247.n = 2;
               break;
             case 5:
-              _context245.n = 7;
+              _context247.n = 7;
               break;
             case 6:
-              _context245.p = 6;
-              _t166 = _context245.v;
-              _iterator49.e(_t166);
+              _context247.p = 6;
+              _t171 = _context247.v;
+              _iterator49.e(_t171);
             case 7:
-              _context245.p = 7;
+              _context247.p = 7;
               _iterator49.f();
-              return _context245.f(7);
+              return _context247.f(7);
             case 8:
-              return _context245.a(2);
+              return _context247.a(2);
           }
-        }, _callee245, null, [[1, 6, 7, 8]]);
+        }, _callee247, null, [[1, 6, 7, 8]]);
       })();
       var _iterator50 = _createForOfIteratorHelper(buildLogicalTracks(localInputs)),
         _step50;
@@ -22400,65 +22547,65 @@ var TwilightPortableCore = function (exports) {
     });
   };
   function stagePlaylistPages(produce, consume, signal) {
-    return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee247() {
+    return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee249() {
       var checkAbort, accepting, failed, guard;
-      return _regenerator().w(function (_context247) {
-        while (1) switch (_context247.p = _context247.n) {
+      return _regenerator().w(function (_context249) {
+        while (1) switch (_context249.p = _context249.n) {
           case 0:
             checkAbort = function _checkAbort() {
               if (signal == null ? void 0 : signal.aborted) throw new Error("歌单操作已取消");
             };
             checkAbort();
             accepting = true, failed = false;
-            _context247.p = 1;
-            _context247.n = 2;
-            return produce(page2 => __async$d(null, null, /*#__PURE__*/_regenerator().m(function _callee246() {
-              var _t167;
-              return _regenerator().w(function (_context246) {
-                while (1) switch (_context246.p = _context246.n) {
+            _context249.p = 1;
+            _context249.n = 2;
+            return produce(page2 => __async$d(null, null, /*#__PURE__*/_regenerator().m(function _callee248() {
+              var _t172;
+              return _regenerator().w(function (_context248) {
+                while (1) switch (_context248.p = _context248.n) {
                   case 0:
-                    _context246.p = 0;
+                    _context248.p = 0;
                     checkAbort();
                     if (!(!accepting || failed)) {
-                      _context246.n = 1;
+                      _context248.n = 1;
                       break;
                     }
                     throw new Error("歌单数据源已关闭");
                   case 1:
                     if (!(!Array.isArray(page2) || page2.length > LIBRARY_PAGE_SIZE)) {
-                      _context246.n = 2;
+                      _context248.n = 2;
                       break;
                     }
                     throw new Error(`歌单每批最多 ${LIBRARY_PAGE_SIZE} 首`);
                   case 2:
                     consume(page2);
-                    _context246.n = 4;
+                    _context248.n = 4;
                     break;
                   case 3:
-                    _context246.p = 3;
-                    _t167 = _context246.v;
+                    _context248.p = 3;
+                    _t172 = _context248.v;
                     failed = true;
-                    throw _t167;
+                    throw _t172;
                   case 4:
-                    return _context246.a(2);
+                    return _context248.a(2);
                 }
-              }, _callee246, null, [[0, 3]]);
+              }, _callee248, null, [[0, 3]]);
             })));
           case 2:
-            guard = _context247.v;
+            guard = _context249.v;
           case 3:
-            _context247.p = 3;
+            _context249.p = 3;
             accepting = false;
-            return _context247.f(3);
+            return _context249.f(3);
           case 4:
-            return _context247.a(2, () => {
+            return _context249.a(2, () => {
               checkAbort();
               if (failed) throw new Error("歌单分批读取失败，请重试");
               guard == null ? void 0 : guard();
               checkAbort();
             });
         }
-      }, _callee247, null, [[1,, 3, 4]]);
+      }, _callee249, null, [[1,, 3, 4]]);
     }));
   }
   function validateTrack(track) {
@@ -22511,20 +22658,20 @@ var TwilightPortableCore = function (exports) {
       if (before) options.queuePlaylistPersistence(before);
     }
     function addTrackPagesToExternalPlaylistById(id2, produce, signal) {
-      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee248() {
+      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee250() {
         var target, additions, finish, current2;
-        return _regenerator().w(function (_context248) {
-          while (1) switch (_context248.n) {
+        return _regenerator().w(function (_context250) {
+          while (1) switch (_context250.n) {
             case 0:
               target = captureTarget(id2);
               if (target.imported) {
-                _context248.n = 1;
+                _context250.n = 1;
                 break;
               }
               throw new Error("请选择导入歌单");
             case 1:
               additions = [];
-              _context248.n = 2;
+              _context250.n = 2;
               return stagePlaylistPages(produce, page2 => {
                 if (additions.length + page2.length > EXTERNAL_PLAYLIST_MAX_ENTRIES) throw new Error("歌单超过 20,000 条上限");
                 var _iterator51 = _createForOfIteratorHelper(page2),
@@ -22542,56 +22689,56 @@ var TwilightPortableCore = function (exports) {
                 }
               }, signal);
             case 2:
-              finish = _context248.v;
+              finish = _context250.v;
               finish();
               current2 = currentPlaylist(target);
               if (additions.length) {
-                _context248.n = 3;
+                _context250.n = 3;
                 break;
               }
-              return _context248.a(2, 0);
+              return _context250.a(2, 0);
             case 3:
               publish([__spreadProps(__spreadValues({}, current2), {
                 imported: withExternalMembership(current2.imported, [...current2.imported.entries, ...additions])
               })]);
-              return _context248.a(2, additions.length);
-          }
-        }, _callee248);
-      }));
-    }
-    function collectIds(target, produce, signal, maximum) {
-      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee249() {
-        return _regenerator().w(function (_context249) {
-          while (1) switch (_context249.n) {
-            case 0:
-              return _context249.a(2, collectItems(target, produce, id2 => ({
-                id: id2
-              }), signal, maximum));
-          }
-        }, _callee249);
-      }));
-    }
-    function collectMembers(target, produce, signal, maximum) {
-      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee250() {
-        return _regenerator().w(function (_context250) {
-          while (1) switch (_context250.n) {
-            case 0:
-              return _context250.a(2, collectItems(target, produce, member => member, signal, maximum));
+              return _context250.a(2, additions.length);
           }
         }, _callee250);
       }));
     }
-    function collectItems(target, produce, asMember, signal, maximum) {
+    function collectIds(target, produce, signal, maximum) {
       return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee251() {
-        var original, originalIds, selected, snapshots, finish;
         return _regenerator().w(function (_context251) {
           while (1) switch (_context251.n) {
+            case 0:
+              return _context251.a(2, collectItems(target, produce, id2 => ({
+                id: id2
+              }), signal, maximum));
+          }
+        }, _callee251);
+      }));
+    }
+    function collectMembers(target, produce, signal, maximum) {
+      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee252() {
+        return _regenerator().w(function (_context252) {
+          while (1) switch (_context252.n) {
+            case 0:
+              return _context252.a(2, collectItems(target, produce, member => member, signal, maximum));
+          }
+        }, _callee252);
+      }));
+    }
+    function collectItems(target, produce, asMember, signal, maximum) {
+      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee253() {
+        var original, originalIds, selected, snapshots, finish;
+        return _regenerator().w(function (_context253) {
+          while (1) switch (_context253.n) {
             case 0:
               original = currentPlaylist(target);
               originalIds = new Set(memberIds(original));
               selected = /* @__PURE__ */new Set();
               snapshots = /* @__PURE__ */new Map();
-              _context251.n = 1;
+              _context253.n = 1;
               return stagePlaylistPages(produce, page2 => {
                 var _a, _b;
                 var _iterator52 = _createForOfIteratorHelper(page2),
@@ -22618,14 +22765,14 @@ var TwilightPortableCore = function (exports) {
                 }
               }, signal);
             case 1:
-              finish = _context251.v;
-              return _context251.a(2, {
+              finish = _context253.v;
+              return _context253.a(2, {
                 selected,
                 snapshots,
                 finish
               });
           }
-        }, _callee251);
+        }, _callee253);
       }));
     }
     function withoutTracks(current2, selected) {
@@ -22667,51 +22814,51 @@ var TwilightPortableCore = function (exports) {
       };
     }
     function removeTrackIdPagesFromPlaylistById(id2, produce, signal) {
-      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee252() {
+      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee254() {
         var target, _yield$collectIds, selected, finish, _withoutTracks, next, removed;
-        return _regenerator().w(function (_context252) {
-          while (1) switch (_context252.n) {
+        return _regenerator().w(function (_context254) {
+          while (1) switch (_context254.n) {
             case 0:
               target = captureTarget(id2);
-              _context252.n = 1;
+              _context254.n = 1;
               return collectIds(target, produce, signal);
             case 1:
-              _yield$collectIds = _context252.v;
+              _yield$collectIds = _context254.v;
               selected = _yield$collectIds.selected;
               finish = _yield$collectIds.finish;
               finish();
               _withoutTracks = withoutTracks(currentPlaylist(target), selected), next = _withoutTracks.next, removed = _withoutTracks.removed;
               if (removed) publish([next]);
-              return _context252.a(2, removed);
-          }
-        }, _callee252);
-      }));
-    }
-    function movePlaylistTrackIdPagesById(sourceId, targetId, produce, signal) {
-      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee253() {
-        return _regenerator().w(function (_context253) {
-          while (1) switch (_context253.n) {
-            case 0:
-              return _context253.a(2, moveMembers(sourceId, targetId, (target, maximum) => collectIds(target, produce, signal, maximum)));
-          }
-        }, _callee253);
-      }));
-    }
-    function movePlaylistMemberPagesById(sourceId, targetId, produce, signal) {
-      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee254() {
-        return _regenerator().w(function (_context254) {
-          while (1) switch (_context254.n) {
-            case 0:
-              return _context254.a(2, moveMembers(sourceId, targetId, (target, maximum) => collectMembers(target, produce, signal, maximum)));
+              return _context254.a(2, removed);
           }
         }, _callee254);
       }));
     }
-    function moveMembers(sourceId, targetId, collect) {
+    function movePlaylistTrackIdPagesById(sourceId, targetId, produce, signal) {
       return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee255() {
-        var _a, _b, _c, _d, sourceTarget, targetTarget, _yield$collect, selected, fallbacks, finish, source, target, _withoutTracks2, nextSource, sourceRemoved, known, trackIds, snapshots, entries, moved, appendEntry, appendTrack, _iterator54, _step54, entry, snapshot, _iterator55, _step55, id2, _snapshot, updatedAt, _t168, _t169;
         return _regenerator().w(function (_context255) {
-          while (1) switch (_context255.p = _context255.n) {
+          while (1) switch (_context255.n) {
+            case 0:
+              return _context255.a(2, moveMembers(sourceId, targetId, (target, maximum) => collectIds(target, produce, signal, maximum)));
+          }
+        }, _callee255);
+      }));
+    }
+    function movePlaylistMemberPagesById(sourceId, targetId, produce, signal) {
+      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee256() {
+        return _regenerator().w(function (_context256) {
+          while (1) switch (_context256.n) {
+            case 0:
+              return _context256.a(2, moveMembers(sourceId, targetId, (target, maximum) => collectMembers(target, produce, signal, maximum)));
+          }
+        }, _callee256);
+      }));
+    }
+    function moveMembers(sourceId, targetId, collect) {
+      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee257() {
+        var _a, _b, _c, _d, sourceTarget, targetTarget, _yield$collect, selected, fallbacks, finish, source, target, _withoutTracks2, nextSource, sourceRemoved, known, trackIds, snapshots, entries, moved, appendEntry, appendTrack, _iterator54, _step54, entry, snapshot, _iterator55, _step55, id2, _snapshot, updatedAt, _t173, _t174;
+        return _regenerator().w(function (_context257) {
+          while (1) switch (_context257.p = _context257.n) {
             case 0:
               appendTrack = function _appendTrack(id2, snapshot) {
                 if (entries) {
@@ -22732,36 +22879,36 @@ var TwilightPortableCore = function (exports) {
                 moved++;
               };
               sourceTarget = captureTarget(sourceId), targetTarget = captureTarget(targetId);
-              _context255.n = 1;
+              _context257.n = 1;
               return collect(sourceTarget, targetTarget.imported ? EXTERNAL_PLAYLIST_MAX_ENTRIES : void 0);
             case 1:
-              _yield$collect = _context255.v;
+              _yield$collect = _context257.v;
               selected = _yield$collect.selected;
               fallbacks = _yield$collect.snapshots;
               finish = _yield$collect.finish;
               finish();
               source = currentPlaylist(sourceTarget), target = currentPlaylist(targetTarget);
               if (!(sourceId === targetId)) {
-                _context255.n = 2;
+                _context257.n = 2;
                 break;
               }
-              return _context255.a(2, {
+              return _context257.a(2, {
                 moved: 0,
                 sourceRemoved: 0
               });
             case 2:
               if (!(!!source.transient !== !!target.transient)) {
-                _context255.n = 3;
+                _context257.n = 3;
                 break;
               }
               throw new Error("请先保存导入歌单，再移动歌曲");
             case 3:
               _withoutTracks2 = withoutTracks(source, selected), nextSource = _withoutTracks2.next, sourceRemoved = _withoutTracks2.removed;
               if (sourceRemoved) {
-                _context255.n = 4;
+                _context257.n = 4;
                 break;
               }
-              return _context255.a(2, {
+              return _context257.a(2, {
                 moved: 0,
                 sourceRemoved: 0
               });
@@ -22771,89 +22918,89 @@ var TwilightPortableCore = function (exports) {
               entries = (_a = target.imported) == null ? void 0 : _a.entries.slice();
               moved = 0;
               if (!source.imported) {
-                _context255.n = 15;
+                _context257.n = 15;
                 break;
               }
               _iterator54 = _createForOfIteratorHelper(source.imported.entries);
-              _context255.p = 5;
+              _context257.p = 5;
               _iterator54.s();
             case 6:
               if ((_step54 = _iterator54.n()).done) {
-                _context255.n = 11;
+                _context257.n = 11;
                 break;
               }
               entry = _step54.value;
               if (selected.has(entry.entryId)) {
-                _context255.n = 7;
+                _context257.n = 7;
                 break;
               }
-              return _context255.a(3, 10);
+              return _context257.a(3, 10);
             case 7:
               if (!entries) {
-                _context255.n = 8;
+                _context257.n = 8;
                 break;
               }
               appendEntry(copyExternalEntry(entry, entries.length));
-              _context255.n = 10;
+              _context257.n = 10;
               break;
             case 8:
               snapshot = entry.resolution.track;
               if (!(!snapshot || !["local", "streaming"].includes(entry.resolution.state))) {
-                _context255.n = 9;
+                _context257.n = 9;
                 break;
               }
               throw new Error("选中条目尚未匹配，普通歌单无法保存其信息，请选择导入歌单");
             case 9:
               appendTrack(snapshot.id, snapshot);
             case 10:
-              _context255.n = 6;
+              _context257.n = 6;
               break;
             case 11:
-              _context255.n = 13;
+              _context257.n = 13;
               break;
             case 12:
-              _context255.p = 12;
-              _t168 = _context255.v;
-              _iterator54.e(_t168);
+              _context257.p = 12;
+              _t173 = _context257.v;
+              _iterator54.e(_t173);
             case 13:
-              _context255.p = 13;
+              _context257.p = 13;
               _iterator54.f();
-              return _context255.f(13);
+              return _context257.f(13);
             case 14:
-              _context255.n = 23;
+              _context257.n = 23;
               break;
             case 15:
               _iterator55 = _createForOfIteratorHelper(source.trackIds);
-              _context255.p = 16;
+              _context257.p = 16;
               _iterator55.s();
             case 17:
               if ((_step55 = _iterator55.n()).done) {
-                _context255.n = 20;
+                _context257.n = 20;
                 break;
               }
               id2 = _step55.value;
               if (selected.has(id2)) {
-                _context255.n = 18;
+                _context257.n = 18;
                 break;
               }
-              return _context255.a(3, 19);
+              return _context257.a(3, 19);
             case 18:
               _snapshot = (_d = (_c = Object.hasOwn((_b = source.trackSnapshots) != null ? _b : {}, id2) ? source.trackSnapshots[id2] : void 0) != null ? _c : options.trackById.get(id2)) != null ? _d : fallbacks.get(id2);
               appendTrack(id2, _snapshot);
             case 19:
-              _context255.n = 17;
+              _context257.n = 17;
               break;
             case 20:
-              _context255.n = 22;
+              _context257.n = 22;
               break;
             case 21:
-              _context255.p = 21;
-              _t169 = _context255.v;
-              _iterator55.e(_t169);
+              _context257.p = 21;
+              _t174 = _context257.v;
+              _iterator55.e(_t174);
             case 22:
-              _context255.p = 22;
+              _context257.p = 22;
               _iterator55.f();
-              return _context255.f(22);
+              return _context257.f(22);
             case 23:
               updatedAt = new Date(runtime.now()).toISOString();
               publish([__spreadProps(__spreadValues({}, nextSource), {
@@ -22866,32 +23013,32 @@ var TwilightPortableCore = function (exports) {
                 trackSnapshots: nonEmptySnapshots(snapshots),
                 updatedAt
               })]);
-              return _context255.a(2, {
+              return _context257.a(2, {
                 moved,
                 sourceRemoved
               });
           }
-        }, _callee255, null, [[16, 21, 22, 23], [5, 12, 13, 14]]);
+        }, _callee257, null, [[16, 21, 22, 23], [5, 12, 13, 14]]);
       }));
     }
     function reorderPlaylistTrackIdPagesById(id2, produce, targetIndex, signal) {
-      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee256() {
+      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee258() {
         var _a, target, originalOrder, _yield$collectIds2, selected, finish, current2, currentIds, currentPositions, insertion, index, anchor, position, trackIds, byId;
-        return _regenerator().w(function (_context256) {
-          while (1) switch (_context256.n) {
+        return _regenerator().w(function (_context258) {
+          while (1) switch (_context258.n) {
             case 0:
               if (Number.isInteger(targetIndex)) {
-                _context256.n = 1;
+                _context258.n = 1;
                 break;
               }
               throw new Error("歌单目标位置无效");
             case 1:
               target = captureTarget(id2);
               originalOrder = memberIds(currentPlaylist(target)).slice();
-              _context256.n = 2;
+              _context258.n = 2;
               return collectIds(target, produce, signal);
             case 2:
-              _yield$collectIds2 = _context256.v;
+              _yield$collectIds2 = _context258.v;
               selected = _yield$collectIds2.selected;
               finish = _yield$collectIds2.finish;
               finish();
@@ -22902,27 +23049,27 @@ var TwilightPortableCore = function (exports) {
               index = Math.max(0, targetIndex);
             case 3:
               if (!(index < originalOrder.length)) {
-                _context256.n = 5;
+                _context258.n = 5;
                 break;
               }
               anchor = originalOrder[index], position = currentPositions.get(anchor);
               if (!(!selected.has(anchor) && position !== void 0)) {
-                _context256.n = 4;
+                _context258.n = 4;
                 break;
               }
               insertion = position;
-              return _context256.a(3, 5);
+              return _context258.a(3, 5);
             case 4:
               index++;
-              _context256.n = 3;
+              _context258.n = 3;
               break;
             case 5:
               trackIds = reorderStableIds(currentIds, selected, insertion);
               if (!playlistDataEqual(currentIds, trackIds)) {
-                _context256.n = 6;
+                _context258.n = 6;
                 break;
               }
-              return _context256.a(2, false);
+              return _context258.a(2, false);
             case 6:
               byId = new Map((_a = current2.imported) == null ? void 0 : _a.entries.map(entry => [entry.entryId, entry]));
               publish([__spreadValues(__spreadProps(__spreadValues({}, current2), {
@@ -22932,9 +23079,9 @@ var TwilightPortableCore = function (exports) {
               } : {
                 trackIds
               })]);
-              return _context256.a(2, true);
+              return _context258.a(2, true);
           }
-        }, _callee256);
+        }, _callee258);
       }));
     }
     function recordingIndex(playlist) {
@@ -22995,15 +23142,15 @@ var TwilightPortableCore = function (exports) {
       };
     }
     function readFavoriteTrackPages(produce, signal) {
-      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee257() {
+      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee259() {
         var _captureFavorites, base, current2, index, count, favoriteCount, finish, latest, latestIds;
-        return _regenerator().w(function (_context257) {
-          while (1) switch (_context257.n) {
+        return _regenerator().w(function (_context259) {
+          while (1) switch (_context259.n) {
             case 0:
               _captureFavorites = captureFavorites(signal), base = _captureFavorites.base, current2 = _captureFavorites.current;
               index = recordingIndex(base);
               count = 0, favoriteCount = 0;
-              _context257.n = 1;
+              _context259.n = 1;
               return stagePlaylistPages(produce, page2 => {
                 var _iterator57 = _createForOfIteratorHelper(page2),
                   _step57;
@@ -23021,34 +23168,34 @@ var TwilightPortableCore = function (exports) {
                 }
               }, signal);
             case 1:
-              finish = _context257.v;
+              finish = _context259.v;
               finish();
               latest = current2();
               latestIds = new Set(latest == null ? void 0 : latest.trackIds);
               if (!(index.ids.size !== latestIds.size || [...index.ids].some(id2 => !latestIds.has(id2)) || !playlistDataEqual(base == null ? void 0 : base.trackSnapshots, latest == null ? void 0 : latest.trackSnapshots))) {
-                _context257.n = 2;
+                _context259.n = 2;
                 break;
               }
               throw new Error("收藏状态已变化，请重试");
             case 2:
-              return _context257.a(2, {
+              return _context259.a(2, {
                 count,
                 favoriteCount
               });
           }
-        }, _callee257);
+        }, _callee259);
       }));
     }
     function setFavoriteTrackPages(produce, favorite, signal, exactAdditions) {
-      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee258() {
-        var _captureFavorites2, base, current2, index, additions, removals, finish, latest, _withoutTracks3, next2, removed, latestIndex, next, added, _iterator60, _step60, snapshot, _t170;
-        return _regenerator().w(function (_context258) {
-          while (1) switch (_context258.p = _context258.n) {
+      return __async$d(this, null, /*#__PURE__*/_regenerator().m(function _callee260() {
+        var _captureFavorites2, base, current2, index, additions, removals, finish, latest, _withoutTracks3, next2, removed, latestIndex, next, added, _iterator60, _step60, snapshot, _t175;
+        return _regenerator().w(function (_context260) {
+          while (1) switch (_context260.p = _context260.n) {
             case 0:
               _captureFavorites2 = captureFavorites(signal), base = _captureFavorites2.base, current2 = _captureFavorites2.current;
               index = recordingIndex(base);
               additions = /* @__PURE__ */new Map(), removals = /* @__PURE__ */new Set();
-              _context258.n = 1;
+              _context260.n = 1;
               return stagePlaylistPages(produce, page2 => {
                 var _a;
                 var _iterator58 = _createForOfIteratorHelper(page2),
@@ -23085,28 +23232,28 @@ var TwilightPortableCore = function (exports) {
                 }
               }, signal);
             case 1:
-              finish = _context258.v;
+              finish = _context260.v;
               finish();
               latest = current2();
               if (favorite) {
-                _context258.n = 3;
+                _context260.n = 3;
                 break;
               }
               if (latest) {
-                _context258.n = 2;
+                _context260.n = 2;
                 break;
               }
-              return _context258.a(2, 0);
+              return _context260.a(2, 0);
             case 2:
               _withoutTracks3 = withoutTracks(latest, removals), next2 = _withoutTracks3.next, removed = _withoutTracks3.removed;
               if (removed) publish([next2]);
-              return _context258.a(2, removed);
+              return _context260.a(2, removed);
             case 3:
               if (additions.size) {
-                _context258.n = 4;
+                _context260.n = 4;
                 break;
               }
-              return _context258.a(2, 0);
+              return _context260.a(2, 0);
             case 4:
               latestIndex = recordingIndex(latest);
               next = latest ? __spreadProps(__spreadValues({}, latest), {
@@ -23122,43 +23269,43 @@ var TwilightPortableCore = function (exports) {
               };
               added = 0;
               _iterator60 = _createForOfIteratorHelper(additions.values());
-              _context258.p = 5;
+              _context260.p = 5;
               _iterator60.s();
             case 6:
               if ((_step60 = _iterator60.n()).done) {
-                _context258.n = 9;
+                _context260.n = 9;
                 break;
               }
               snapshot = _step60.value;
               if (!(latestIndex.ids.has(snapshot.id) || !(exactAdditions == null ? void 0 : exactAdditions.has(snapshot.id)) && latestIndex.matches(snapshot))) {
-                _context258.n = 7;
+                _context260.n = 7;
                 break;
               }
-              return _context258.a(3, 8);
+              return _context260.a(3, 8);
             case 7:
               latestIndex.add(snapshot.id, snapshot);
               next.trackIds.push(snapshot.id);
               putSnapshot(next.trackSnapshots, snapshot.id, snapshot);
               added++;
             case 8:
-              _context258.n = 6;
+              _context260.n = 6;
               break;
             case 9:
-              _context258.n = 11;
+              _context260.n = 11;
               break;
             case 10:
-              _context258.p = 10;
-              _t170 = _context258.v;
-              _iterator60.e(_t170);
+              _context260.p = 10;
+              _t175 = _context260.v;
+              _iterator60.e(_t175);
             case 11:
-              _context258.p = 11;
+              _context260.p = 11;
               _iterator60.f();
-              return _context258.f(11);
+              return _context260.f(11);
             case 12:
               if (added) publish([next]);
-              return _context258.a(2, added);
+              return _context260.a(2, added);
           }
-        }, _callee258, null, [[5, 10, 11, 12]]);
+        }, _callee260, null, [[5, 10, 11, 12]]);
       }));
     }
     return {
@@ -23259,29 +23406,29 @@ var TwilightPortableCore = function (exports) {
       return playlist.id;
     }
     function stagePlaylistTrackPages(original, name, produce, signal, kind) {
-      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee259() {
-        var _a, base, draft, known, changed, finish, current2, _i22, _Object$keys5, id2, next, added, before, _t171, _t172;
-        return _regenerator().w(function (_context259) {
-          while (1) switch (_context259.n) {
+      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee261() {
+        var _a, base, draft, known, changed, finish, current2, _i22, _Object$keys5, id2, next, added, before, _t176, _t177;
+        return _regenerator().w(function (_context261) {
+          while (1) switch (_context261.n) {
             case 0:
               if (!(signal == null ? void 0 : signal.aborted)) {
-                _context259.n = 1;
+                _context261.n = 1;
                 break;
               }
               throw new Error("歌单操作已取消");
             case 1:
               if (!(original == null ? void 0 : original.imported)) {
-                _context259.n = 3;
+                _context261.n = 3;
                 break;
               }
-              _t171 = original.id;
-              _context259.n = 2;
+              _t176 = original.id;
+              _context261.n = 2;
               return pageCommands.addTrackPagesToExternalPlaylistById(original.id, produce, signal);
             case 2:
-              _t172 = _context259.v;
-              return _context259.a(2, {
-                id: _t171,
-                added: _t172
+              _t177 = _context261.v;
+              return _context261.a(2, {
+                id: _t176,
+                added: _t177
               });
             case 3:
               base = original ? clonePlaylist(original) : void 0;
@@ -23300,7 +23447,7 @@ var TwilightPortableCore = function (exports) {
               });
               known = new Set(draft.trackIds);
               changed = false;
-              _context259.n = 4;
+              _context261.n = 4;
               return stagePlaylistPages(produce, page2 => {
                 var _iterator61 = _createForOfIteratorHelper(page2),
                   _step61;
@@ -23331,26 +23478,26 @@ var TwilightPortableCore = function (exports) {
                 }
               }, signal);
             case 4:
-              finish = _context259.v;
+              finish = _context261.v;
               finish();
               current2 = base ? playlists.value.find(item => item.id === base.id) : void 0;
               if (!(base && (!current2 || current2.kind !== base.kind || current2.imported))) {
-                _context259.n = 5;
+                _context261.n = 5;
                 break;
               }
               throw new Error("目标歌单已删除或类型已变化，请重新选择");
             case 5:
               if (!(!base && playlists.value.some(item => item.kind === kind && item.name === name))) {
-                _context259.n = 6;
+                _context261.n = 6;
                 break;
               }
               throw new Error("读取期间已创建同名歌单，请重新选择");
             case 6:
               if (!(base && !changed)) {
-                _context259.n = 7;
+                _context261.n = 7;
                 break;
               }
-              return _context259.a(2, {
+              return _context261.a(2, {
                 id: base.id,
                 added: 0
               });
@@ -23367,64 +23514,64 @@ var TwilightPortableCore = function (exports) {
               before = clonePlaylistSnapshot();
               playlists.value = current2 ? playlists.value.map(item => item.id === current2.id ? next : item) : [...playlists.value, next];
               queuePlaylistPersistence(before);
-              return _context259.a(2, {
+              return _context261.a(2, {
                 id: next.id,
                 added
               });
           }
-        }, _callee259);
-      }));
-    }
-    function createPlaylistWithTrackPages(name, produce, signal) {
-      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee260() {
-        var normalized;
-        return _regenerator().w(function (_context260) {
-          while (1) switch (_context260.n) {
-            case 0:
-              normalized = normalizePlaylistName(name);
-              _context260.n = 1;
-              return stagePlaylistTrackPages(findLocalPlaylistByName(normalized), normalized, produce, signal);
-            case 1:
-              return _context260.a(2, _context260.v.id);
-          }
-        }, _callee260);
-      }));
-    }
-    function addTrackPagesToPlaylistById(playlistId, produce, signal) {
-      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee261() {
-        var playlist;
-        return _regenerator().w(function (_context261) {
-          while (1) switch (_context261.n) {
-            case 0:
-              playlist = playlists.value.find(item => item.id === playlistId);
-              if (playlist) {
-                _context261.n = 1;
-                break;
-              }
-              throw new Error("目标歌单已不存在，请重新选择");
-            case 1:
-              _context261.n = 2;
-              return stagePlaylistTrackPages(playlist, playlist.name, produce, signal);
-            case 2:
-              return _context261.a(2, _context261.v.added);
-          }
         }, _callee261);
       }));
     }
-    function createAggregatePlaylistWithTrackPages(name, produce, signal) {
+    function createPlaylistWithTrackPages(name, produce, signal) {
       return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee262() {
-        var normalized, existing;
+        var normalized;
         return _regenerator().w(function (_context262) {
           while (1) switch (_context262.n) {
             case 0:
               normalized = normalizePlaylistName(name);
-              existing = playlists.value.find(item => isAggregatePlaylist(item) && item.name === normalized);
               _context262.n = 1;
-              return stagePlaylistTrackPages(existing, normalized, produce, signal, "aggregate");
+              return stagePlaylistTrackPages(findLocalPlaylistByName(normalized), normalized, produce, signal);
             case 1:
               return _context262.a(2, _context262.v.id);
           }
         }, _callee262);
+      }));
+    }
+    function addTrackPagesToPlaylistById(playlistId, produce, signal) {
+      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee263() {
+        var playlist;
+        return _regenerator().w(function (_context263) {
+          while (1) switch (_context263.n) {
+            case 0:
+              playlist = playlists.value.find(item => item.id === playlistId);
+              if (playlist) {
+                _context263.n = 1;
+                break;
+              }
+              throw new Error("目标歌单已不存在，请重新选择");
+            case 1:
+              _context263.n = 2;
+              return stagePlaylistTrackPages(playlist, playlist.name, produce, signal);
+            case 2:
+              return _context263.a(2, _context263.v.added);
+          }
+        }, _callee263);
+      }));
+    }
+    function createAggregatePlaylistWithTrackPages(name, produce, signal) {
+      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee264() {
+        var normalized, existing;
+        return _regenerator().w(function (_context264) {
+          while (1) switch (_context264.n) {
+            case 0:
+              normalized = normalizePlaylistName(name);
+              existing = playlists.value.find(item => isAggregatePlaylist(item) && item.name === normalized);
+              _context264.n = 1;
+              return stagePlaylistTrackPages(existing, normalized, produce, signal, "aggregate");
+            case 1:
+              return _context264.a(2, _context264.v.id);
+          }
+        }, _callee264);
       }));
     }
     function normalizePlaylistName(value) {
@@ -23659,56 +23806,56 @@ var TwilightPortableCore = function (exports) {
       return results;
     }
     function importPlaylistEntryBatchAsync(batch) {
-      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee263() {
+      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee265() {
         var _a, _b, names, targets, resolved, i, offset;
-        return _regenerator().w(function (_context263) {
-          while (1) switch (_context263.n) {
+        return _regenerator().w(function (_context265) {
+          while (1) switch (_context265.n) {
             case 0:
               if (batch.length) {
-                _context263.n = 1;
+                _context265.n = 1;
                 break;
               }
-              return _context263.a(2, []);
+              return _context265.a(2, []);
             case 1:
               names = batch.map(item => normalizePlaylistName(item.name));
               targets = names.map(name => {
                 var _a2;
                 return (_a2 = findLocalPlaylistByName(name)) == null ? void 0 : _a2.id;
               });
-              _context263.n = 2;
+              _context265.n = 2;
               return (_a = options.resolveImportPaths) == null ? void 0 : _a.call(options, batch.flatMap(item => item.entries.map(entry => entry.path)));
             case 2:
-              resolved = _context263.v;
+              resolved = _context265.v;
               i = 0;
             case 3:
               if (!(i < names.length)) {
-                _context263.n = 5;
+                _context265.n = 5;
                 break;
               }
               if (!(targets[i] && ((_b = findLocalPlaylistByName(names[i])) == null ? void 0 : _b.id) !== targets[i])) {
-                _context263.n = 4;
+                _context265.n = 4;
                 break;
               }
               throw new Error("目标歌单已被重命名或删除，请重新导入");
             case 4:
               i++;
-              _context263.n = 3;
+              _context265.n = 3;
               break;
             case 5:
               if (!(resolved == null)) {
-                _context263.n = 6;
+                _context265.n = 6;
                 break;
               }
-              return _context263.a(2, applyPlaylistEntryBatch(batch));
+              return _context265.a(2, applyPlaylistEntryBatch(batch));
             case 6:
               if (!(resolved.length !== batch.reduce((total, item) => total + item.entries.length, 0))) {
-                _context263.n = 7;
+                _context265.n = 7;
                 break;
               }
               throw new Error("曲库返回了不完整的歌单匹配结果");
             case 7:
               offset = 0;
-              return _context263.a(2, applyResolvedImports(batch.map((item, i) => {
+              return _context265.a(2, applyResolvedImports(batch.map((item, i) => {
                 var _a2;
                 var matched = resolved.slice(offset, offset + item.entries.length);
                 offset += item.entries.length;
@@ -23720,26 +23867,26 @@ var TwilightPortableCore = function (exports) {
                 };
               })));
           }
-        }, _callee263);
+        }, _callee265);
       }));
     }
     function importPlaylistDocumentAsync(name, fileName, contents) {
-      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee264() {
+      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee266() {
         var parsed;
-        return _regenerator().w(function (_context264) {
-          while (1) switch (_context264.n) {
+        return _regenerator().w(function (_context266) {
+          while (1) switch (_context266.n) {
             case 0:
               parsed = parsePlaylistDocument(contents, fileName);
-              _context264.n = 1;
+              _context266.n = 1;
               return importPlaylistEntryBatchAsync([{
                 name,
                 entries: parsed.entries,
                 warnings: parsed.warnings
               }]);
             case 1:
-              return _context264.a(2, _context264.v[0]);
+              return _context266.a(2, _context266.v[0]);
           }
-        }, _callee264);
+        }, _callee266);
       }));
     }
     function importPlaylistPathBatchAsync(batch) {
@@ -23786,157 +23933,157 @@ var TwilightPortableCore = function (exports) {
       return applyPlaylistRelocations(playlist, result);
     }
     function exportPlaylistDocumentAsync(playlistName, format) {
-      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee265() {
+      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee267() {
         var _a, playlist, id2, ids, snapshots, document, current2;
-        return _regenerator().w(function (_context265) {
-          while (1) switch (_context265.n) {
+        return _regenerator().w(function (_context267) {
+          while (1) switch (_context267.n) {
             case 0:
               playlist = findLocalPlaylistByName(playlistName);
               if (playlist) {
-                _context265.n = 1;
+                _context267.n = 1;
                 break;
               }
-              return _context265.a(2, null);
+              return _context267.a(2, null);
             case 1:
               id2 = playlist.id, ids = playlist.trackIds.slice(), snapshots = playlist.trackSnapshots;
-              _context265.n = 2;
+              _context267.n = 2;
               return (_a = options.exportDocument) == null ? void 0 : _a.call(options, playlist, format);
             case 2:
-              document = _context265.v;
+              document = _context267.v;
               current2 = findLocalPlaylistByName(playlistName);
               if (!((current2 == null ? void 0 : current2.id) !== id2 || !playlistDataEqual(current2.trackIds, ids) || !playlistDataEqual(current2.trackSnapshots, snapshots))) {
-                _context265.n = 3;
+                _context267.n = 3;
                 break;
               }
               throw new Error("歌单在导出期间发生变化，请重试");
             case 3:
-              return _context265.a(2, document != null ? document : exportPlaylistDocumentForStore(playlistName, format));
+              return _context267.a(2, document != null ? document : exportPlaylistDocumentForStore(playlistName, format));
           }
-        }, _callee265);
+        }, _callee267);
       }));
     }
     function repairPlaylistMissingTracksAsync(playlistId, candidates) {
-      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee266() {
-        var _a, _b, _c, original, name, ids, snapshots, present, playlist, currentIds, missing, _iterator66, _step66, id2, snapshot, result, nowPresent, current2, kept, _i23, _missing, track, _t173, _t174;
-        return _regenerator().w(function (_context266) {
-          while (1) switch (_context266.p = _context266.n) {
+      return __async$c(this, null, /*#__PURE__*/_regenerator().m(function _callee268() {
+        var _a, _b, _c, original, name, ids, snapshots, present, playlist, currentIds, missing, _iterator66, _step66, id2, snapshot, result, nowPresent, current2, kept, _i23, _missing, track, _t178, _t179;
+        return _regenerator().w(function (_context268) {
+          while (1) switch (_context268.p = _context268.n) {
             case 0:
               original = playlists.value.find(item => item.id === playlistId && !isAggregatePlaylist(item));
               if (original) {
-                _context266.n = 1;
+                _context268.n = 1;
                 break;
               }
               throw new Error("目标歌单已不存在，请重新修复");
             case 1:
               name = original.name, ids = original.trackIds.slice(), snapshots = original.trackSnapshots ? clonePlaylist(original.trackSnapshots) : void 0;
-              _context266.n = 2;
+              _context268.n = 2;
               return (_a = options.readTrackPresence) == null ? void 0 : _a.call(options, ids);
             case 2:
-              present = _context266.v;
+              present = _context268.v;
               playlist = playlists.value.find(item => item.id === playlistId);
               if (!(!playlist || playlist.name !== name || isAggregatePlaylist(playlist))) {
-                _context266.n = 3;
+                _context268.n = 3;
                 break;
               }
               throw new Error("目标歌单已被重命名或删除，请重新修复");
             case 3:
               if (!(present == null && typeof candidates !== "string")) {
-                _context266.n = 4;
+                _context268.n = 4;
                 break;
               }
-              return _context266.a(2, repairPlaylistMissingTracks(name, candidates));
+              return _context268.a(2, repairPlaylistMissingTracks(name, candidates));
             case 4:
               currentIds = new Set(playlist.trackIds);
               missing = [];
               _iterator66 = _createForOfIteratorHelper(ids);
-              _context266.p = 5;
+              _context268.p = 5;
               _iterator66.s();
             case 6:
               if ((_step66 = _iterator66.n()).done) {
-                _context266.n = 11;
+                _context268.n = 11;
                 break;
               }
               id2 = _step66.value;
               if (!(!currentIds.has(id2) || (present != null ? present : trackById).has(id2))) {
-                _context266.n = 7;
+                _context268.n = 7;
                 break;
               }
-              return _context266.a(3, 10);
+              return _context268.a(3, 10);
             case 7:
               snapshot = snapshots == null ? void 0 : snapshots[id2];
               if (!(!snapshot || getTrackSource(snapshot) !== "local")) {
-                _context266.n = 8;
+                _context268.n = 8;
                 break;
               }
-              return _context266.a(3, 10);
+              return _context268.a(3, 10);
             case 8:
               if (playlistDataEqual(snapshot, (_b = playlist.trackSnapshots) == null ? void 0 : _b[id2])) {
-                _context266.n = 9;
+                _context268.n = 9;
                 break;
               }
               throw new Error("歌单曲目在检查期间发生变化，请重新修复");
             case 9:
               missing.push(snapshot);
             case 10:
-              _context266.n = 6;
+              _context268.n = 6;
               break;
             case 11:
-              _context266.n = 13;
+              _context268.n = 13;
               break;
             case 12:
-              _context266.p = 12;
-              _t173 = _context266.v;
-              _iterator66.e(_t173);
+              _context268.p = 12;
+              _t178 = _context268.v;
+              _iterator66.e(_t178);
             case 13:
-              _context266.p = 13;
+              _context268.p = 13;
               _iterator66.f();
-              return _context266.f(13);
+              return _context268.f(13);
             case 14:
               if (!(typeof candidates !== "string")) {
-                _context266.n = 15;
+                _context268.n = 15;
                 break;
               }
-              return _context266.a(2, applyPlaylistRelocations(playlist, findPlaylistRelocations(missing, candidates)));
+              return _context268.a(2, applyPlaylistRelocations(playlist, findPlaylistRelocations(missing, candidates)));
             case 15:
               if (options.findRelocationsInFolder) {
-                _context266.n = 16;
+                _context268.n = 16;
                 break;
               }
               throw new Error("歌单目录修复尚不可用");
             case 16:
-              _context266.n = 17;
+              _context268.n = 17;
               return options.findRelocationsInFolder(missing, candidates);
             case 17:
-              result = _context266.v;
+              result = _context268.v;
               if (!(present == null)) {
-                _context266.n = 18;
+                _context268.n = 18;
                 break;
               }
-              _t174 = trackById;
-              _context266.n = 20;
+              _t179 = trackById;
+              _context268.n = 20;
               break;
             case 18:
-              _context266.n = 19;
+              _context268.n = 19;
               return options.readTrackPresence(missing.map(track => track.id));
             case 19:
-              _t174 = _context266.v;
+              _t179 = _context268.v;
             case 20:
-              nowPresent = _t174;
+              nowPresent = _t179;
               if (!(nowPresent == null)) {
-                _context266.n = 21;
+                _context268.n = 21;
                 break;
               }
               throw new Error("曲库存储在修复期间发生变化，请重试");
             case 21:
               if (!(present != null && missing.some(track => nowPresent.has(track.id)))) {
-                _context266.n = 22;
+                _context268.n = 22;
                 break;
               }
               throw new Error("曲库在修复期间发生变化，请重新检查缺失文件");
             case 22:
               current2 = playlists.value.find(item => item.id === playlistId);
               if (!(!current2 || current2.name !== name || isAggregatePlaylist(current2))) {
-                _context266.n = 23;
+                _context268.n = 23;
                 break;
               }
               throw new Error("目标歌单已被重命名或删除，请重新修复");
@@ -23945,26 +24092,26 @@ var TwilightPortableCore = function (exports) {
               _i23 = 0, _missing = missing;
             case 24:
               if (!(_i23 < _missing.length)) {
-                _context266.n = 26;
+                _context268.n = 26;
                 break;
               }
               track = _missing[_i23];
               if (!(kept.has(track.id) && !playlistDataEqual(snapshots == null ? void 0 : snapshots[track.id], (_c = current2.trackSnapshots) == null ? void 0 : _c[track.id]))) {
-                _context266.n = 25;
+                _context268.n = 25;
                 break;
               }
               throw new Error("歌单曲目在修复期间发生变化，请重新修复");
             case 25:
               _i23++;
-              _context266.n = 24;
+              _context268.n = 24;
               break;
             case 26:
               result.relocations = result.relocations.filter(item => kept.has(item.trackId) && !nowPresent.has(item.trackId));
               result.unresolvedTrackIds = result.unresolvedTrackIds.filter(id2 => kept.has(id2) && !nowPresent.has(id2));
               result.ambiguousTrackIds = result.ambiguousTrackIds.filter(id2 => kept.has(id2) && !nowPresent.has(id2));
-              return _context266.a(2, applyPlaylistRelocations(current2, result));
+              return _context268.a(2, applyPlaylistRelocations(current2, result));
           }
-        }, _callee266, null, [[5, 12, 13, 14]]);
+        }, _callee268, null, [[5, 12, 13, 14]]);
       }));
     }
     function applyPlaylistRelocations(playlist, result) {
@@ -24403,31 +24550,31 @@ var TwilightPortableCore = function (exports) {
     });
   };
   function resolveLibraryPlaylistImportPaths(paths, api) {
-    return __async$b(this, null, /*#__PURE__*/_regenerator().m(function _callee267() {
-      var _a, result, revision2, offset, requested, matches, ids, page2, tracks2, _iterator74, _step74, id2, track, _t175, _t176, _t177, _t178, _t179;
-      return _regenerator().w(function (_context267) {
-        while (1) switch (_context267.p = _context267.n) {
+    return __async$b(this, null, /*#__PURE__*/_regenerator().m(function _callee269() {
+      var _a, result, revision2, offset, requested, matches, ids, page2, tracks2, _iterator74, _step74, id2, track, _t180, _t181, _t182, _t183, _t184;
+      return _regenerator().w(function (_context269) {
+        while (1) switch (_context269.p = _context269.n) {
           case 0:
             result = [];
             offset = 0;
           case 1:
             if (!(offset < paths.length)) {
-              _context267.n = 17;
+              _context269.n = 17;
               break;
             }
             requested = paths.slice(offset, offset + LIBRARY_PAGE_SIZE);
-            _context267.n = 2;
+            _context269.n = 2;
             return api.lookupTracksByPaths([...requested], revision2);
           case 2:
-            matches = _context267.v;
+            matches = _context269.v;
             if (!(matches.ids.length !== requested.length)) {
-              _context267.n = 3;
+              _context269.n = 3;
               break;
             }
             throw new Error("曲库返回了不完整的歌单匹配结果");
           case 3:
             if (!(revision2 !== void 0 && matches.revision !== revision2)) {
-              _context267.n = 4;
+              _context269.n = 4;
               break;
             }
             throw new Error("曲库在导入期间发生变化，请重试");
@@ -24435,21 +24582,21 @@ var TwilightPortableCore = function (exports) {
             revision2 = matches.revision;
             ids = [...new Set(matches.ids.filter(id2 => id2 !== null))];
             if (!ids.length) {
-              _context267.n = 6;
+              _context269.n = 6;
               break;
             }
-            _context267.n = 5;
+            _context269.n = 5;
             return api.getTracksByIds(ids, revision2);
           case 5:
-            _t175 = _context267.v;
-            _context267.n = 7;
+            _t180 = _context269.v;
+            _context269.n = 7;
             break;
           case 6:
-            _t175 = null;
+            _t180 = null;
           case 7:
-            page2 = _t175;
+            page2 = _t180;
             if (!(page2 && (page2.revision !== revision2 || page2.tracks.length !== ids.length))) {
-              _context267.n = 8;
+              _context269.n = 8;
               break;
             }
             throw new Error("曲库在导入期间发生变化，请重试");
@@ -24459,62 +24606,62 @@ var TwilightPortableCore = function (exports) {
               return [track.id, track];
             })) != null ? _a : []);
             _iterator74 = _createForOfIteratorHelper(matches.ids);
-            _context267.p = 9;
+            _context269.p = 9;
             _iterator74.s();
           case 10:
             if ((_step74 = _iterator74.n()).done) {
-              _context267.n = 13;
+              _context269.n = 13;
               break;
             }
             id2 = _step74.value;
             track = id2 === null ? null : tracks2.get(id2);
             if (!(track === void 0)) {
-              _context267.n = 11;
+              _context269.n = 11;
               break;
             }
             throw new Error("曲库返回了不完整的歌单曲目");
           case 11:
             result.push(track);
           case 12:
-            _context267.n = 10;
+            _context269.n = 10;
             break;
           case 13:
-            _context267.n = 15;
+            _context269.n = 15;
             break;
           case 14:
-            _context267.p = 14;
-            _t176 = _context267.v;
-            _iterator74.e(_t176);
+            _context269.p = 14;
+            _t181 = _context269.v;
+            _iterator74.e(_t181);
           case 15:
-            _context267.p = 15;
+            _context269.p = 15;
             _iterator74.f();
-            return _context267.f(15);
+            return _context269.f(15);
           case 16:
             offset += LIBRARY_PAGE_SIZE;
-            _context267.n = 1;
+            _context269.n = 1;
             break;
           case 17:
-            _t177 = revision2 !== void 0;
-            if (!_t177) {
-              _context267.n = 19;
+            _t182 = revision2 !== void 0;
+            if (!_t182) {
+              _context269.n = 19;
               break;
             }
-            _context267.n = 18;
+            _context269.n = 18;
             return api.getMetadata();
           case 18:
-            _t178 = _context267.v.revision;
-            _t179 = revision2;
-            _t177 = _t178 !== _t179;
+            _t183 = _context269.v.revision;
+            _t184 = revision2;
+            _t182 = _t183 !== _t184;
           case 19:
-            if (!_t177) {
-              _context267.n = 20;
+            if (!_t182) {
+              _context269.n = 20;
               break;
             }
             throw new Error("曲库在导入期间发生变化，请重试");
           case 20:
-            return _context267.a(2, result);
+            return _context269.a(2, result);
         }
-      }, _callee267, null, [[9, 14, 15, 16]]);
+      }, _callee269, null, [[9, 14, 15, 16]]);
     }));
   }
   function normalizeSearchText(value) {
@@ -25650,56 +25797,56 @@ var TwilightPortableCore = function (exports) {
       if (reply.id !== id2 || reply.sequence !== sequence || reply.count !== count || reply.committed !== committed) throw new Error("曲库返回了无效的歌单视图确认");
     }
     function release() {
-      return __async$a(this, null, /*#__PURE__*/_regenerator().m(function _callee268() {
+      return __async$a(this, null, /*#__PURE__*/_regenerator().m(function _callee270() {
         var id2, reply;
-        return _regenerator().w(function (_context268) {
-          while (1) switch (_context268.n) {
+        return _regenerator().w(function (_context270) {
+          while (1) switch (_context270.n) {
             case 0:
               if (!(leasedId === null)) {
-                _context268.n = 1;
+                _context270.n = 1;
                 break;
               }
-              return _context268.a(2);
+              return _context270.a(2);
             case 1:
               id2 = leasedId;
-              _context268.n = 2;
+              _context270.n = 2;
               return api.syncPlaylistView({
                 kind: "drop",
                 id: id2
               });
             case 2:
-              reply = _context268.v;
+              reply = _context270.v;
               check(reply, id2, 0, 0, false);
               leasedId = null;
             case 3:
-              return _context268.a(2);
+              return _context270.a(2);
           }
-        }, _callee268);
+        }, _callee270);
       }));
     }
     function run() {
       if (task) return task;
       var attemptedGeneration = state.value.generation;
-      task = (() => __async$a(null, null, /*#__PURE__*/_regenerator().m(function _callee271() {
-        var _a, _b, _c, _d, _e, _loop0, _ret2, _t185, _t186;
-        return _regenerator().w(function (_context271) {
-          while (1) switch (_context271.p = _context271.n) {
+      task = (() => __async$a(null, null, /*#__PURE__*/_regenerator().m(function _callee273() {
+        var _a, _b, _c, _d, _e, _loop0, _ret2, _t190, _t191;
+        return _regenerator().w(function (_context273) {
+          while (1) switch (_context273.p = _context273.n) {
             case 0:
-              _context271.p = 0;
-              _loop0 = /*#__PURE__*/_regenerator().m(function _callee270() {
-                var current2, isCatalog, generation, versions, id2, sequence, stale2, offset, groups, count, entries, flush, _iterator95, _step95, group, memberCount, index, importedEntry, trackId, snapshot, _t181, _t182, _t183, _t184;
-                return _regenerator().w(function (_context270) {
-                  while (1) switch (_context270.p = _context270.n) {
+              _context273.p = 0;
+              _loop0 = /*#__PURE__*/_regenerator().m(function _callee272() {
+                var current2, isCatalog, generation, versions, id2, sequence, stale2, offset, groups, count, entries, flush, _iterator95, _step95, group, memberCount, index, importedEntry, trackId, snapshot, _t186, _t187, _t188, _t189;
+                return _regenerator().w(function (_context272) {
+                  while (1) switch (_context272.p = _context272.n) {
                     case 0:
                       attemptedGeneration = state.value.generation;
-                      _context270.n = 1;
+                      _context272.n = 1;
                       return release();
                     case 1:
                       if (!disposed) {
-                        _context270.n = 2;
+                        _context272.n = 2;
                         break;
                       }
-                      return _context270.a(2, {
+                      return _context272.a(2, {
                         v: void 0
                       });
                     case 2:
@@ -25707,18 +25854,18 @@ var TwilightPortableCore = function (exports) {
                       current2 = catalog != null ? catalog : definition ? [definition] : null, isCatalog = catalog !== null, generation = state.value.generation;
                       attemptedGeneration = generation;
                       if (current2) {
-                        _context270.n = 3;
+                        _context272.n = 3;
                         break;
                       }
-                      return _context270.a(2, {
+                      return _context272.a(2, {
                         v: void 0
                       });
                     case 3:
                       versions = structuredClone(preferences.versions), id2 = identity();
                       leasedId = id2;
                       sequence = 0;
-                      _t181 = check;
-                      _context270.n = 4;
+                      _t186 = check;
+                      _context272.n = 4;
                       return api.syncPlaylistView(__spreadValues(__spreadValues({
                         kind: "begin",
                         id: id2,
@@ -25729,16 +25876,16 @@ var TwilightPortableCore = function (exports) {
                         catalog: true
                       } : {}));
                     case 4:
-                      _t181(_context270.v, id2, 0, 0, false);
+                      _t186(_context272.v, id2, 0, 0, false);
                       stale2 = () => disposed || generation !== state.value.generation;
                       if (!isCatalog) {
-                        _context270.n = 8;
+                        _context272.n = 8;
                         break;
                       }
                       offset = 0;
                     case 5:
                       if (!(offset < current2.length && !stale2())) {
-                        _context270.n = 8;
+                        _context272.n = 8;
                         break;
                       }
                       groups = current2.slice(offset, offset + LIBRARY_PAGE_SIZE).map(({
@@ -25752,8 +25899,8 @@ var TwilightPortableCore = function (exports) {
                         cover,
                         isDefault
                       }));
-                      _t182 = check;
-                      _context270.n = 6;
+                      _t187 = check;
+                      _context272.n = 6;
                       return api.syncPlaylistView({
                         kind: "groups",
                         id: id2,
@@ -25761,21 +25908,21 @@ var TwilightPortableCore = function (exports) {
                         groups
                       });
                     case 6:
-                      _t182(_context270.v, id2, sequence, 0, false);
+                      _t187(_context272.v, id2, sequence, 0, false);
                     case 7:
                       offset += LIBRARY_PAGE_SIZE;
-                      _context270.n = 5;
+                      _context272.n = 5;
                       break;
                     case 8:
                       count = 0;
                       entries = [];
-                      flush = () => __async$a(null, null, /*#__PURE__*/_regenerator().m(function _callee269() {
-                        var _t180;
-                        return _regenerator().w(function (_context269) {
-                          while (1) switch (_context269.n) {
+                      flush = () => __async$a(null, null, /*#__PURE__*/_regenerator().m(function _callee271() {
+                        var _t185;
+                        return _regenerator().w(function (_context271) {
+                          while (1) switch (_context271.n) {
                             case 0:
-                              _t180 = check;
-                              _context269.n = 1;
+                              _t185 = check;
+                              _context271.n = 1;
                               return api.syncPlaylistView({
                                 kind: "append",
                                 id: id2,
@@ -25785,20 +25932,20 @@ var TwilightPortableCore = function (exports) {
                                 entries: JSON.parse(JSON.stringify(entries))
                               });
                             case 1:
-                              _t180(_context269.v, id2, sequence, count + entries.length, false);
+                              _t185(_context271.v, id2, sequence, count + entries.length, false);
                               count += entries.length;
                               entries = [];
                             case 2:
-                              return _context269.a(2);
+                              return _context271.a(2);
                           }
-                        }, _callee269);
+                        }, _callee271);
                       }));
                       _iterator95 = _createForOfIteratorHelper(current2);
-                      _context270.p = 9;
+                      _context272.p = 9;
                       _iterator95.s();
                     case 10:
                       if ((_step95 = _iterator95.n()).done) {
-                        _context270.n = 16;
+                        _context272.n = 16;
                         break;
                       }
                       group = _step95.value;
@@ -25806,14 +25953,14 @@ var TwilightPortableCore = function (exports) {
                       index = 0;
                     case 11:
                       if (!(index < memberCount)) {
-                        _context270.n = 14;
+                        _context272.n = 14;
                         break;
                       }
                       if (!stale2()) {
-                        _context270.n = 12;
+                        _context272.n = 12;
                         break;
                       }
-                      return _context270.a(3, 14);
+                      return _context272.a(3, 14);
                     case 12:
                       importedEntry = (_c = group.imported) == null ? void 0 : _c.entries[index];
                       trackId = (_d = importedEntry == null ? void 0 : importedEntry.entryId) != null ? _d : group.trackIds[index];
@@ -25826,113 +25973,113 @@ var TwilightPortableCore = function (exports) {
                         snapshot: compactPlaylistRecord(snapshot)
                       } : {}));
                       if (!(entries.length === LIBRARY_PAGE_SIZE)) {
-                        _context270.n = 13;
+                        _context272.n = 13;
                         break;
                       }
-                      _context270.n = 13;
+                      _context272.n = 13;
                       return flush();
                     case 13:
                       index++;
-                      _context270.n = 11;
+                      _context272.n = 11;
                       break;
                     case 14:
                       if (!stale2()) {
-                        _context270.n = 15;
+                        _context272.n = 15;
                         break;
                       }
-                      return _context270.a(3, 16);
+                      return _context272.a(3, 16);
                     case 15:
-                      _context270.n = 10;
+                      _context272.n = 10;
                       break;
                     case 16:
-                      _context270.n = 18;
+                      _context272.n = 18;
                       break;
                     case 17:
-                      _context270.p = 17;
-                      _t183 = _context270.v;
-                      _iterator95.e(_t183);
+                      _context272.p = 17;
+                      _t188 = _context272.v;
+                      _iterator95.e(_t188);
                     case 18:
-                      _context270.p = 18;
+                      _context272.p = 18;
                       _iterator95.f();
-                      return _context270.f(18);
+                      return _context272.f(18);
                     case 19:
                       if (!(entries.length && !stale2())) {
-                        _context270.n = 20;
+                        _context272.n = 20;
                         break;
                       }
-                      _context270.n = 20;
+                      _context272.n = 20;
                       return flush();
                     case 20:
                       if (!stale2()) {
-                        _context270.n = 21;
+                        _context272.n = 21;
                         break;
                       }
-                      return _context270.a(2, 0);
+                      return _context272.a(2, 0);
                     case 21:
-                      _t184 = check;
-                      _context270.n = 22;
+                      _t189 = check;
+                      _context272.n = 22;
                       return api.syncPlaylistView({
                         kind: "commit",
                         id: id2,
                         sequence: ++sequence
                       });
                     case 22:
-                      _t184(_context270.v, id2, sequence, count, true);
+                      _t189(_context272.v, id2, sequence, count, true);
                       if (!stale2()) state.value = __spreadProps(__spreadValues({}, state.value), {
                         id: id2,
                         pending: false
                       });
                     case 23:
-                      return _context270.a(2);
+                      return _context272.a(2);
                   }
-                }, _callee270, null, [[9, 17, 18, 19]]);
+                }, _callee272, null, [[9, 17, 18, 19]]);
               });
             case 1:
               if (!(dirty || disposed)) {
-                _context271.n = 5;
+                _context273.n = 5;
                 break;
               }
-              return _context271.d(_regeneratorValues(_loop0()), 2);
+              return _context273.d(_regeneratorValues(_loop0()), 2);
             case 2:
-              _ret2 = _context271.v;
+              _ret2 = _context273.v;
               if (!(_ret2 === 0)) {
-                _context271.n = 3;
+                _context273.n = 3;
                 break;
               }
-              return _context271.a(3, 1);
+              return _context273.a(3, 1);
             case 3:
               if (!_ret2) {
-                _context271.n = 4;
+                _context273.n = 4;
                 break;
               }
-              return _context271.a(2, _ret2.v);
+              return _context273.a(2, _ret2.v);
             case 4:
-              _context271.n = 1;
+              _context273.n = 1;
               break;
             case 5:
-              _context271.n = 10;
+              _context273.n = 10;
               break;
             case 6:
-              _context271.p = 6;
-              _t185 = _context271.v;
+              _context273.p = 6;
+              _t190 = _context273.v;
               if (!disposed && attemptedGeneration === state.value.generation) state.value = __spreadProps(__spreadValues({}, state.value), {
                 id: null,
                 pending: false,
-                error: _t185 instanceof Error ? _t185.message : String(_t185)
+                error: _t190 instanceof Error ? _t190.message : String(_t190)
               });
-              _context271.p = 7;
-              _context271.n = 8;
+              _context273.p = 7;
+              _context273.n = 8;
               return release();
             case 8:
-              _context271.n = 10;
+              _context273.n = 10;
               break;
             case 9:
-              _context271.p = 9;
-              _t186 = _context271.v;
+              _context273.p = 9;
+              _t191 = _context273.v;
             case 10:
-              return _context271.a(2);
+              return _context273.a(2);
           }
-        }, _callee271, null, [[7, 9], [0, 6]]);
+        }, _callee273, null, [[7, 9], [0, 6]]);
       })))().finally(() => {
         task = null;
         if (!disposed && dirty && !state.value.error) void run();
@@ -26070,10 +26217,10 @@ var TwilightPortableCore = function (exports) {
     /** Core-only rows, for document export. Public clients always use query(). */
     records(query2, signal) {
       if (this.stopped) return Promise.reject(new Error("Playlist views are shutting down"));
-      var work = this.tail.catch(() => void 0).then(() => __async$9(this, null, /*#__PURE__*/_regenerator().m(function _callee272() {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, playlist, owner, revision2, fence, page2, library, state, request, _t187;
-        return _regenerator().w(function (_context272) {
-          while (1) switch (_context272.p = _context272.n) {
+      var work = this.tail.catch(() => void 0).then(() => __async$9(this, null, /*#__PURE__*/_regenerator().m(function _callee274() {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, playlist, owner, revision2, fence, page2, library, state, request, _t192;
+        return _regenerator().w(function (_context274) {
+          while (1) switch (_context274.p = _context274.n) {
             case 0:
               signal == null ? void 0 : signal.throwIfAborted();
               playlist = this.options.playlist(query2.id, query2.revision);
@@ -26088,15 +26235,15 @@ var TwilightPortableCore = function (exports) {
               };
               fence();
               if (!this.options.loadJsonLibrary) {
-                _context272.n = 3;
+                _context274.n = 3;
                 break;
               }
-              _context272.n = 1;
+              _context274.n = 1;
               return this.options.loadJsonLibrary();
             case 1:
-              library = _context272.v;
+              library = _context274.v;
               if (!(query2.contentRevision !== void 0 && query2.contentRevision !== library.revision)) {
-                _context272.n = 2;
+                _context274.n = 2;
                 break;
               }
               throw Object.assign(new Error("曲库已变化，请重新读取"), {
@@ -26104,10 +26251,10 @@ var TwilightPortableCore = function (exports) {
               });
             case 2:
               page2 = this.jsonPage(playlist, query2, library);
-              _context272.n = 9;
+              _context274.n = 9;
               break;
             case 3:
-              _context272.n = 4;
+              _context274.n = 4;
               return owner.setPlaylist(playlist, {
                 revision: revision2,
                 versions: this.options.versions.snapshot().tracks.versions,
@@ -26117,7 +26264,7 @@ var TwilightPortableCore = function (exports) {
               fence();
               state = owner.state.value;
               if (!(state.error || !state.id)) {
-                _context272.n = 5;
+                _context274.n = 5;
                 break;
               }
               throw new Error(state.error || "歌单视图尚未就绪");
@@ -26138,41 +26285,41 @@ var TwilightPortableCore = function (exports) {
                   sourceCounts: query2.sourceCounts
                 }
               } : {});
-              _context272.p = 6;
-              _context272.n = 7;
+              _context274.p = 6;
+              _context274.n = 7;
               return this.options.database.queryTracks(request);
             case 7:
-              page2 = _context272.v;
-              _context272.n = 9;
+              page2 = _context274.v;
+              _context274.n = 9;
               break;
             case 8:
-              _context272.p = 8;
-              _t187 = _context272.v;
-              owner.recover(state.id, _t187);
-              throw _t187;
+              _context274.p = 8;
+              _t192 = _context274.v;
+              owner.recover(state.id, _t192);
+              throw _t192;
             case 9:
               fence();
-              return _context272.a(2, {
+              return _context274.a(2, {
                 viewId: (_n = owner.state.value.id) != null ? _n : "",
                 revision: query2.revision,
                 versionsRevision: query2.versionsRevision,
                 page: page2
               });
           }
-        }, _callee272, this, [[6, 8]]);
+        }, _callee274, this, [[6, 8]]);
       })));
       this.tail = work;
       return work;
     }
     collection(playlists, query2, signal) {
-      var work = this.tail.catch(() => void 0).then(() => __async$9(this, null, /*#__PURE__*/_regenerator().m(function _callee273() {
+      var work = this.tail.catch(() => void 0).then(() => __async$9(this, null, /*#__PURE__*/_regenerator().m(function _callee275() {
         var owner, id2, page2;
-        return _regenerator().w(function (_context273) {
-          while (1) switch (_context273.n) {
+        return _regenerator().w(function (_context275) {
+          while (1) switch (_context275.n) {
             case 0:
               signal == null ? void 0 : signal.throwIfAborted();
               if (!(this.options.versions.getRevision() !== query2.versionsRevision)) {
-                _context273.n = 1;
+                _context275.n = 1;
                 break;
               }
               throw Object.assign(new Error("录音版本偏好已变化，请重新读取"), {
@@ -26180,7 +26327,7 @@ var TwilightPortableCore = function (exports) {
               });
             case 1:
               owner = this.owner(`catalog:${!!query2.aggregate}`);
-              _context273.n = 2;
+              _context275.n = 2;
               return owner.setCatalog(playlists, {
                 revision: query2.versionsRevision,
                 versions: this.options.versions.snapshot().tracks.versions,
@@ -26189,27 +26336,27 @@ var TwilightPortableCore = function (exports) {
             case 2:
               id2 = owner.state.value.id;
               if (!(!id2 || owner.state.value.error)) {
-                _context273.n = 3;
+                _context275.n = 3;
                 break;
               }
               throw new Error(owner.state.value.error || "歌单目录尚未就绪");
             case 3:
               if (this.options.database.queryCollections) {
-                _context273.n = 4;
+                _context275.n = 4;
                 break;
               }
               throw new Error("曲库目录查询不可用");
             case 4:
-              _context273.n = 5;
+              _context275.n = 5;
               return this.options.database.queryCollections("playlists", __spreadProps(__spreadValues({}, query2.query), {
                 playlistView: id2
               }));
             case 5:
-              page2 = _context273.v;
+              page2 = _context275.v;
               signal == null ? void 0 : signal.throwIfAborted();
-              return _context273.a(2, page2);
+              return _context275.a(2, page2);
           }
-        }, _callee273, this);
+        }, _callee275, this);
       })));
       this.tail = work;
       return work;
@@ -26347,22 +26494,22 @@ var TwilightPortableCore = function (exports) {
       } : {});
     }
     shutdown() {
-      return __async$9(this, null, /*#__PURE__*/_regenerator().m(function _callee274() {
-        return _regenerator().w(function (_context274) {
-          while (1) switch (_context274.n) {
+      return __async$9(this, null, /*#__PURE__*/_regenerator().m(function _callee276() {
+        return _regenerator().w(function (_context276) {
+          while (1) switch (_context276.n) {
             case 0:
               this.stopped = true;
-              _context274.n = 1;
+              _context276.n = 1;
               return this.tail.catch(() => void 0);
             case 1:
-              _context274.n = 2;
+              _context276.n = 2;
               return Promise.all([...this.owners.values()].map(owner => owner.dispose()));
             case 2:
               this.owners.clear();
             case 3:
-              return _context274.a(2);
+              return _context276.a(2);
           }
-        }, _callee274, this);
+        }, _callee276, this);
       }));
     }
   }
@@ -26467,17 +26614,17 @@ var TwilightPortableCore = function (exports) {
         runtime: __spreadProps(__spreadValues({}, options.runtime), {
           repository: {
             load: () => options.runtime.repository.load(),
-            save: (data, revision2) => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee275() {
+            save: (data, revision2) => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee277() {
               var saved;
-              return _regenerator().w(function (_context275) {
-                while (1) switch (_context275.n) {
+              return _regenerator().w(function (_context277) {
+                while (1) switch (_context277.n) {
                   case 0:
-                    _context275.n = 1;
+                    _context277.n = 1;
                     return options.runtime.repository.save(data, revision2);
                   case 1:
-                    saved = _context275.v;
+                    saved = _context277.v;
                     if (isVersionedDataEnvelope(saved, value => Array.isArray(value))) {
-                      _context275.n = 2;
+                      _context277.n = 2;
                       break;
                     }
                     throw new Error("Playlist repository did not acknowledge its durable revision");
@@ -26485,9 +26632,9 @@ var TwilightPortableCore = function (exports) {
                     this.committed = structuredClone(saved.data);
                     this.revision = saved.revision;
                     options.changed();
-                    return _context275.a(2, saved);
+                    return _context277.a(2, saved);
                 }
-              }, _callee275, this);
+              }, _callee277, this);
             }))
           }
         }),
@@ -26497,28 +26644,28 @@ var TwilightPortableCore = function (exports) {
         getTracksRevision: () => 0,
         playlistPersistenceStatus: this.persistence,
         playlistPersistenceNotice: this.notice,
-        readTrackPresence: ids => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee276() {
+        readTrackPresence: ids => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee278() {
           var present, offset, page2, _iterator97, _step97, track;
-          return _regenerator().w(function (_context276) {
-            while (1) switch (_context276.n) {
+          return _regenerator().w(function (_context278) {
+            while (1) switch (_context278.n) {
               case 0:
                 if (!options.loadJsonLibrary) {
-                  _context276.n = 1;
+                  _context278.n = 1;
                   break;
                 }
-                return _context276.a(2, null);
+                return _context278.a(2, null);
               case 1:
                 present = /* @__PURE__ */new Set();
                 offset = 0;
               case 2:
                 if (!(offset < ids.length)) {
-                  _context276.n = 5;
+                  _context278.n = 5;
                   break;
                 }
-                _context276.n = 3;
+                _context278.n = 3;
                 return options.database.getTracksByIds(ids.slice(offset, offset + 200));
               case 3:
-                page2 = _context276.v;
+                page2 = _context278.v;
                 _iterator97 = _createForOfIteratorHelper(page2.tracks);
                 try {
                   for (_iterator97.s(); !(_step97 = _iterator97.n()).done;) {
@@ -26532,12 +26679,12 @@ var TwilightPortableCore = function (exports) {
                 }
               case 4:
                 offset += 200;
-                _context276.n = 2;
+                _context278.n = 2;
                 break;
               case 5:
-                return _context276.a(2, present);
+                return _context278.a(2, present);
             }
-          }, _callee276);
+          }, _callee278);
         })),
         findRelocationsInFolder: options.findRelocationsInFolder,
         resolveImportPaths: paths => options.loadJsonLibrary ? Promise.resolve(null) : resolveLibraryPlaylistImportPaths(paths, options.database)
@@ -26547,414 +26694,414 @@ var TwilightPortableCore = function (exports) {
       return this.revision;
     }
     favorites(revision2, tracks2) {
-      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee277() {
+      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee279() {
         var _a, _b, states;
-        return _regenerator().w(function (_context277) {
-          while (1) switch (_context277.n) {
+        return _regenerator().w(function (_context279) {
+          while (1) switch (_context279.n) {
             case 0:
-              _context277.n = 1;
+              _context279.n = 1;
               return this.tail.catch(() => void 0);
             case 1:
               this.fence(revision2);
-              _context277.n = 2;
+              _context279.n = 2;
               return (_b = (_a = this.options).preferencesTrackStates) == null ? void 0 : _b.call(_a, tracks2);
             case 2:
-              states = _context277.v;
+              states = _context279.v;
               this.fence(revision2);
-              return _context277.a(2, {
+              return _context279.a(2, {
                 revision: revision2,
                 contains: tracks2.map((track, index) => (states == null ? void 0 : states[index]) == null ? this.controller.isFavoriteTrack(track) : states[index] === "favorite")
               });
           }
-        }, _callee277, this);
+        }, _callee279, this);
       }));
     }
     sourceTracks() {
       var _this3 = this;
-      return /*#__PURE__*/_regenerator().m(function _callee278() {
-        var _a, _b, _c, _iterator98, _step98, playlist, _iterator99, _step99, entry, _t188, _t189;
-        return _regenerator().w(function (_context278) {
-          while (1) switch (_context278.p = _context278.n) {
+      return /*#__PURE__*/_regenerator().m(function _callee280() {
+        var _a, _b, _c, _iterator98, _step98, playlist, _iterator99, _step99, entry, _t193, _t194;
+        return _regenerator().w(function (_context280) {
+          while (1) switch (_context280.p = _context280.n) {
             case 0:
               _iterator98 = _createForOfIteratorHelper(_this3.committed);
-              _context278.p = 1;
+              _context280.p = 1;
               _iterator98.s();
             case 2:
               if ((_step98 = _iterator98.n()).done) {
-                _context278.n = 12;
+                _context280.n = 12;
                 break;
               }
               playlist = _step98.value;
-              return _context278.d(_regeneratorValues(__yieldStar(__yieldStar2(Object.values((_a = playlist.trackSnapshots) != null ? _a : {})))), 3);
+              return _context280.d(_regeneratorValues(__yieldStar(__yieldStar2(Object.values((_a = playlist.trackSnapshots) != null ? _a : {})))), 3);
             case 3:
               _iterator99 = _createForOfIteratorHelper((_c = (_b = playlist.imported) == null ? void 0 : _b.entries) != null ? _c : []);
-              _context278.p = 4;
+              _context280.p = 4;
               _iterator99.s();
             case 5:
               if ((_step99 = _iterator99.n()).done) {
-                _context278.n = 8;
+                _context280.n = 8;
                 break;
               }
               entry = _step99.value;
               if (!entry.manualBinding) {
-                _context278.n = 6;
+                _context280.n = 6;
                 break;
               }
-              _context278.n = 6;
+              _context280.n = 6;
               return entry.manualBinding;
             case 6:
               if (!entry.resolution.track) {
-                _context278.n = 7;
+                _context280.n = 7;
                 break;
               }
-              _context278.n = 7;
+              _context280.n = 7;
               return entry.resolution.track;
             case 7:
-              _context278.n = 5;
+              _context280.n = 5;
               break;
             case 8:
-              _context278.n = 10;
+              _context280.n = 10;
               break;
             case 9:
-              _context278.p = 9;
-              _t188 = _context278.v;
-              _iterator99.e(_t188);
+              _context280.p = 9;
+              _t193 = _context280.v;
+              _iterator99.e(_t193);
             case 10:
-              _context278.p = 10;
+              _context280.p = 10;
               _iterator99.f();
-              return _context278.f(10);
+              return _context280.f(10);
             case 11:
-              _context278.n = 2;
+              _context280.n = 2;
               break;
             case 12:
-              _context278.n = 14;
+              _context280.n = 14;
               break;
             case 13:
-              _context278.p = 13;
-              _t189 = _context278.v;
-              _iterator98.e(_t189);
+              _context280.p = 13;
+              _t194 = _context280.v;
+              _iterator98.e(_t194);
             case 14:
-              _context278.p = 14;
+              _context280.p = 14;
               _iterator98.f();
-              return _context278.f(14);
+              return _context280.f(14);
             case 15:
-              return _context278.a(2);
+              return _context280.a(2);
           }
-        }, _callee278, null, [[4, 9, 10, 11], [1, 13, 14, 15]]);
+        }, _callee280, null, [[4, 9, 10, 11], [1, 13, 14, 15]]);
       })();
     }
     /** Membership differs from the version picker's complete cached source list. */
     librarySourceTracks() {
       var _this4 = this;
-      return /*#__PURE__*/_regenerator().m(function _callee279() {
-        var _a, _b, _iterator100, _step100, playlist, _iterator101, _step101, entry, track, _iterator102, _step102, id2, _track3, _t190, _t191, _t192;
-        return _regenerator().w(function (_context279) {
-          while (1) switch (_context279.p = _context279.n) {
+      return /*#__PURE__*/_regenerator().m(function _callee281() {
+        var _a, _b, _iterator100, _step100, playlist, _iterator101, _step101, entry, track, _iterator102, _step102, id2, _track3, _t195, _t196, _t197;
+        return _regenerator().w(function (_context281) {
+          while (1) switch (_context281.p = _context281.n) {
             case 0:
               _iterator100 = _createForOfIteratorHelper(_this4.committed);
-              _context279.p = 1;
+              _context281.p = 1;
               _iterator100.s();
             case 2:
               if ((_step100 = _iterator100.n()).done) {
-                _context279.n = 18;
+                _context281.n = 18;
                 break;
               }
               playlist = _step100.value;
               if (!playlist.imported) {
-                _context279.n = 10;
+                _context281.n = 10;
                 break;
               }
               _iterator101 = _createForOfIteratorHelper(playlist.imported.entries);
-              _context279.p = 3;
+              _context281.p = 3;
               _iterator101.s();
             case 4:
               if ((_step101 = _iterator101.n()).done) {
-                _context279.n = 6;
+                _context281.n = 6;
                 break;
               }
               entry = _step101.value;
               track = (_a = entry.manualBinding) != null ? _a : entry.resolution.track;
               if (!track) {
-                _context279.n = 5;
+                _context281.n = 5;
                 break;
               }
-              _context279.n = 5;
+              _context281.n = 5;
               return track;
             case 5:
-              _context279.n = 4;
+              _context281.n = 4;
               break;
             case 6:
-              _context279.n = 8;
+              _context281.n = 8;
               break;
             case 7:
-              _context279.p = 7;
-              _t190 = _context279.v;
-              _iterator101.e(_t190);
+              _context281.p = 7;
+              _t195 = _context281.v;
+              _iterator101.e(_t195);
             case 8:
-              _context279.p = 8;
+              _context281.p = 8;
               _iterator101.f();
-              return _context279.f(8);
+              return _context281.f(8);
             case 9:
-              _context279.n = 17;
+              _context281.n = 17;
               break;
             case 10:
               _iterator102 = _createForOfIteratorHelper(playlist.trackIds);
-              _context279.p = 11;
+              _context281.p = 11;
               _iterator102.s();
             case 12:
               if ((_step102 = _iterator102.n()).done) {
-                _context279.n = 14;
+                _context281.n = 14;
                 break;
               }
               id2 = _step102.value;
               _track3 = (_b = playlist.trackSnapshots) == null ? void 0 : _b[id2];
               if (!_track3) {
-                _context279.n = 13;
+                _context281.n = 13;
                 break;
               }
-              _context279.n = 13;
+              _context281.n = 13;
               return _track3;
             case 13:
-              _context279.n = 12;
+              _context281.n = 12;
               break;
             case 14:
-              _context279.n = 16;
+              _context281.n = 16;
               break;
             case 15:
-              _context279.p = 15;
-              _t191 = _context279.v;
-              _iterator102.e(_t191);
+              _context281.p = 15;
+              _t196 = _context281.v;
+              _iterator102.e(_t196);
             case 16:
-              _context279.p = 16;
+              _context281.p = 16;
               _iterator102.f();
-              return _context279.f(16);
+              return _context281.f(16);
             case 17:
-              _context279.n = 2;
+              _context281.n = 2;
               break;
             case 18:
-              _context279.n = 20;
+              _context281.n = 20;
               break;
             case 19:
-              _context279.p = 19;
-              _t192 = _context279.v;
-              _iterator100.e(_t192);
+              _context281.p = 19;
+              _t197 = _context281.v;
+              _iterator100.e(_t197);
             case 20:
-              _context279.p = 20;
+              _context281.p = 20;
               _iterator100.f();
-              return _context279.f(20);
+              return _context281.f(20);
             case 21:
-              return _context279.a(2);
+              return _context281.a(2);
           }
-        }, _callee279, null, [[11, 15, 16, 17], [3, 7, 8, 9], [1, 19, 20, 21]]);
+        }, _callee281, null, [[11, 15, 16, 17], [3, 7, 8, 9], [1, 19, 20, 21]]);
       })();
     }
     saveTrackPages(name, revision2, produce, signal) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee280() {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee282() {
         var id2;
-        return _regenerator().w(function (_context280) {
-          while (1) switch (_context280.n) {
+        return _regenerator().w(function (_context282) {
+          while (1) switch (_context282.n) {
             case 0:
               signal == null ? void 0 : signal.throwIfAborted();
               this.fence(revision2);
-              _context280.n = 1;
+              _context282.n = 1;
               return this.controller.createPlaylistWithTrackPages(name, produce, signal);
             case 1:
-              id2 = _context280.v;
-              _context280.n = 2;
+              id2 = _context282.v;
+              _context282.n = 2;
               return this.flush();
             case 2:
-              return _context280.a(2, {
+              return _context282.a(2, {
                 id: id2,
                 revision: this.getRevision()
               });
           }
-        }, _callee280, this);
+        }, _callee282, this);
       })));
     }
     editPages(revision2, edit2, produce, signal) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee285() {
-        var c, exactFavoriteIds, tracks2, ids, result, _t193;
-        return _regenerator().w(function (_context285) {
-          while (1) switch (_context285.n) {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee287() {
+        var c, exactFavoriteIds, tracks2, ids, result, _t198;
+        return _regenerator().w(function (_context287) {
+          while (1) switch (_context287.n) {
             case 0:
               signal == null ? void 0 : signal.throwIfAborted();
               this.fence(revision2);
               c = this.controller;
               exactFavoriteIds = /* @__PURE__ */new Set();
-              tracks2 = append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee282() {
-                return _regenerator().w(function (_context282) {
-                  while (1) switch (_context282.n) {
+              tracks2 = append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee284() {
+                return _regenerator().w(function (_context284) {
+                  while (1) switch (_context284.n) {
                     case 0:
-                      return _context282.a(2, produce(items => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee281() {
+                      return _context284.a(2, produce(items => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee283() {
                         var _a, _b, resolved, states;
-                        return _regenerator().w(function (_context281) {
-                          while (1) switch (_context281.n) {
+                        return _regenerator().w(function (_context283) {
+                          while (1) switch (_context283.n) {
                             case 0:
                               resolved = items.map(item => {
                                 if (!item.track) throw new Error("歌单添加操作缺少曲目身份");
                                 return item.track;
                               });
                               if (!(edit2.kind === "favorite" && edit2.favorite)) {
-                                _context281.n = 2;
+                                _context283.n = 2;
                                 break;
                               }
-                              _context281.n = 1;
+                              _context283.n = 1;
                               return (_b = (_a = this.options).preferencesTrackStates) == null ? void 0 : _b.call(_a, resolved);
                             case 1:
-                              states = _context281.v;
+                              states = _context283.v;
                               resolved.forEach((track, i) => {
                                 if ((states == null ? void 0 : states[i]) === "ban" || (states == null ? void 0 : states[i]) === "none") exactFavoriteIds.add(track.id);
                               });
                             case 2:
-                              _context281.n = 3;
+                              _context283.n = 3;
                               return append(resolved);
                             case 3:
-                              return _context281.a(2);
+                              return _context283.a(2);
                           }
-                        }, _callee281, this);
-                      }))));
-                  }
-                }, _callee282, this);
-              }));
-              ids = append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee284() {
-                return _regenerator().w(function (_context284) {
-                  while (1) switch (_context284.n) {
-                    case 0:
-                      return _context284.a(2, produce(items => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee283() {
-                        return _regenerator().w(function (_context283) {
-                          while (1) switch (_context283.n) {
-                            case 0:
-                              return _context283.a(2, append(items.map(item => item.id)));
-                          }
-                        }, _callee283);
+                        }, _callee283, this);
                       }))));
                   }
                 }, _callee284, this);
               }));
-              _t193 = edit2.kind;
-              _context285.n = _t193 === "create" ? 1 : _t193 === "add" ? 3 : _t193 === "remove" ? 5 : _t193 === "move" ? 7 : _t193 === "reorder" ? 9 : _t193 === "favorite" ? 11 : 13;
+              ids = append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee286() {
+                return _regenerator().w(function (_context286) {
+                  while (1) switch (_context286.n) {
+                    case 0:
+                      return _context286.a(2, produce(items => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee285() {
+                        return _regenerator().w(function (_context285) {
+                          while (1) switch (_context285.n) {
+                            case 0:
+                              return _context285.a(2, append(items.map(item => item.id)));
+                          }
+                        }, _callee285);
+                      }))));
+                  }
+                }, _callee286, this);
+              }));
+              _t198 = edit2.kind;
+              _context287.n = _t198 === "create" ? 1 : _t198 === "add" ? 3 : _t198 === "remove" ? 5 : _t198 === "move" ? 7 : _t198 === "reorder" ? 9 : _t198 === "favorite" ? 11 : 13;
               break;
             case 1:
-              _context285.n = 2;
+              _context287.n = 2;
               return edit2.aggregate ? c.createAggregatePlaylistWithTrackPages(edit2.name, tracks2, signal) : c.createPlaylistWithTrackPages(edit2.name, tracks2, signal);
             case 2:
-              result = _context285.v;
-              return _context285.a(3, 13);
+              result = _context287.v;
+              return _context287.a(3, 13);
             case 3:
-              _context285.n = 4;
+              _context287.n = 4;
               return edit2.external ? c.addTrackPagesToExternalPlaylistById(edit2.id, tracks2, signal) : c.addTrackPagesToPlaylistById(edit2.id, tracks2, signal);
             case 4:
-              result = _context285.v;
-              return _context285.a(3, 13);
+              result = _context287.v;
+              return _context287.a(3, 13);
             case 5:
-              _context285.n = 6;
+              _context287.n = 6;
               return c.removeTrackIdPagesFromPlaylistById(edit2.id, ids, signal);
             case 6:
-              result = _context285.v;
-              return _context285.a(3, 13);
+              result = _context287.v;
+              return _context287.a(3, 13);
             case 7:
-              _context285.n = 8;
+              _context287.n = 8;
               return c.movePlaylistMemberPagesById(edit2.id, edit2.targetId, produce, signal);
             case 8:
-              result = _context285.v;
-              return _context285.a(3, 13);
+              result = _context287.v;
+              return _context287.a(3, 13);
             case 9:
-              _context285.n = 10;
+              _context287.n = 10;
               return c.reorderPlaylistTrackIdPagesById(edit2.id, ids, edit2.target, signal);
             case 10:
-              result = _context285.v;
-              return _context285.a(3, 13);
+              result = _context287.v;
+              return _context287.a(3, 13);
             case 11:
-              _context285.n = 12;
+              _context287.n = 12;
               return c.setFavoriteTrackPages(tracks2, edit2.favorite, signal, exactFavoriteIds);
             case 12:
-              result = _context285.v;
-              return _context285.a(3, 13);
+              result = _context287.v;
+              return _context287.a(3, 13);
             case 13:
-              _context285.n = 14;
+              _context287.n = 14;
               return this.flush();
             case 14:
-              return _context285.a(2, {
+              return _context287.a(2, {
                 revision: this.revision,
                 result
               });
           }
-        }, _callee285, this);
+        }, _callee287, this);
       })));
     }
     isFavorite(track) {
-      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee286() {
-        var _a, _b, _c, state, _t194, _t195;
-        return _regenerator().w(function (_context286) {
-          while (1) switch (_context286.n) {
+      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee288() {
+        var _a, _b, _c, state, _t199, _t200;
+        return _regenerator().w(function (_context288) {
+          while (1) switch (_context288.n) {
             case 0:
-              _context286.n = 1;
+              _context288.n = 1;
               return this.tail.catch(() => void 0);
             case 1:
-              _context286.n = 2;
+              _context288.n = 2;
               return (_b = (_a = this.options).preferencesTrackStates) == null ? void 0 : _b.call(_a, [track]);
             case 2:
-              _t194 = _c = _context286.v;
-              if (!(_t194 == null)) {
-                _context286.n = 3;
+              _t199 = _c = _context288.v;
+              if (!(_t199 == null)) {
+                _context288.n = 3;
                 break;
               }
-              _t195 = void 0;
-              _context286.n = 4;
+              _t200 = void 0;
+              _context288.n = 4;
               break;
             case 3:
-              _t195 = _c[0];
+              _t200 = _c[0];
             case 4:
-              state = _t195;
-              return _context286.a(2, state == null ? this.controller.isFavoriteTrack(track) : state === "favorite");
+              state = _t200;
+              return _context288.a(2, state == null ? this.controller.isFavoriteTrack(track) : state === "favorite");
           }
-        }, _callee286, this);
+        }, _callee288, this);
       }));
     }
     toggleFavorite(track, assertCurrent) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee287() {
-        var _a, _b, _c, state, liked, _t196, _t197;
-        return _regenerator().w(function (_context287) {
-          while (1) switch (_context287.n) {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee289() {
+        var _a, _b, _c, state, liked, _t201, _t202;
+        return _regenerator().w(function (_context289) {
+          while (1) switch (_context289.n) {
             case 0:
               assertCurrent();
-              _context287.n = 1;
+              _context289.n = 1;
               return (_b = (_a = this.options).preferencesTrackStates) == null ? void 0 : _b.call(_a, [track]);
             case 1:
-              _t196 = _c = _context287.v;
-              if (!(_t196 == null)) {
-                _context287.n = 2;
+              _t201 = _c = _context289.v;
+              if (!(_t201 == null)) {
+                _context289.n = 2;
                 break;
               }
-              _t197 = void 0;
-              _context287.n = 3;
+              _t202 = void 0;
+              _context289.n = 3;
               break;
             case 2:
-              _t197 = _c[0];
+              _t202 = _c[0];
             case 3:
-              state = _t197;
+              state = _t202;
               assertCurrent();
               liked = !(state == null ? this.controller.isFavoriteTrack(track) : state === "favorite");
               this.controller.setFavoriteTracks([track], liked, liked && state != null ? /* @__PURE__ */new Set([track.id]) : void 0);
-              _context287.n = 4;
+              _context289.n = 4;
               return this.flush();
             case 4:
-              return _context287.a(2, liked);
+              return _context289.a(2, liked);
           }
-        }, _callee287, this);
+        }, _callee289, this);
       })));
     }
     repairSnapshot() {
       return this.repairStatus ? __spreadValues({}, this.repairStatus) : null;
     }
     startRepair(id2, revision2, folder, signal) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee289() {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee291() {
         var status;
-        return _regenerator().w(function (_context289) {
-          while (1) switch (_context289.n) {
+        return _regenerator().w(function (_context291) {
+          while (1) switch (_context291.n) {
             case 0:
               if (!this.stopped) {
-                _context289.n = 1;
+                _context291.n = 1;
                 break;
               }
               throw new Error("Playlists are shutting down");
@@ -26962,7 +27109,7 @@ var TwilightPortableCore = function (exports) {
               signal == null ? void 0 : signal.throwIfAborted();
               this.fence(revision2);
               if (!this.repairWork) {
-                _context289.n = 2;
+                _context291.n = 2;
                 break;
               }
               throw Object.assign(new Error("A playlist repair is already running"), {
@@ -26979,11 +27126,11 @@ var TwilightPortableCore = function (exports) {
                 error: null
               };
               this.repairStatus = status;
-              this.repairWork = this.controller.repairPlaylistMissingTracksAsync(id2, folder).then(result => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee288() {
-                return _regenerator().w(function (_context288) {
-                  while (1) switch (_context288.n) {
+              this.repairWork = this.controller.repairPlaylistMissingTracksAsync(id2, folder).then(result => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee290() {
+                return _regenerator().w(function (_context290) {
+                  while (1) switch (_context290.n) {
                     case 0:
-                      _context288.n = 1;
+                      _context290.n = 1;
                       return this.flush();
                     case 1:
                       status.state = "completed";
@@ -26991,9 +27138,9 @@ var TwilightPortableCore = function (exports) {
                       status.unresolved = result.unresolvedTrackIds.length;
                       status.ambiguous = result.ambiguousTrackIds.length;
                     case 2:
-                      return _context288.a(2);
+                      return _context290.a(2);
                   }
-                }, _callee288, this);
+                }, _callee290, this);
               }))).catch(error => {
                 status.state = "failed";
                 status.error = projectCoreError(error);
@@ -27002,35 +27149,35 @@ var TwilightPortableCore = function (exports) {
                 this.options.changed();
               });
               this.options.changed();
-              return _context289.a(2, __spreadValues({}, status));
+              return _context291.a(2, __spreadValues({}, status));
           }
-        }, _callee289, this);
+        }, _callee291, this);
       })));
     }
     /** Internal source-repair commit; the playback owner supplies a resolved
      * trusted identity. This is not a renderer-uploaded replacement command. */
     replaceTrackReference(oldTrackId, replacement, revision2, signal) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee290() {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee292() {
         var count;
-        return _regenerator().w(function (_context290) {
-          while (1) switch (_context290.n) {
+        return _regenerator().w(function (_context292) {
+          while (1) switch (_context292.n) {
             case 0:
               signal == null ? void 0 : signal.throwIfAborted();
               if (revision2 !== void 0) this.fence(revision2);
               count = this.controller.replacePlaylistTrackReference(oldTrackId, replacement);
               if (!count) {
-                _context290.n = 1;
+                _context292.n = 1;
                 break;
               }
-              _context290.n = 1;
+              _context292.n = 1;
               return this.flush();
             case 1:
-              return _context290.a(2, {
+              return _context292.a(2, {
                 revision: this.getRevision(),
                 count
               });
           }
-        }, _callee290, this);
+        }, _callee292, this);
       })));
     }
     view(query2, signal) {
@@ -27051,35 +27198,35 @@ var TwilightPortableCore = function (exports) {
       return (_a = this.committed.find(p => p.id === id2)) == null ? void 0 : _a.imported;
     }
     applyImportResolutions(id2, generation, updates) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee291() {
-        return _regenerator().w(function (_context291) {
-          while (1) switch (_context291.n) {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee293() {
+        return _regenerator().w(function (_context293) {
+          while (1) switch (_context293.n) {
             case 0:
               this.controller.applyExternalResolutions(id2, generation, updates);
-              _context291.n = 1;
+              _context293.n = 1;
               return this.flush();
             case 1:
-              return _context291.a(2);
+              return _context293.a(2);
           }
-        }, _callee291, this);
+        }, _callee293, this);
       })));
     }
     savePreview(preview, command, signal) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee292() {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee294() {
         var c, id2, target, imported, saved, buckets, _iterator103, _step103, entry, key, bucket, _iterator104, _step104, _entry, _bucket, matched;
-        return _regenerator().w(function (_context292) {
-          while (1) switch (_context292.n) {
+        return _regenerator().w(function (_context294) {
+          while (1) switch (_context294.n) {
             case 0:
               signal == null ? void 0 : signal.throwIfAborted();
               this.fence(command.playlistsRevision);
               c = this.controller;
               if (!command.target) {
-                _context292.n = 2;
+                _context294.n = 2;
                 break;
               }
               target = this.readExternal(command.target.id);
               if (!((target == null ? void 0 : target.generation) !== command.target.generation)) {
-                _context292.n = 1;
+                _context294.n = 1;
                 break;
               }
               throw Object.assign(new Error("歌单在预览期间被修改，请重新读取后更新"), {
@@ -27126,74 +27273,74 @@ var TwilightPortableCore = function (exports) {
               } finally {
                 _iterator104.f();
               }
-              _context292.n = 3;
+              _context294.n = 3;
               break;
             case 2:
               id2 = c.adoptExternalPlaylist(preview);
             case 3:
-              _context292.n = 4;
+              _context294.n = 4;
               return this.flush();
             case 4:
-              return _context292.a(2, {
+              return _context294.a(2, {
                 id: id2,
                 revision: this.getRevision()
               });
           }
-        }, _callee292, this);
+        }, _callee294, this);
       })));
     }
     initialize() {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee293() {
-        return _regenerator().w(function (_context293) {
-          while (1) switch (_context293.n) {
-            case 0:
-              _context293.n = 1;
-              return this.controller.loadPlaylists();
-            case 1:
-              _context293.n = 2;
-              return this.flush();
-            case 2:
-              this.committed = this.controller.clonePlaylistSnapshot();
-              this.revision = this.controller.getRevision();
-            case 3:
-              return _context293.a(2);
-          }
-        }, _callee293, this);
-      })));
-    }
-    /** Public read dispatch waits for a just-published preference refresh before using cached pages. */
-    waitForPending() {
-      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee294() {
-        return _regenerator().w(function (_context294) {
-          while (1) switch (_context294.n) {
-            case 0:
-              _context294.n = 1;
-              return this.tail;
-            case 1:
-              return _context294.a(2);
-          }
-        }, _callee294, this);
-      }));
-    }
-    /** A preference/identity transaction can change the default list outside a playlist gesture. */
-    refreshPreferences() {
       return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee295() {
         return _regenerator().w(function (_context295) {
           while (1) switch (_context295.n) {
             case 0:
               _context295.n = 1;
-              return this.flush();
+              return this.controller.loadPlaylists();
             case 1:
               _context295.n = 2;
+              return this.flush();
+            case 2:
+              this.committed = this.controller.clonePlaylistSnapshot();
+              this.revision = this.controller.getRevision();
+            case 3:
+              return _context295.a(2);
+          }
+        }, _callee295, this);
+      })));
+    }
+    /** Public read dispatch waits for a just-published preference refresh before using cached pages. */
+    waitForPending() {
+      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee296() {
+        return _regenerator().w(function (_context296) {
+          while (1) switch (_context296.n) {
+            case 0:
+              _context296.n = 1;
+              return this.tail;
+            case 1:
+              return _context296.a(2);
+          }
+        }, _callee296, this);
+      }));
+    }
+    /** A preference/identity transaction can change the default list outside a playlist gesture. */
+    refreshPreferences() {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee297() {
+        return _regenerator().w(function (_context297) {
+          while (1) switch (_context297.n) {
+            case 0:
+              _context297.n = 1;
+              return this.flush();
+            case 1:
+              _context297.n = 2;
               return this.controller.loadPlaylists();
             case 2:
               this.committed = this.controller.clonePlaylistSnapshot();
               this.revision = this.controller.getRevision();
               this.options.changed();
             case 3:
-              return _context295.a(2);
+              return _context297.a(2);
           }
-        }, _callee295, this);
+        }, _callee297, this);
       })));
     }
     fence(revision2) {
@@ -27244,15 +27391,15 @@ var TwilightPortableCore = function (exports) {
       };
     }
     members(query2) {
-      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee296() {
+      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee298() {
         var _a, _b, _c, _d, playlist, limit, offset, anchorIndex2, page2, search, entries, sort, anchorIndex;
-        return _regenerator().w(function (_context296) {
-          while (1) switch (_context296.n) {
+        return _regenerator().w(function (_context298) {
+          while (1) switch (_context298.n) {
             case 0:
               this.fence(query2.revision);
               playlist = this.committed.find(playlist2 => playlist2.id === query2.id);
               if (playlist) {
-                _context296.n = 1;
+                _context298.n = 1;
                 break;
               }
               throw new Error("歌单已不存在");
@@ -27260,16 +27407,16 @@ var TwilightPortableCore = function (exports) {
               limit = (_a = query2.limit) != null ? _a : 200;
               offset = (_b = query2.offset) != null ? _b : 0;
               if (playlist.imported) {
-                _context296.n = 3;
+                _context298.n = 3;
                 break;
               }
               anchorIndex2 = query2.anchorId === void 0 ? void 0 : playlist.trackIds.indexOf(query2.anchorId);
               if (anchorIndex2 !== void 0 && anchorIndex2 >= 0) offset = Math.floor(anchorIndex2 / limit) * limit;
-              _context296.n = 2;
+              _context298.n = 2;
               return this.entries(query2.id, query2.revision, offset, limit);
             case 2:
-              page2 = _context296.v;
-              return _context296.a(2, __spreadProps(__spreadValues({}, page2), {
+              page2 = _context298.v;
+              return _context298.a(2, __spreadProps(__spreadValues({}, page2), {
                 anchorIndex: anchorIndex2,
                 items: page2.items.map((entry, index) => __spreadProps(__spreadValues({}, entry), {
                   position: offset + index
@@ -27285,7 +27432,7 @@ var TwilightPortableCore = function (exports) {
               });
               anchorIndex = query2.anchorId === void 0 ? void 0 : entries.findIndex(entry => entry.entryId === query2.anchorId);
               if (anchorIndex !== void 0 && anchorIndex >= 0) offset = Math.floor(anchorIndex / limit) * limit;
-              return _context296.a(2, {
+              return _context298.a(2, {
                 revision: query2.revision,
                 offset,
                 total: entries.length,
@@ -27314,21 +27461,21 @@ var TwilightPortableCore = function (exports) {
                 })
               });
           }
-        }, _callee296, this);
+        }, _callee298, this);
       }));
     }
     exportDocument(id2, revision2, format, signal) {
-      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee297() {
+      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee299() {
         var writer, versionsRevision, offset, total, contentRevision, _yield$this$views$rec, page2, _iterator105, _step105, record2;
-        return _regenerator().w(function (_context297) {
-          while (1) switch (_context297.n) {
+        return _regenerator().w(function (_context299) {
+          while (1) switch (_context299.n) {
             case 0:
               this.fence(revision2);
               writer = createPlaylistDocumentWriter(format);
               versionsRevision = this.options.versions.getRevision();
               offset = 0, total = 1;
             case 1:
-              _context297.n = 2;
+              _context299.n = 2;
               return this.views.records({
                 id: id2,
                 revision: revision2,
@@ -27338,7 +27485,7 @@ var TwilightPortableCore = function (exports) {
                 limit: 200
               }, signal);
             case 2:
-              _yield$this$views$rec = _context297.v;
+              _yield$this$views$rec = _context299.v;
               page2 = _yield$this$views$rec.page;
               contentRevision = page2.revision;
               _iterator105 = _createForOfIteratorHelper(page2.tracks);
@@ -27356,55 +27503,55 @@ var TwilightPortableCore = function (exports) {
               total = page2.total;
             case 3:
               if (offset < total) {
-                _context297.n = 1;
+                _context299.n = 1;
                 break;
               }
             case 4:
               this.fence(revision2);
               if (!(this.options.versions.getRevision() !== versionsRevision)) {
-                _context297.n = 5;
+                _context299.n = 5;
                 break;
               }
               throw Object.assign(new Error("录音版本偏好已变化，请重新导出"), {
                 code: "STALE_REVISION"
               });
             case 5:
-              return _context297.a(2, {
+              return _context299.a(2, {
                 revision: revision2,
                 contents: writer.finish()
               });
           }
-        }, _callee297, this);
+        }, _callee299, this);
       }));
     }
     importDocument(id2, revision2, fileName, contents, signal) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee298() {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee300() {
         var playlist, result;
-        return _regenerator().w(function (_context298) {
-          while (1) switch (_context298.n) {
+        return _regenerator().w(function (_context300) {
+          while (1) switch (_context300.n) {
             case 0:
               signal == null ? void 0 : signal.throwIfAborted();
               this.fence(revision2);
               playlist = this.committed.find(playlist2 => playlist2.id === id2);
               if (playlist) {
-                _context298.n = 1;
+                _context300.n = 1;
                 break;
               }
               throw new Error("歌单已不存在");
             case 1:
-              _context298.n = 2;
+              _context300.n = 2;
               return this.controller.importPlaylistDocumentAsync(playlist.name, fileName, contents);
             case 2:
-              result = _context298.v;
-              _context298.n = 3;
+              result = _context300.v;
+              _context300.n = 3;
               return this.flush();
             case 3:
-              return _context298.a(2, {
+              return _context300.a(2, {
                 revision: this.revision,
                 result
               });
           }
-        }, _callee298, this);
+        }, _callee300, this);
       })));
     }
     searchLocal(query2, limit, offset) {
@@ -27416,15 +27563,15 @@ var TwilightPortableCore = function (exports) {
       };
     }
     entries(id2, revision2, offset = 0, limit = 200) {
-      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee299() {
-        var _a, _b, _c, playlist, configured, ids, local, _iterator106, _step106, entry, _t198, _t199, _t200, _t201, _t202, _t203;
-        return _regenerator().w(function (_context299) {
-          while (1) switch (_context299.n) {
+      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee301() {
+        var _a, _b, _c, playlist, configured, ids, local, _iterator106, _step106, entry, _t203, _t204, _t205, _t206, _t207, _t208;
+        return _regenerator().w(function (_context301) {
+          while (1) switch (_context301.n) {
             case 0:
               this.fence(revision2);
               playlist = this.committed.find(item => item.id === id2);
               if (playlist) {
-                _context299.n = 1;
+                _context301.n = 1;
                 break;
               }
               throw new Error("歌单已不存在");
@@ -27443,43 +27590,43 @@ var TwilightPortableCore = function (exports) {
                 };
               });
               if (playlist.imported) {
-                _context299.n = 8;
+                _context301.n = 8;
                 break;
               }
               ids = configured.map(item => item.id);
               if (!this.options.loadJsonLibrary) {
-                _context299.n = 3;
+                _context301.n = 3;
                 break;
               }
-              _t199 = Map;
-              _context299.n = 2;
+              _t204 = Map;
+              _context301.n = 2;
               return this.options.loadJsonLibrary();
             case 2:
-              _t200 = _context299.v.tracks.map(track => [track.id, track]);
-              _t198 = new _t199(_t200);
-              _context299.n = 7;
+              _t205 = _context301.v.tracks.map(track => [track.id, track]);
+              _t203 = new _t204(_t205);
+              _context301.n = 7;
               break;
             case 3:
-              _t201 = Map;
+              _t206 = Map;
               if (!ids.length) {
-                _context299.n = 5;
+                _context301.n = 5;
                 break;
               }
-              _context299.n = 4;
+              _context301.n = 4;
               return this.options.database.getTracksByIds(ids);
             case 4:
-              _t202 = _context299.v;
-              _context299.n = 6;
+              _t207 = _context301.v;
+              _context301.n = 6;
               break;
             case 5:
-              _t202 = {
+              _t207 = {
                 tracks: []
               };
             case 6:
-              _t203 = _t202.tracks.map(record2 => [record2.id, libraryTrack(record2)]);
-              _t198 = new _t201(_t203);
+              _t208 = _t207.tracks.map(record2 => [record2.id, libraryTrack(record2)]);
+              _t203 = new _t206(_t208);
             case 7:
-              local = _t198;
+              local = _t203;
               _iterator106 = _createForOfIteratorHelper(configured);
               try {
                 for (_iterator106.s(); !(_step106 = _iterator106.n()).done;) {
@@ -27493,7 +27640,7 @@ var TwilightPortableCore = function (exports) {
               }
             case 8:
               this.fence(revision2);
-              return _context299.a(2, structuredClone({
+              return _context301.a(2, structuredClone({
                 revision: revision2,
                 offset,
                 total: (_c = (_b = playlist.imported) == null ? void 0 : _b.entries.length) != null ? _c : playlist.trackIds.length,
@@ -27503,95 +27650,63 @@ var TwilightPortableCore = function (exports) {
                 }))
               }));
           }
-        }, _callee299, this);
+        }, _callee301, this);
       }));
     }
     edit(revision2, edit2, signal) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee303() {
-        var _a, _b, c, result, states, exact, _t204;
-        return _regenerator().w(function (_context303) {
-          while (1) switch (_context303.n) {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee305() {
+        var _a, _b, c, result, states, exact, _t209;
+        return _regenerator().w(function (_context305) {
+          while (1) switch (_context305.n) {
             case 0:
               signal == null ? void 0 : signal.throwIfAborted();
               this.fence(revision2);
               c = this.controller;
-              _t204 = edit2.kind;
-              _context303.n = _t204 === "importCreate" ? 1 : _t204 === "importRefresh" ? 2 : _t204 === "importBind" ? 3 : _t204 === "importRemove" ? 4 : _t204 === "create" ? 5 : _t204 === "rename" ? 6 : _t204 === "copy" ? 7 : _t204 === "delete" ? 8 : _t204 === "cover" ? 9 : _t204 === "pin" ? 10 : _t204 === "hiddenSources" ? 11 : _t204 === "variant" ? 12 : _t204 === "add" ? 13 : _t204 === "remove" ? 14 : _t204 === "reorder" ? 16 : _t204 === "move" ? 18 : _t204 === "favorite" ? 20 : 22;
+              _t209 = edit2.kind;
+              _context305.n = _t209 === "importCreate" ? 1 : _t209 === "importRefresh" ? 2 : _t209 === "importBind" ? 3 : _t209 === "importRemove" ? 4 : _t209 === "create" ? 5 : _t209 === "rename" ? 6 : _t209 === "copy" ? 7 : _t209 === "delete" ? 8 : _t209 === "cover" ? 9 : _t209 === "pin" ? 10 : _t209 === "hiddenSources" ? 11 : _t209 === "variant" ? 12 : _t209 === "add" ? 13 : _t209 === "remove" ? 14 : _t209 === "reorder" ? 16 : _t209 === "move" ? 18 : _t209 === "favorite" ? 20 : 22;
               break;
             case 1:
               result = c.createExternalPlaylist(edit2.document);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 2:
               result = c.refreshExternalPlaylist(edit2.id, edit2.document, edit2.overwrite);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 3:
               result = c.bindExternalEntry(edit2.id, edit2.entryId, edit2.track);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 4:
               result = c.removeExternalEntries(edit2.id, edit2.entryIds);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 5:
               result = edit2.aggregate ? c.createAggregatePlaylist(edit2.name) : c.createPlaylist(edit2.name);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 6:
               result = c.renamePlaylist(edit2.id, edit2.name);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 7:
               result = c.copyPlaylist(edit2.id, edit2.name);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 8:
               result = c.deletePlaylist(edit2.id);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 9:
               result = c.setPlaylistCover(edit2.id, edit2.cover);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 10:
               result = c.setPlaylistPinned(edit2.id, edit2.pinned);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 11:
               result = c.setPlaylistHiddenSources(edit2.id, edit2.sources);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 12:
               result = c.setPlaylistVariantPreference(edit2.id, edit2.anchorId, edit2.source);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 13:
               result = c.addTracksToPlaylistById(edit2.id, edit2.tracks);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 14:
-              _context303.n = 15;
-              return c.removeTrackIdPagesFromPlaylistById(edit2.id, append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee300() {
-                return _regenerator().w(function (_context300) {
-                  while (1) switch (_context300.n) {
-                    case 0:
-                      _context300.n = 1;
-                      return append(edit2.ids);
-                    case 1:
-                      return _context300.a(2);
-                  }
-                }, _callee300);
-              })), signal);
-            case 15:
-              result = _context303.v;
-              return _context303.a(3, 22);
-            case 16:
-              _context303.n = 17;
-              return c.reorderPlaylistTrackIdPagesById(edit2.id, append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee301() {
-                return _regenerator().w(function (_context301) {
-                  while (1) switch (_context301.n) {
-                    case 0:
-                      _context301.n = 1;
-                      return append(edit2.ids);
-                    case 1:
-                      return _context301.a(2);
-                  }
-                }, _callee301);
-              })), edit2.target, signal);
-            case 17:
-              result = _context303.v;
-              return _context303.a(3, 22);
-            case 18:
-              _context303.n = 19;
-              return c.movePlaylistTrackIdPagesById(edit2.id, edit2.targetId, append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee302() {
+              _context305.n = 15;
+              return c.removeTrackIdPagesFromPlaylistById(edit2.id, append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee302() {
                 return _regenerator().w(function (_context302) {
                   while (1) switch (_context302.n) {
                     case 0:
@@ -27602,44 +27717,76 @@ var TwilightPortableCore = function (exports) {
                   }
                 }, _callee302);
               })), signal);
+            case 15:
+              result = _context305.v;
+              return _context305.a(3, 22);
+            case 16:
+              _context305.n = 17;
+              return c.reorderPlaylistTrackIdPagesById(edit2.id, append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee303() {
+                return _regenerator().w(function (_context303) {
+                  while (1) switch (_context303.n) {
+                    case 0:
+                      _context303.n = 1;
+                      return append(edit2.ids);
+                    case 1:
+                      return _context303.a(2);
+                  }
+                }, _callee303);
+              })), edit2.target, signal);
+            case 17:
+              result = _context305.v;
+              return _context305.a(3, 22);
+            case 18:
+              _context305.n = 19;
+              return c.movePlaylistTrackIdPagesById(edit2.id, edit2.targetId, append => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee304() {
+                return _regenerator().w(function (_context304) {
+                  while (1) switch (_context304.n) {
+                    case 0:
+                      _context304.n = 1;
+                      return append(edit2.ids);
+                    case 1:
+                      return _context304.a(2);
+                  }
+                }, _callee304);
+              })), signal);
             case 19:
-              result = _context303.v;
-              return _context303.a(3, 22);
+              result = _context305.v;
+              return _context305.a(3, 22);
             case 20:
-              _context303.n = 21;
+              _context305.n = 21;
               return (_b = (_a = this.options).preferencesTrackStates) == null ? void 0 : _b.call(_a, edit2.tracks);
             case 21:
-              states = _context303.v;
+              states = _context305.v;
               exact = states ? new Set(edit2.tracks.filter((_, i) => states[i] === "ban" || states[i] === "none").map(t => t.id)) : void 0;
               result = c.setFavoriteTracks(edit2.tracks, edit2.favorite, exact);
-              return _context303.a(3, 22);
+              return _context305.a(3, 22);
             case 22:
-              _context303.n = 23;
+              _context305.n = 23;
               return this.flush();
             case 23:
               this.options.changed();
-              return _context303.a(2, {
+              return _context305.a(2, {
                 revision: this.getRevision(),
                 result
               });
           }
-        }, _callee303, this);
+        }, _callee305, this);
       })));
     }
     importFromPlugin(request) {
-      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee304() {
+      return this.enqueue(() => __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee306() {
         var _iterator107, _step107, track, result;
-        return _regenerator().w(function (_context304) {
-          while (1) switch (_context304.p = _context304.n) {
+        return _regenerator().w(function (_context306) {
+          while (1) switch (_context306.p = _context306.n) {
             case 0:
               if (!this.options.loadJsonLibrary) {
-                _context304.n = 2;
+                _context306.n = 2;
                 break;
               }
-              _context304.n = 1;
+              _context306.n = 1;
               return this.options.loadJsonLibrary();
             case 1:
-              this.tracks.value = _context304.v.tracks;
+              this.tracks.value = _context306.v.tracks;
               this.trackById.clear();
               _iterator107 = _createForOfIteratorHelper(this.tracks.value);
               try {
@@ -27653,73 +27800,73 @@ var TwilightPortableCore = function (exports) {
                 _iterator107.f();
               }
             case 2:
-              _context304.p = 2;
-              _context304.n = 3;
+              _context306.p = 2;
+              _context306.n = 3;
               return this.controller.importPlaylistPathBatchAsync(request.playlists);
             case 3:
-              result = _context304.v;
-              _context304.n = 4;
+              result = _context306.v;
+              _context306.n = 4;
               return this.flush();
             case 4:
               this.options.changed();
-              return _context304.a(2, result);
+              return _context306.a(2, result);
             case 5:
-              _context304.p = 5;
+              _context306.p = 5;
               this.tracks.value = [];
               this.trackById.clear();
-              return _context304.f(5);
+              return _context306.f(5);
             case 6:
-              return _context304.a(2);
+              return _context306.a(2);
           }
-        }, _callee304, this, [[2,, 5, 6]]);
+        }, _callee306, this, [[2,, 5, 6]]);
       })));
     }
     flush() {
-      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee305() {
+      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee307() {
         var _a;
-        return _regenerator().w(function (_context305) {
-          while (1) switch (_context305.n) {
+        return _regenerator().w(function (_context307) {
+          while (1) switch (_context307.n) {
             case 0:
-              _context305.n = 1;
+              _context307.n = 1;
               return this.controller.flushPlaylists();
             case 1:
-              if (_context305.v) {
-                _context305.n = 2;
+              if (_context307.v) {
+                _context307.n = 2;
                 break;
               }
               throw new Error((_a = this.persistence.value.lastError) != null ? _a : "Playlists could not be saved");
             case 2:
-              return _context305.a(2);
+              return _context307.a(2);
           }
-        }, _callee305, this);
+        }, _callee307, this);
       }));
     }
     shutdown() {
-      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee306() {
-        return _regenerator().w(function (_context306) {
-          while (1) switch (_context306.p = _context306.n) {
+      return __async$8(this, null, /*#__PURE__*/_regenerator().m(function _callee308() {
+        return _regenerator().w(function (_context308) {
+          while (1) switch (_context308.p = _context308.n) {
             case 0:
               this.stopped = true;
-              _context306.n = 1;
+              _context308.n = 1;
               return this.repairWork;
             case 1:
-              _context306.n = 2;
+              _context308.n = 2;
               return this.views.shutdown();
             case 2:
-              _context306.n = 3;
+              _context308.n = 3;
               return this.tail.catch(() => void 0);
             case 3:
-              _context306.p = 3;
-              _context306.n = 4;
+              _context308.p = 3;
+              _context308.n = 4;
               return this.flush();
             case 4:
-              _context306.p = 4;
+              _context308.p = 4;
               this.controller.dispose();
-              return _context306.f(4);
+              return _context308.f(4);
             case 5:
-              return _context306.a(2);
+              return _context308.a(2);
           }
-        }, _callee306, this, [[3,, 4, 5]]);
+        }, _callee308, this, [[3,, 4, 5]]);
       }));
     }
   }
@@ -27792,33 +27939,33 @@ var TwilightPortableCore = function (exports) {
     });
   };
   function createPlaylistInputResolver(resolve, database) {
-    return (inputs, signal) => __async$7(null, null, /*#__PURE__*/_regenerator().m(function _callee307() {
-      var seeds, ids, page2, local, _t205;
-      return _regenerator().w(function (_context307) {
-        while (1) switch (_context307.n) {
+    return (inputs, signal) => __async$7(null, null, /*#__PURE__*/_regenerator().m(function _callee309() {
+      var seeds, ids, page2, local, _t210;
+      return _regenerator().w(function (_context309) {
+        while (1) switch (_context309.n) {
           case 0:
-            _context307.n = 1;
+            _context309.n = 1;
             return resolve(inputs, signal);
           case 1:
-            seeds = _context307.v;
+            seeds = _context309.v;
             ids = seeds.filter(seed => !seed.snapshot && !seed.localSnapshot).map(seed => seed.id);
             if (!ids.length) {
-              _context307.n = 3;
+              _context309.n = 3;
               break;
             }
-            _context307.n = 2;
+            _context309.n = 2;
             return database.getTracksByIds(ids);
           case 2:
-            _t205 = _context307.v;
-            _context307.n = 4;
+            _t210 = _context309.v;
+            _context309.n = 4;
             break;
           case 3:
-            _t205 = null;
+            _t210 = null;
           case 4:
-            page2 = _t205;
+            page2 = _t210;
             local = new Map(page2 == null ? void 0 : page2.tracks.map(record2 => [record2.id, libraryTrack(record2)]));
             signal.throwIfAborted();
-            return _context307.a(2, seeds.map(seed => {
+            return _context309.a(2, seeds.map(seed => {
               var _a;
               var record2 = (_a = seed.localSnapshot) != null ? _a : seed.snapshot;
               var track = record2 ? libraryTrack(__spreadProps(__spreadValues({}, record2), {
@@ -27828,7 +27975,7 @@ var TwilightPortableCore = function (exports) {
               return track;
             }));
         }
-      }, _callee307);
+      }, _callee309);
     }));
   }
   class CorePlaylistSubmission {
@@ -27838,48 +27985,48 @@ var TwilightPortableCore = function (exports) {
       this.options = options;
     }
     submit(clientId, command) {
-      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee308() {
-        var stage, items, saved, _t206;
-        return _regenerator().w(function (_context308) {
-          while (1) switch (_context308.p = _context308.n) {
+      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee310() {
+        var stage, items, saved, _t211;
+        return _regenerator().w(function (_context310) {
+          while (1) switch (_context310.p = _context310.n) {
             case 0:
               if (!(command.kind === "begin")) {
-                _context308.n = 1;
+                _context310.n = 1;
                 break;
               }
-              return _context308.a(2, this.begin(clientId, command));
+              return _context310.a(2, this.begin(clientId, command));
             case 1:
               stage = this.stages.get(command.id);
               if (!(!stage || stage.clientId !== clientId)) {
-                _context308.n = 2;
+                _context310.n = 2;
                 break;
               }
               throw new Error("歌单提交已结束，请重新选择");
             case 2:
               if (!(command.kind === "abort")) {
-                _context308.n = 5;
+                _context310.n = 5;
                 break;
               }
               if (!stage.committing) {
-                _context308.n = 3;
+                _context310.n = 3;
                 break;
               }
               throw new Error("歌单已经开始保存，请等待结果");
             case 3:
               stage.controller.abort(new Error("歌单操作已取消"));
-              _context308.n = 4;
+              _context310.n = 4;
               return stage.work.catch(() => {});
             case 4:
-              return _context308.a(2, this.reply(stage, "aborted"));
+              return _context310.a(2, this.reply(stage, "aborted"));
             case 5:
               if (!(stage.busy || stage.committing)) {
-                _context308.n = 6;
+                _context310.n = 6;
                 break;
               }
               throw new Error("请等待上一批歌单提交完成");
             case 6:
               if (!(command.sequence !== stage.sequence + 1)) {
-                _context308.n = 7;
+                _context310.n = 7;
                 break;
               }
               throw new Error("歌单批次已变化，不可重放旧批次");
@@ -27887,69 +28034,69 @@ var TwilightPortableCore = function (exports) {
               stage.controller.signal.throwIfAborted();
               stage.busy = true;
               stage.cancelTimer();
-              _context308.p = 8;
+              _context310.p = 8;
               if (!(command.kind === "append")) {
-                _context308.n = 12;
+                _context310.n = 12;
                 break;
               }
               if (!(stage.total + command.items.length > LIBRARY_QUEUE_BUILD_MAX_ENTRIES)) {
-                _context308.n = 9;
+                _context310.n = 9;
                 break;
               }
               throw new Error("歌单已达到容量上限");
             case 9:
-              _context308.n = 10;
+              _context310.n = 10;
               return this.resolve(command.items, stage.controller.signal);
             case 10:
-              items = _context308.v;
+              items = _context310.v;
               stage.controller.signal.throwIfAborted();
-              _context308.n = 11;
+              _context310.n = 11;
               return stage.append(items);
             case 11:
               stage.sequence = command.sequence;
               stage.total += items.length;
               this.arm(stage);
-              return _context308.a(2, this.reply(stage, "building"));
+              return _context310.a(2, this.reply(stage, "building"));
             case 12:
               stage.committing = true;
               stage.sequence = command.sequence;
               stage.finish();
-              _context308.n = 13;
+              _context310.n = 13;
               return stage.work;
             case 13:
-              saved = _context308.v;
-              return _context308.a(2, __spreadValues(__spreadValues({}, this.reply(stage, "committed")), saved));
+              saved = _context310.v;
+              return _context310.a(2, __spreadValues(__spreadValues({}, this.reply(stage, "committed")), saved));
             case 14:
-              _context308.p = 14;
-              _t206 = _context308.v;
-              stage.controller.abort(_t206);
-              _context308.n = 15;
+              _context310.p = 14;
+              _t211 = _context310.v;
+              stage.controller.abort(_t211);
+              _context310.n = 15;
               return stage.work.catch(() => {});
             case 15:
-              throw _t206;
+              throw _t211;
             case 16:
-              _context308.p = 16;
+              _context310.p = 16;
               stage.busy = false;
-              return _context308.f(16);
+              return _context310.f(16);
             case 17:
-              return _context308.a(2);
+              return _context310.a(2);
           }
-        }, _callee308, this, [[8, 14, 16, 17]]);
+        }, _callee310, this, [[8, 14, 16, 17]]);
       }));
     }
     resolve(items, signal) {
-      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee309() {
+      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee311() {
         var inputs, tracks2, index;
-        return _regenerator().w(function (_context309) {
-          while (1) switch (_context309.n) {
+        return _regenerator().w(function (_context311) {
+          while (1) switch (_context311.n) {
             case 0:
               inputs = items.flatMap(item => item.input ? [item.input] : []);
-              _context309.n = 1;
+              _context311.n = 1;
               return this.options.resolve(inputs, signal);
             case 1:
-              tracks2 = _context309.v;
+              tracks2 = _context311.v;
               index = 0;
-              return _context309.a(2, items.map(item => {
+              return _context311.a(2, items.map(item => {
                 var _a;
                 var track = item.input ? tracks2[index++] : void 0;
                 var id2 = (_a = item.id) != null ? _a : track == null ? void 0 : track.id;
@@ -27961,16 +28108,16 @@ var TwilightPortableCore = function (exports) {
                 } : {});
               }));
           }
-        }, _callee309, this);
+        }, _callee311, this);
       }));
     }
     begin(clientId, command) {
-      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee311() {
+      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee313() {
         var controller, ready, finish, started, complete, stage;
-        return _regenerator().w(function (_context311) {
-          while (1) switch (_context311.n) {
+        return _regenerator().w(function (_context313) {
+          while (1) switch (_context313.n) {
             case 0:
-              _context311.n = 1;
+              _context313.n = 1;
               return this.disconnect(clientId);
             case 1:
               controller = new AbortController();
@@ -28001,36 +28148,36 @@ var TwilightPortableCore = function (exports) {
                 cancelTimer: () => {}
               };
               this.stages.set(stage.id, stage);
-              stage.work = this.options.playlists.editPages(command.revision, command.edit, append => __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee310() {
-                return _regenerator().w(function (_context310) {
-                  while (1) switch (_context310.n) {
+              stage.work = this.options.playlists.editPages(command.revision, command.edit, append => __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee312() {
+                return _regenerator().w(function (_context312) {
+                  while (1) switch (_context312.n) {
                     case 0:
                       stage.append = append;
                       ready();
-                      _context310.n = 1;
+                      _context312.n = 1;
                       return complete;
                     case 1:
-                      return _context310.a(2);
+                      return _context312.a(2);
                   }
-                }, _callee310);
+                }, _callee312);
               })), controller.signal).finally(() => {
                 stage.cancelTimer();
                 this.stages.delete(stage.id);
               });
-              _context311.n = 2;
+              _context313.n = 2;
               return Promise.race([started, stage.work]);
             case 2:
               if (stage.append) {
-                _context311.n = 3;
+                _context313.n = 3;
                 break;
               }
               throw new Error("无法准备歌单操作");
             case 3:
               void stage.work.catch(() => {});
               this.arm(stage);
-              return _context311.a(2, this.reply(stage, "building"));
+              return _context313.a(2, this.reply(stage, "building"));
           }
-        }, _callee311, this);
+        }, _callee313, this);
       }));
     }
     reply(stage, state) {
@@ -28045,69 +28192,69 @@ var TwilightPortableCore = function (exports) {
       stage.cancelTimer = this.options.schedule(() => stage.controller.abort(new Error("歌单提交已超时")), LIBRARY_QUEUE_BUILD_IDLE_MS);
     }
     disconnect(clientId) {
-      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee312() {
-        var work, _iterator109, _step109, stage, _t207;
-        return _regenerator().w(function (_context312) {
-          while (1) switch (_context312.p = _context312.n) {
+      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee314() {
+        var work, _iterator109, _step109, stage, _t212;
+        return _regenerator().w(function (_context314) {
+          while (1) switch (_context314.p = _context314.n) {
             case 0:
               work = [];
               _iterator109 = _createForOfIteratorHelper(this.stages.values());
-              _context312.p = 1;
+              _context314.p = 1;
               _iterator109.s();
             case 2:
               if ((_step109 = _iterator109.n()).done) {
-                _context312.n = 5;
+                _context314.n = 5;
                 break;
               }
               stage = _step109.value;
               if (!(stage.clientId !== clientId || stage.committing)) {
-                _context312.n = 3;
+                _context314.n = 3;
                 break;
               }
-              return _context312.a(3, 4);
+              return _context314.a(3, 4);
             case 3:
               stage.controller.abort(new Error("歌单提交窗口已断开"));
               work.push(stage.work);
             case 4:
-              _context312.n = 2;
+              _context314.n = 2;
               break;
             case 5:
-              _context312.n = 7;
+              _context314.n = 7;
               break;
             case 6:
-              _context312.p = 6;
-              _t207 = _context312.v;
-              _iterator109.e(_t207);
+              _context314.p = 6;
+              _t212 = _context314.v;
+              _iterator109.e(_t212);
             case 7:
-              _context312.p = 7;
+              _context314.p = 7;
               _iterator109.f();
-              return _context312.f(7);
+              return _context314.f(7);
             case 8:
-              _context312.n = 9;
+              _context314.n = 9;
               return Promise.allSettled(work);
             case 9:
-              return _context312.a(2);
+              return _context314.a(2);
           }
-        }, _callee312, this, [[1, 6, 7, 8]]);
+        }, _callee314, this, [[1, 6, 7, 8]]);
       }));
     }
     shutdown() {
-      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee313() {
+      return __async$7(this, null, /*#__PURE__*/_regenerator().m(function _callee315() {
         var stages, _i30, _stages, stage;
-        return _regenerator().w(function (_context313) {
-          while (1) switch (_context313.n) {
+        return _regenerator().w(function (_context315) {
+          while (1) switch (_context315.n) {
             case 0:
               stages = [...this.stages.values()];
               for (_i30 = 0, _stages = stages; _i30 < _stages.length; _i30++) {
                 stage = _stages[_i30];
                 if (!stage.committing) stage.controller.abort(new Error("Core is shutting down"));
               }
-              _context313.n = 1;
+              _context315.n = 1;
               return Promise.allSettled(stages.map(stage => stage.work));
             case 1:
-              return _context313.a(2);
+              return _context315.a(2);
           }
-        }, _callee313, this);
+        }, _callee315, this);
       }));
     }
   }
@@ -28425,19 +28572,19 @@ var TwilightPortableCore = function (exports) {
       searchUnifiedNetworkPage = sources.searchUnifiedNetworkPage,
       toSearchItem = sources.toSearchItem;
     function unifiedSearchSongs(options) {
-      return __async$6(this, null, /*#__PURE__*/_regenerator().m(function _callee315() {
-        var _a, _b, _c, _d, _e, _f, query2, limit, offset, local, network, health, total, hasMore, providerItems, rawItems, preparedQuery, logicalItems, isPreferred, scoreTrack, groupMetaByTrack, groupMeta, _iterator114, _step114, group, preferred, maxScore, _iterator115, _step115, variant, s, meta, _iterator116, _step116, _variant, items, _t209;
-        return _regenerator().w(function (_context315) {
-          while (1) switch (_context315.n) {
+      return __async$6(this, null, /*#__PURE__*/_regenerator().m(function _callee317() {
+        var _a, _b, _c, _d, _e, _f, query2, limit, offset, local, network, health, total, hasMore, providerItems, rawItems, preparedQuery, logicalItems, isPreferred, scoreTrack, groupMetaByTrack, groupMeta, _iterator114, _step114, group, preferred, maxScore, _iterator115, _step115, variant, s, meta, _iterator116, _step116, _variant, items, _t214;
+        return _regenerator().w(function (_context317) {
+          while (1) switch (_context317.n) {
             case 0:
               query2 = options.query.trim();
               limit = Math.min(100, Math.max(1, Math.trunc((_a = options.limit) != null ? _a : 30) || 30));
               offset = Math.max(0, Math.trunc((_b = options.offset) != null ? _b : 0) || 0);
               if (query2) {
-                _context315.n = 1;
+                _context317.n = 1;
                 break;
               }
-              return _context315.a(2, {
+              return _context317.a(2, {
                 items: [],
                 logicalItems: [],
                 health: {},
@@ -28446,21 +28593,21 @@ var TwilightPortableCore = function (exports) {
               });
             case 1:
               if (!options.localSource) {
-                _context315.n = 3;
+                _context317.n = 3;
                 break;
               }
-              _context315.n = 2;
+              _context317.n = 2;
               return options.localSource.search(query2, limit, offset, options.signal);
             case 2:
-              _t209 = _context315.v;
-              _context315.n = 4;
+              _t214 = _context317.v;
+              _context317.n = 4;
               break;
             case 3:
-              _t209 = searchUnifiedLocalPage(options.localTracks, query2, limit, offset);
+              _t214 = searchUnifiedLocalPage(options.localTracks, query2, limit, offset);
             case 4:
-              local = _t209;
+              local = _t214;
               if (!((_c = options.signal) == null ? void 0 : _c.aborted)) {
-                _context315.n = 5;
+                _context317.n = 5;
                 break;
               }
               throw new DOMException("Search was cancelled", "AbortError");
@@ -28469,11 +28616,11 @@ var TwilightPortableCore = function (exports) {
               health = {};
               total = local.total + network.total;
               hasMore = local.total > offset + limit || network.total > offset + limit;
-              _context315.n = 6;
-              return Promise.all(options.providers.map(provider => __async$6(null, null, /*#__PURE__*/_regenerator().m(function _callee314() {
-                var _a2, _b2, _c2, _d2, _e2, _f2, _g, _h, _i, _j, _k, providerAvailable, providerReliability, searchable, playbackUrlHealth, baseHealth, result, _t208;
-                return _regenerator().w(function (_context314) {
-                  while (1) switch (_context314.p = _context314.n) {
+              _context317.n = 6;
+              return Promise.all(options.providers.map(provider => __async$6(null, null, /*#__PURE__*/_regenerator().m(function _callee316() {
+                var _a2, _b2, _c2, _d2, _e2, _f2, _g, _h, _i, _j, _k, providerAvailable, providerReliability, searchable, playbackUrlHealth, baseHealth, result, _t213;
+                return _regenerator().w(function (_context316) {
+                  while (1) switch (_context316.p = _context316.n) {
                     case 0:
                       providerAvailable = provider.available !== false && ((_a2 = provider.health) == null ? void 0 : _a2.available) !== false;
                       providerReliability = getProviderReliability(provider);
@@ -28494,41 +28641,41 @@ var TwilightPortableCore = function (exports) {
                       };
                       health[provider.id] = baseHealth;
                       if (!(!query2 || !searchable || !providerAvailable)) {
-                        _context314.n = 1;
+                        _context316.n = 1;
                         break;
                       }
-                      return _context314.a(2, []);
+                      return _context316.a(2, []);
                     case 1:
-                      _context314.p = 1;
-                      _context314.n = 2;
+                      _context316.p = 1;
+                      _context316.n = 2;
                       return options.searchProviderSongs(provider.id, query2, limit, offset);
                     case 2:
-                      result = _context314.v;
+                      result = _context316.v;
                       baseHealth.resultCount = result.items.length;
                       total += result.total;
                       hasMore || (hasMore = result.total > offset + limit);
-                      return _context314.a(2, result.items.slice(0, limit).map(track => toSearchItem(track, {
+                      return _context316.a(2, result.items.slice(0, limit).map(track => toSearchItem(track, {
                         sourceName: provider.name,
                         providerAvailable: true,
                         providerReliability,
                         source: provider.id
                       })));
                     case 3:
-                      _context314.p = 3;
-                      _t208 = _context314.v;
+                      _context316.p = 3;
+                      _t213 = _context316.v;
                       baseHealth.available = false;
-                      baseHealth.lastError = _t208 instanceof Error ? _t208.message : String(_t208);
-                      return _context314.a(2, []);
+                      baseHealth.lastError = _t213 instanceof Error ? _t213.message : String(_t213);
+                      return _context316.a(2, []);
                   }
-                }, _callee314, null, [[1, 3]]);
+                }, _callee316, null, [[1, 3]]);
               }))));
             case 6:
-              providerItems = _context315.v.flat();
-              _context315.n = 7;
+              providerItems = _context317.v.flat();
+              _context317.n = 7;
               return (_e = options.localSource) == null ? void 0 : _e.confirm(local, options.signal);
             case 7:
               if (!((_f = options.signal) == null ? void 0 : _f.aborted)) {
-                _context315.n = 8;
+                _context317.n = 8;
                 break;
               }
               throw new DOMException("Search was cancelled", "AbortError");
@@ -28605,7 +28752,7 @@ var TwilightPortableCore = function (exports) {
                 var rightScore = rightMeta ? rightMeta.score : scoreTrack(right.track);
                 return Number(rightPref) - Number(leftPref) || rightScore - leftScore || compareSearchItems(left, right);
               });
-              return _context315.a(2, __spreadValues({
+              return _context317.a(2, __spreadValues({
                 items,
                 logicalItems,
                 health,
@@ -28615,7 +28762,7 @@ var TwilightPortableCore = function (exports) {
                 libraryRevision: local.libraryRevision
               } : {}));
           }
-        }, _callee315);
+        }, _callee317);
       }));
     }
     function buildLogicalMusicItems(tracks2) {
@@ -28660,10 +28807,10 @@ var TwilightPortableCore = function (exports) {
     });
   };
   function searchUnifiedCollections(options) {
-    return __async$5(this, null, /*#__PURE__*/_regenerator().m(function _callee318() {
+    return __async$5(this, null, /*#__PURE__*/_regenerator().m(function _callee320() {
       var _a, assertActive, sources, total, results, successes, errors, _loop10, index, skip, remaining, windows, _loop11, _ret3, _i34, _sources, source, pages, items, _index2, page2, message;
-      return _regenerator().w(function (_context318) {
-        while (1) switch (_context318.n) {
+      return _regenerator().w(function (_context320) {
+        while (1) switch (_context320.n) {
           case 0:
             assertActive = () => {
               var _a2;
@@ -28676,17 +28823,17 @@ var TwilightPortableCore = function (exports) {
               local: true
             })];
             total = options.local.total;
-            _context318.n = 1;
+            _context320.n = 1;
             return Promise.allSettled(options.providers.map(provider => options.search(provider.id, options.limit, 0)));
           case 1:
-            results = _context318.v;
+            results = _context320.v;
             assertActive();
             successes = 0;
             errors = [];
-            _loop10 = /*#__PURE__*/_regenerator().m(function _callee316() {
+            _loop10 = /*#__PURE__*/_regenerator().m(function _callee318() {
               var result, provider;
-              return _regenerator().w(function (_context316) {
-                while (1) switch (_context316.n) {
+              return _regenerator().w(function (_context318) {
+                while (1) switch (_context318.n) {
                   case 0:
                     result = results[index];
                     if (result.status === "fulfilled") {
@@ -28702,24 +28849,24 @@ var TwilightPortableCore = function (exports) {
                       errors.push(`${options.providers[index].name}：${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
                     }
                   case 1:
-                    return _context316.a(2);
+                    return _context318.a(2);
                 }
-              }, _callee316);
+              }, _callee318);
             });
             index = 0;
           case 2:
             if (!(index < results.length)) {
-              _context318.n = 4;
+              _context320.n = 4;
               break;
             }
-            return _context318.d(_regeneratorValues(_loop10()), 3);
+            return _context320.d(_regeneratorValues(_loop10()), 3);
           case 3:
             index++;
-            _context318.n = 2;
+            _context320.n = 2;
             break;
           case 4:
             if (!(errors.length && successes === 0 && total === 0)) {
-              _context318.n = 5;
+              _context320.n = 5;
               break;
             }
             throw new Error(errors.join("；"));
@@ -28727,23 +28874,23 @@ var TwilightPortableCore = function (exports) {
             skip = options.offset;
             remaining = options.limit;
             windows = [];
-            _loop11 = /*#__PURE__*/_regenerator().m(function _callee317() {
+            _loop11 = /*#__PURE__*/_regenerator().m(function _callee319() {
               var start, count;
-              return _regenerator().w(function (_context317) {
-                while (1) switch (_context317.n) {
+              return _regenerator().w(function (_context319) {
+                while (1) switch (_context319.n) {
                   case 0:
                     if (!(remaining === 0)) {
-                      _context317.n = 1;
+                      _context319.n = 1;
                       break;
                     }
-                    return _context317.a(2, 0);
+                    return _context319.a(2, 0);
                   case 1:
                     if (!(skip >= source.total)) {
-                      _context317.n = 2;
+                      _context319.n = 2;
                       break;
                     }
                     skip -= source.total;
-                    return _context317.a(2, 1);
+                    return _context319.a(2, 1);
                   case 2:
                     start = skip;
                     skip = 0;
@@ -28755,59 +28902,59 @@ var TwilightPortableCore = function (exports) {
                       items: start + count <= source.items.length ? Promise.resolve(source.items.slice(start, start + count)) : source.search(count, start).then(result => result.items.slice(0, count))
                     });
                   case 3:
-                    return _context317.a(2);
+                    return _context319.a(2);
                 }
-              }, _callee317);
+              }, _callee319);
             });
             _i34 = 0, _sources = sources;
           case 6:
             if (!(_i34 < _sources.length)) {
-              _context318.n = 10;
+              _context320.n = 10;
               break;
             }
             source = _sources[_i34];
-            return _context318.d(_regeneratorValues(_loop11()), 7);
+            return _context320.d(_regeneratorValues(_loop11()), 7);
           case 7:
-            _ret3 = _context318.v;
+            _ret3 = _context320.v;
             if (!(_ret3 === 0)) {
-              _context318.n = 8;
+              _context320.n = 8;
               break;
             }
-            return _context318.a(3, 10);
+            return _context320.a(3, 10);
           case 8:
             if (!(_ret3 === 1)) {
-              _context318.n = 9;
+              _context320.n = 9;
               break;
             }
-            return _context318.a(3, 9);
+            return _context320.a(3, 9);
           case 9:
             _i34++;
-            _context318.n = 6;
+            _context320.n = 6;
             break;
           case 10:
-            _context318.n = 11;
+            _context320.n = 11;
             return Promise.allSettled(windows.map(window => window.items));
           case 11:
-            pages = _context318.v;
+            pages = _context320.v;
             assertActive();
             items = [];
             _index2 = 0;
           case 12:
             if (!(_index2 < pages.length)) {
-              _context318.n = 16;
+              _context320.n = 16;
               break;
             }
             page2 = pages[_index2];
             if (!(page2.status === "fulfilled")) {
-              _context318.n = 13;
+              _context320.n = 13;
               break;
             }
             items.push(...page2.value);
-            _context318.n = 15;
+            _context320.n = 15;
             break;
           case 13:
             if (!windows[_index2].local) {
-              _context318.n = 14;
+              _context320.n = 14;
               break;
             }
             throw page2.reason;
@@ -28815,32 +28962,32 @@ var TwilightPortableCore = function (exports) {
             errors.push(`${windows[_index2].name}：${page2.reason instanceof Error ? page2.reason.message : String(page2.reason)}`);
           case 15:
             _index2++;
-            _context318.n = 12;
+            _context320.n = 12;
             break;
           case 16:
-            _context318.n = 17;
+            _context320.n = 17;
             return (_a = options.confirmLocal) == null ? void 0 : _a.call(options);
           case 17:
             assertActive();
             if (!errors.length) {
-              _context318.n = 19;
+              _context320.n = 19;
               break;
             }
             message = errors.join("；");
             if (!(pages.length && pages.every(page2 => page2.status === "rejected"))) {
-              _context318.n = 18;
+              _context320.n = 18;
               break;
             }
             throw new Error(message);
           case 18:
             options.reportError(message);
           case 19:
-            return _context318.a(2, {
+            return _context320.a(2, {
               items,
               total
             });
         }
-      }, _callee318);
+      }, _callee320);
     }));
   }
   var DEFAULT_GENRE_SEPARATORS = ",，;；、/";
@@ -29096,63 +29243,63 @@ var TwilightPortableCore = function (exports) {
     });
   };
   function searchMusicCollections(options, query2, signal) {
-    return __async$4(this, null, /*#__PURE__*/_regenerator().m(function _callee323() {
+    return __async$4(this, null, /*#__PURE__*/_regenerator().m(function _callee325() {
       var _a, _b, text2, limit, offset, method, assertCurrent, tag, providerSearch, localSearch, warning, page2, revision2, local, _local;
-      return _regenerator().w(function (_context323) {
-        while (1) switch (_context323.n) {
+      return _regenerator().w(function (_context325) {
+        while (1) switch (_context325.n) {
           case 0:
             signal.throwIfAborted();
             text2 = query2.query.trim(), limit = (_a = query2.limit) != null ? _a : 30, offset = (_b = query2.offset) != null ? _b : 0;
             method = query2.kind === "albums" ? "searchAlbums" : query2.kind === "artists" ? "searchArtists" : "searchPlaylists";
-            assertCurrent = revision22 => __async$4(null, null, /*#__PURE__*/_regenerator().m(function _callee319() {
-              var current2, _t210, _t211;
-              return _regenerator().w(function (_context319) {
-                while (1) switch (_context319.n) {
+            assertCurrent = revision22 => __async$4(null, null, /*#__PURE__*/_regenerator().m(function _callee321() {
+              var current2, _t215, _t216;
+              return _regenerator().w(function (_context321) {
+                while (1) switch (_context321.n) {
                   case 0:
                     signal.throwIfAborted();
                     if (!(revision22 === void 0)) {
-                      _context319.n = 1;
+                      _context321.n = 1;
                       break;
                     }
-                    return _context319.a(2);
+                    return _context321.a(2);
                   case 1:
                     if (!(query2.kind === "playlists")) {
-                      _context319.n = 2;
+                      _context321.n = 2;
                       break;
                     }
-                    _t210 = options.playlists.getRevision();
-                    _context319.n = 7;
+                    _t215 = options.playlists.getRevision();
+                    _context321.n = 7;
                     break;
                   case 2:
                     if (!options.loadJsonLibrary) {
-                      _context319.n = 4;
+                      _context321.n = 4;
                       break;
                     }
-                    _context319.n = 3;
+                    _context321.n = 3;
                     return options.loadJsonLibrary();
                   case 3:
-                    _t211 = _context319.v.revision;
-                    _context319.n = 6;
+                    _t216 = _context321.v.revision;
+                    _context321.n = 6;
                     break;
                   case 4:
-                    _context319.n = 5;
+                    _context321.n = 5;
                     return options.database.getMetadata();
                   case 5:
-                    _t211 = _context319.v.revision;
+                    _t216 = _context321.v.revision;
                   case 6:
-                    _t210 = _t211;
+                    _t215 = _t216;
                   case 7:
-                    current2 = _t210;
+                    current2 = _t215;
                     signal.throwIfAborted();
                     if (!(revision22 !== current2)) {
-                      _context319.n = 8;
+                      _context321.n = 8;
                       break;
                     }
                     throw stale$1();
                   case 8:
-                    return _context319.a(2);
+                    return _context321.a(2);
                 }
-              }, _callee319);
+              }, _callee321);
             }));
             tag = (item, id2, name) => __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues(__spreadValues({}, "cover" in item ? {
               cover: publicCover(item.cover)
@@ -29185,52 +29332,52 @@ var TwilightPortableCore = function (exports) {
             } : {}), "owned" in item ? {
               owned: item.owned
             } : {});
-            providerSearch = (id2, pageLimit, pageOffset) => __async$4(null, null, /*#__PURE__*/_regenerator().m(function _callee320() {
+            providerSearch = (id2, pageLimit, pageOffset) => __async$4(null, null, /*#__PURE__*/_regenerator().m(function _callee322() {
               var _a2, _b2, _c, provider, page22;
-              return _regenerator().w(function (_context320) {
-                while (1) switch (_context320.n) {
+              return _regenerator().w(function (_context322) {
+                while (1) switch (_context322.n) {
                   case 0:
                     provider = options.providers().find(item => item.id === id2);
                     if (!(!provider || provider.available === false || ((_a2 = provider.health) == null ? void 0 : _a2.available) === false || !((_b2 = provider.supportedMethods) == null ? void 0 : _b2.includes(method)) || query2.kind === "albums" && !provider.capabilities.includes("search"))) {
-                      _context320.n = 1;
+                      _context322.n = 1;
                       break;
                     }
                     throw new Error(`${(_c = provider == null ? void 0 : provider.name) != null ? _c : id2} 的搜索不可用`);
                   case 1:
-                    _context320.n = 2;
+                    _context322.n = 2;
                     return options.searchProvider(id2, method, text2, pageLimit, pageOffset, signal);
                   case 2:
-                    page22 = _context320.v;
+                    page22 = _context322.v;
                     signal.throwIfAborted();
-                    return _context320.a(2, {
+                    return _context322.a(2, {
                       items: page22.items.slice(0, pageLimit).map(item => tag(item, id2, provider.name)),
                       total: page22.total
                     });
                 }
-              }, _callee320);
+              }, _callee322);
             }));
-            localSearch = (pageLimit, pageOffset) => __async$4(null, null, /*#__PURE__*/_regenerator().m(function _callee321() {
+            localSearch = (pageLimit, pageOffset) => __async$4(null, null, /*#__PURE__*/_regenerator().m(function _callee323() {
               var page22, library, catalog, result, _result5, expected;
-              return _regenerator().w(function (_context321) {
-                while (1) switch (_context321.n) {
+              return _regenerator().w(function (_context323) {
+                while (1) switch (_context323.n) {
                   case 0:
                     signal.throwIfAborted();
                     if (!(query2.kind === "playlists")) {
-                      _context321.n = 1;
+                      _context323.n = 1;
                       break;
                     }
                     page22 = options.playlists.searchLocal(text2, pageLimit, pageOffset);
-                    _context321.n = 5;
+                    _context323.n = 5;
                     break;
                   case 1:
                     if (!options.loadJsonLibrary) {
-                      _context321.n = 3;
+                      _context323.n = 3;
                       break;
                     }
-                    _context321.n = 2;
+                    _context323.n = 2;
                     return options.loadJsonLibrary();
                   case 2:
-                    library = _context321.v;
+                    library = _context323.v;
                     catalog = buildDerivedCollections(library.tracks, [], "");
                     result = query2.kind === "albums" ? searchLocalStreamingAlbums(catalog.albums, text2, pageLimit, pageOffset) : searchLocalStreamingArtists(catalog.artists, text2, pageLimit, pageOffset);
                     page22 = {
@@ -29238,10 +29385,10 @@ var TwilightPortableCore = function (exports) {
                       total: result.total,
                       revision: library.revision
                     };
-                    _context321.n = 5;
+                    _context323.n = 5;
                     break;
                   case 3:
-                    _context321.n = 4;
+                    _context323.n = 4;
                     return options.database.queryCollections(query2.kind, {
                       search: text2,
                       collectionSearchMode: query2.kind === "albums" ? "albumTerms" : "artistName",
@@ -29250,7 +29397,7 @@ var TwilightPortableCore = function (exports) {
                       contentRevision: query2.contentRevision
                     });
                   case 4:
-                    _result5 = _context321.v;
+                    _result5 = _context323.v;
                     page22 = {
                       items: _result5.items.map(item => query2.kind === "albums" ? {
                         id: item.id,
@@ -29270,87 +29417,87 @@ var TwilightPortableCore = function (exports) {
                   case 5:
                     expected = query2.kind === "playlists" ? query2.playlistsRevision : query2.contentRevision;
                     if (!(expected !== void 0 && expected !== page22.revision)) {
-                      _context321.n = 6;
+                      _context323.n = 6;
                       break;
                     }
                     throw stale$1();
                   case 6:
                     signal.throwIfAborted();
-                    return _context321.a(2, {
+                    return _context323.a(2, {
                       items: page22.items.map(item => tag(item, "local", "本地音乐")),
                       total: page22.total,
                       revision: page22.revision
                     });
                 }
-              }, _callee321);
+              }, _callee323);
             }));
             if (text2) {
-              _context323.n = 1;
+              _context325.n = 1;
               break;
             }
             page2 = {
               items: [],
               total: 0
             };
-            _context323.n = 9;
+            _context325.n = 9;
             break;
           case 1:
             if (!query2.providerId) {
-              _context323.n = 3;
+              _context325.n = 3;
               break;
             }
-            _context323.n = 2;
+            _context325.n = 2;
             return providerSearch(query2.providerId, limit, offset);
           case 2:
-            page2 = _context323.v;
-            _context323.n = 9;
+            page2 = _context325.v;
+            _context325.n = 9;
             break;
           case 3:
             if (!(query2.scope === "local")) {
-              _context323.n = 6;
+              _context325.n = 6;
               break;
             }
-            _context323.n = 4;
+            _context325.n = 4;
             return localSearch(limit, offset);
           case 4:
-            local = _context323.v;
+            local = _context325.v;
             revision2 = local.revision;
-            _context323.n = 5;
+            _context325.n = 5;
             return assertCurrent(revision2);
           case 5:
             page2 = local;
-            _context323.n = 9;
+            _context325.n = 9;
             break;
           case 6:
-            _context323.n = 7;
+            _context325.n = 7;
             return localSearch(limit, 0);
           case 7:
-            _local = _context323.v;
+            _local = _context325.v;
             revision2 = _local.revision;
-            _context323.n = 8;
+            _context325.n = 8;
             return searchUnifiedCollections({
               local: _local,
               limit,
               offset,
               signal,
-              searchLocal: (pageLimit, pageOffset) => __async$4(null, null, /*#__PURE__*/_regenerator().m(function _callee322() {
+              searchLocal: (pageLimit, pageOffset) => __async$4(null, null, /*#__PURE__*/_regenerator().m(function _callee324() {
                 var next;
-                return _regenerator().w(function (_context322) {
-                  while (1) switch (_context322.n) {
+                return _regenerator().w(function (_context324) {
+                  while (1) switch (_context324.n) {
                     case 0:
-                      _context322.n = 1;
+                      _context324.n = 1;
                       return localSearch(pageLimit, pageOffset);
                     case 1:
-                      next = _context322.v;
+                      next = _context324.v;
                       if (!(next.revision !== revision2)) {
-                        _context322.n = 2;
+                        _context324.n = 2;
                         break;
                       }
                       throw stale$1();
                     case 2:
-                      return _context322.a(2, next);
+                      return _context324.a(2, next);
                   }
-                }, _callee322);
+                }, _callee324);
               })),
               providers: options.providers().filter(item => {
                 var _a2, _b2;
@@ -29363,10 +29510,10 @@ var TwilightPortableCore = function (exports) {
               }
             });
           case 8:
-            page2 = _context323.v;
+            page2 = _context325.v;
           case 9:
             signal.throwIfAborted();
-            return _context323.a(2, __spreadValues(__spreadValues({
+            return _context325.a(2, __spreadValues(__spreadValues({
               items: page2.items,
               total: page2.total,
               offset,
@@ -29379,7 +29526,7 @@ var TwilightPortableCore = function (exports) {
               warning
             } : {}));
         }
-      }, _callee323);
+      }, _callee325);
     }));
   }
   function stale$1() {
@@ -29438,19 +29585,19 @@ var TwilightPortableCore = function (exports) {
       return work;
     }
     page(query2, signal) {
-      return __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee324() {
+      return __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee326() {
         var result, variant;
-        return _regenerator().w(function (_context324) {
-          while (1) switch (_context324.n) {
+        return _regenerator().w(function (_context326) {
+          while (1) switch (_context326.n) {
             case 0:
-              _context324.n = 1;
+              _context326.n = 1;
               return this.songs(query2, signal);
             case 1:
-              result = _context324.v;
+              result = _context326.v;
               variant = item => __spreadProps(__spreadValues({}, item), {
                 track: projectCoreTrack(item.track)
               });
-              return _context324.a(2, __spreadProps(__spreadValues({}, result), {
+              return _context326.a(2, __spreadProps(__spreadValues({}, result), {
                 items: result.items.map(item => __spreadProps(__spreadValues({}, item), {
                   track: projectCoreTrack(item.track)
                 })),
@@ -29464,14 +29611,14 @@ var TwilightPortableCore = function (exports) {
                 })]))
               }));
           }
-        }, _callee324, this);
+        }, _callee326, this);
       }));
     }
     run(query2, signal) {
-      return __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee327() {
-        var _a, _b, _c, _d, versionsRevision, networkRevision, fence, localSource, text2, page2, networkEntries, result, _t214;
-        return _regenerator().w(function (_context327) {
-          while (1) switch (_context327.n) {
+      return __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee329() {
+        var _a, _b, _c, _d, versionsRevision, networkRevision, fence, localSource, text2, page2, networkEntries, result, _t219;
+        return _regenerator().w(function (_context329) {
+          while (1) switch (_context329.n) {
             case 0:
               signal.throwIfAborted();
               versionsRevision = this.options.versions.getRevision();
@@ -29482,54 +29629,54 @@ var TwilightPortableCore = function (exports) {
               };
               fence();
               localSource = {
-                search: (text22, limit, offset) => __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee325() {
-                  var unified, page2, library, q, items, total, _iterator125, _step125, track, preferences, found, _t212;
-                  return _regenerator().w(function (_context325) {
-                    while (1) switch (_context325.p = _context325.n) {
+                search: (text22, limit, offset) => __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee327() {
+                  var unified, page2, library, q, items, total, _iterator125, _step125, track, preferences, found, _t217;
+                  return _regenerator().w(function (_context327) {
+                    while (1) switch (_context327.p = _context327.n) {
                       case 0:
                         if (normalizeSearchText(text22)) {
-                          _context325.n = 1;
+                          _context327.n = 1;
                           break;
                         }
-                        return _context325.a(2, {
+                        return _context327.a(2, {
                           items: [],
                           total: 0
                         });
                       case 1:
                         unified = query2.scope !== "local";
                         if (!this.options.loadJsonLibrary) {
-                          _context325.n = 13;
+                          _context327.n = 13;
                           break;
                         }
-                        _context325.n = 2;
+                        _context327.n = 2;
                         return this.options.loadJsonLibrary();
                       case 2:
-                        library = _context325.v;
+                        library = _context327.v;
                         if (!unified) {
-                          _context325.n = 3;
+                          _context327.n = 3;
                           break;
                         }
                         page2 = this.sources.searchUnifiedLocalPage(library.tracks, text22, limit, offset);
-                        _context325.n = 12;
+                        _context327.n = 12;
                         break;
                       case 3:
                         q = normalizeSearchText(text22);
                         items = [];
                         total = 0;
                         _iterator125 = _createForOfIteratorHelper(library.tracks);
-                        _context325.p = 4;
+                        _context327.p = 4;
                         _iterator125.s();
                       case 5:
                         if ((_step125 = _iterator125.n()).done) {
-                          _context325.n = 8;
+                          _context327.n = 8;
                           break;
                         }
                         track = _step125.value;
                         if (getTrackSearchBlob(track).includes(q)) {
-                          _context325.n = 6;
+                          _context327.n = 6;
                           break;
                         }
-                        return _context325.a(3, 7);
+                        return _context327.a(3, 7);
                       case 6:
                         if (total >= offset && items.length < limit) items.push(this.sources.toSearchItem(track, {
                           sourceName: "本地音乐",
@@ -29537,19 +29684,19 @@ var TwilightPortableCore = function (exports) {
                         }));
                         total++;
                       case 7:
-                        _context325.n = 5;
+                        _context327.n = 5;
                         break;
                       case 8:
-                        _context325.n = 10;
+                        _context327.n = 10;
                         break;
                       case 9:
-                        _context325.p = 9;
-                        _t212 = _context325.v;
-                        _iterator125.e(_t212);
+                        _context327.p = 9;
+                        _t217 = _context327.v;
+                        _iterator125.e(_t217);
                       case 10:
-                        _context325.p = 10;
+                        _context327.p = 10;
                         _iterator125.f();
-                        return _context325.f(10);
+                        return _context327.f(10);
                       case 11:
                         page2 = {
                           items,
@@ -29557,11 +29704,11 @@ var TwilightPortableCore = function (exports) {
                         };
                       case 12:
                         page2.libraryRevision = library.revision;
-                        _context325.n = 15;
+                        _context327.n = 15;
                         break;
                       case 13:
                         preferences = this.options.versions.snapshot().tracks.versions.flatMap(version => version.preferredSource ? [version.preferredSource] : []);
-                        _context325.n = 14;
+                        _context327.n = 14;
                         return this.options.database.queryTracks(__spreadProps(__spreadValues({
                           search: text22
                         }, unified ? {
@@ -29576,7 +29723,7 @@ var TwilightPortableCore = function (exports) {
                           contentRevision: query2.contentRevision
                         }));
                       case 14:
-                        found = _context325.v;
+                        found = _context327.v;
                         page2 = {
                           items: found.tracks.map(track => this.sources.toSearchItem(libraryTrack(track), {
                             sourceName: "本地音乐",
@@ -29587,73 +29734,73 @@ var TwilightPortableCore = function (exports) {
                         };
                       case 15:
                         if (!(query2.contentRevision !== void 0 && query2.contentRevision !== page2.libraryRevision)) {
-                          _context325.n = 16;
+                          _context327.n = 16;
                           break;
                         }
                         throw stale("曲库在搜索期间发生变化，请重新搜索");
                       case 16:
                         fence();
-                        return _context325.a(2, __spreadProps(__spreadValues({}, page2), {
+                        return _context327.a(2, __spreadProps(__spreadValues({}, page2), {
                           preferenceRevision: versionsRevision
                         }));
                     }
-                  }, _callee325, this, [[4, 9, 10, 11]]);
+                  }, _callee327, this, [[4, 9, 10, 11]]);
                 })),
-                confirm: page2 => __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee326() {
-                  var revision2, _t213;
-                  return _regenerator().w(function (_context326) {
-                    while (1) switch (_context326.n) {
+                confirm: page2 => __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee328() {
+                  var revision2, _t218;
+                  return _regenerator().w(function (_context328) {
+                    while (1) switch (_context328.n) {
                       case 0:
                         fence();
                         if (!(page2.libraryRevision === void 0)) {
-                          _context326.n = 1;
+                          _context328.n = 1;
                           break;
                         }
-                        return _context326.a(2);
+                        return _context328.a(2);
                       case 1:
                         if (!this.options.loadJsonLibrary) {
-                          _context326.n = 3;
+                          _context328.n = 3;
                           break;
                         }
-                        _context326.n = 2;
+                        _context328.n = 2;
                         return this.options.loadJsonLibrary();
                       case 2:
-                        _t213 = _context326.v.revision;
-                        _context326.n = 5;
+                        _t218 = _context328.v.revision;
+                        _context328.n = 5;
                         break;
                       case 3:
-                        _context326.n = 4;
+                        _context328.n = 4;
                         return this.options.database.getMetadata();
                       case 4:
-                        _t213 = _context326.v.revision;
+                        _t218 = _context328.v.revision;
                       case 5:
-                        revision2 = _t213;
+                        revision2 = _t218;
                         if (!(revision2 !== page2.libraryRevision)) {
-                          _context326.n = 6;
+                          _context328.n = 6;
                           break;
                         }
                         throw stale("曲库在搜索期间发生变化，请重新搜索");
                       case 6:
                         fence();
                       case 7:
-                        return _context326.a(2);
+                        return _context328.a(2);
                     }
-                  }, _callee326, this);
+                  }, _callee328, this);
                 }))
               };
               text2 = query2.query.trim();
               if (!(query2.scope === "local")) {
-                _context327.n = 3;
+                _context329.n = 3;
                 break;
               }
-              _context327.n = 1;
+              _context329.n = 1;
               return localSource.search(text2, (_a = query2.limit) != null ? _a : 30, (_b = query2.offset) != null ? _b : 0);
             case 1:
-              page2 = _context327.v;
-              _context327.n = 2;
+              page2 = _context329.v;
+              _context329.n = 2;
               return localSource.confirm(page2);
             case 2:
-              return _context327.a(2, __spreadValues({
+              return _context329.a(2, __spreadValues({
                 items: page2.items,
                 logicalItems: this.options.versions.identity.buildLogicalTracks(page2.items),
                 health: {},
@@ -29670,21 +29817,21 @@ var TwilightPortableCore = function (exports) {
               } : {}));
             case 3:
               if (!text2) {
-                _context327.n = 5;
+                _context329.n = 5;
                 break;
               }
-              _context327.n = 4;
+              _context329.n = 4;
               return this.options.network.search(text2, signal);
             case 4:
-              _t214 = _context327.v;
-              _context327.n = 6;
+              _t219 = _context329.v;
+              _context329.n = 6;
               break;
             case 5:
-              _t214 = [];
+              _t219 = [];
             case 6:
-              networkEntries = _t214;
+              networkEntries = _t219;
               fence();
-              _context327.n = 7;
+              _context329.n = 7;
               return this.search.unifiedSearchSongs({
                 query: text2,
                 limit: query2.limit,
@@ -29697,29 +29844,29 @@ var TwilightPortableCore = function (exports) {
                 searchProviderSongs: (id2, keywords, limit = 30, offset = 0) => this.options.searchProvider(id2, keywords, limit, offset, signal)
               });
             case 7:
-              result = _context327.v;
+              result = _context329.v;
               fence();
-              return _context327.a(2, __spreadValues(__spreadProps(__spreadValues({}, result), {
+              return _context329.a(2, __spreadValues(__spreadProps(__spreadValues({}, result), {
                 versionsRevision
               }), networkRevision !== void 0 ? {
                 networkRevision
               } : {}));
           }
-        }, _callee327, this);
+        }, _callee329, this);
       }));
     }
     shutdown() {
-      return __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee328() {
-        return _regenerator().w(function (_context328) {
-          while (1) switch (_context328.n) {
+      return __async$3(this, null, /*#__PURE__*/_regenerator().m(function _callee330() {
+        return _regenerator().w(function (_context330) {
+          while (1) switch (_context330.n) {
             case 0:
               this.lifetime.abort(new Error("Core search shutting down"));
-              _context328.n = 1;
+              _context330.n = 1;
               return Promise.allSettled([...this.work]);
             case 1:
-              return _context328.a(2);
+              return _context330.a(2);
           }
-        }, _callee328, this);
+        }, _callee330, this);
       }));
     }
   }
@@ -29781,34 +29928,34 @@ var TwilightPortableCore = function (exports) {
       };
     }
     initialize() {
-      return __async$2(this, null, /*#__PURE__*/_regenerator().m(function _callee329() {
-        var mode, _t215;
-        return _regenerator().w(function (_context329) {
-          while (1) switch (_context329.n) {
+      return __async$2(this, null, /*#__PURE__*/_regenerator().m(function _callee331() {
+        var mode, _t220;
+        return _regenerator().w(function (_context331) {
+          while (1) switch (_context331.n) {
             case 0:
-              _context329.n = 1;
+              _context331.n = 1;
               return this.options.configureLibrary(null, this.options.repository.read());
             case 1:
               mode = effectiveAutoMixMode(this.options.repository.read().autoMixMode);
-              _t215 = mode !== "off";
-              if (!_t215) {
-                _context329.n = 3;
+              _t220 = mode !== "off";
+              if (!_t220) {
+                _context331.n = 3;
                 break;
               }
-              _context329.n = 2;
+              _context331.n = 2;
               return this.options.audio.setAutoMixMode(mode);
             case 2:
-              _t215 = !_context329.v;
+              _t220 = !_context331.v;
             case 3:
-              if (!_t215) {
-                _context329.n = 4;
+              if (!_t220) {
+                _context331.n = 4;
                 break;
               }
               throw new Error("音频引擎未能恢复 AutoMix 模式");
             case 4:
-              return _context329.a(2);
+              return _context331.a(2);
           }
-        }, _callee329, this);
+        }, _callee331, this);
       }));
     }
     /** Same 350 ms debounce/rounding as the existing main-owned volume preference. */
@@ -29844,10 +29991,10 @@ var TwilightPortableCore = function (exports) {
       }, new AbortController().signal, true);
     }
     applyEdit(request, signal, owned) {
-      var work = this.pending.then(() => this.options.serialize(() => __async$2(this, null, /*#__PURE__*/_regenerator().m(function _callee330() {
-        var repository, check, previous, _i35, _Object$keys7, key, patch, normalized, paths, authorized, next, autoMixChanged, accepted, _t216, _t217;
-        return _regenerator().w(function (_context330) {
-          while (1) switch (_context330.p = _context330.n) {
+      var work = this.pending.then(() => this.options.serialize(() => __async$2(this, null, /*#__PURE__*/_regenerator().m(function _callee332() {
+        var repository, check, previous, _i35, _Object$keys7, key, patch, normalized, paths, authorized, next, autoMixChanged, accepted, _t221, _t222;
+        return _regenerator().w(function (_context332) {
+          while (1) switch (_context332.p = _context332.n) {
             case 0:
               repository = this.options.repository;
               if (owned) request = __spreadProps(__spreadValues({}, request), {
@@ -29864,18 +30011,18 @@ var TwilightPortableCore = function (exports) {
               _i35 = 0, _Object$keys7 = Object.keys(request.patch);
             case 1:
               if (!(_i35 < _Object$keys7.length)) {
-                _context330.n = 3;
+                _context332.n = 3;
                 break;
               }
               key = _Object$keys7[_i35];
               if (!(!Object.hasOwn(previous, key) || CORE_SPECIALIZED_SETTINGS.includes(key))) {
-                _context330.n = 2;
+                _context332.n = 2;
                 break;
               }
               throw new Error(`Use the domain command for setting: ${key}`);
             case 2:
               _i35++;
-              _context330.n = 1;
+              _context332.n = 1;
               break;
             case 3:
               patch = __spreadValues({}, request.patch);
@@ -29885,13 +30032,13 @@ var TwilightPortableCore = function (exports) {
               if (Object.hasOwn(patch, "downloadFolder")) paths.downloadFolder = normalized.downloadFolder;
               if (Object.hasOwn(patch, "cachePath") || Object.hasOwn(patch, "musicCachePath")) paths.musicCachePath = normalized.musicCachePath;
               if (!Object.keys(paths).length) {
-                _context330.n = 5;
+                _context332.n = 5;
                 break;
               }
-              _context330.n = 4;
+              _context332.n = 4;
               return this.options.authorizePaths(paths, signal);
             case 4:
-              authorized = _context330.v;
+              authorized = _context332.v;
               patch = __spreadValues(__spreadValues({}, patch), authorized);
               if (authorized.musicCachePath !== void 0) patch.cachePath = authorized.musicCachePath;
             case 5:
@@ -29899,77 +30046,77 @@ var TwilightPortableCore = function (exports) {
               next = repository.normalize(patch);
               autoMixChanged = next.autoMixMode !== previous.autoMixMode;
               if (!autoMixChanged) {
-                _context330.n = 7;
+                _context332.n = 7;
                 break;
               }
-              _context330.n = 6;
+              _context332.n = 6;
               return this.options.audio.setAutoMixMode(effectiveAutoMixMode(next.autoMixMode));
             case 6:
-              accepted = _context330.v;
+              accepted = _context332.v;
               if (accepted) {
-                _context330.n = 7;
+                _context332.n = 7;
                 break;
               }
               throw new Error("音频引擎未能应用 AutoMix 模式");
             case 7:
-              _context330.p = 7;
+              _context332.p = 7;
               check();
               repository.update(patch);
-              _context330.n = 14;
+              _context332.n = 14;
               break;
             case 8:
-              _context330.p = 8;
-              _t216 = _context330.v;
+              _context332.p = 8;
+              _t221 = _context332.v;
               if (!autoMixChanged) {
-                _context330.n = 13;
+                _context332.n = 13;
                 break;
               }
-              _context330.p = 9;
-              _context330.n = 10;
+              _context332.p = 9;
+              _context332.n = 10;
               return this.options.audio.setAutoMixMode(effectiveAutoMixMode(previous.autoMixMode));
             case 10:
-              if (_context330.v) {
-                _context330.n = 11;
+              if (_context332.v) {
+                _context332.n = 11;
                 break;
               }
               throw new Error("AutoMix rollback failed");
             case 11:
-              _context330.n = 13;
+              _context332.n = 13;
               break;
             case 12:
-              _context330.p = 12;
-              _t217 = _context330.v;
-              _context330.n = 13;
+              _context332.p = 12;
+              _t222 = _context332.v;
+              _context332.n = 13;
               return this.options.audio.stop();
             case 13:
-              throw _t216;
+              throw _t221;
             case 14:
               if (Object.hasOwn(patch, "autoMixStemMode") || Object.hasOwn(patch, "autoMixStemDevice")) this.options.audio.invalidateAutoMixSource();
               if (!(Object.hasOwn(patch, "libraryFolders") || Object.hasOwn(patch, "watchLibrary"))) {
-                _context330.n = 15;
+                _context332.n = 15;
                 break;
               }
-              _context330.n = 15;
+              _context332.n = 15;
               return this.options.configureLibrary(previous, repository.read());
             case 15:
-              return _context330.a(2, this.state());
+              return _context332.a(2, this.state());
           }
-        }, _callee330, this, [[9, 12], [7, 8]]);
+        }, _callee332, this, [[9, 12], [7, 8]]);
       }))));
       this.pending = work.catch(() => {});
       return work;
     }
     /** Internal backup entry point. Ordinary clients still use the domain-specific commands. */
     restore(revision2, candidate, signal) {
-      var work = this.pending.then(() => this.options.serialize(() => __async$2(this, null, /*#__PURE__*/_regenerator().m(function _callee331() {
-        var repository, effects, check, previous, next, paths, applied, _t218;
-        return _regenerator().w(function (_context331) {
-          while (1) switch (_context331.p = _context331.n) {
+      var work = this.pending.then(() => this.options.serialize(() => __async$2(this, null, /*#__PURE__*/_regenerator().m(function _callee333() {
+        var repository, effects, check, previous, next, paths, applied, _t223;
+        return _regenerator().w(function (_context333) {
+          while (1) switch (_context333.p = _context333.n) {
             case 0:
               repository = this.options.repository;
               effects = this.options.importEffects;
               if (effects) {
-                _context331.n = 1;
+                _context333.n = 1;
                 break;
               }
               throw new Error("Settings import is not configured");
@@ -29983,65 +30130,65 @@ var TwilightPortableCore = function (exports) {
               check();
               previous = repository.read();
               next = repository.normalize(candidate);
-              _context331.n = 2;
+              _context333.n = 2;
               return this.options.authorizePaths({
                 libraryFolders: next.libraryFolders,
                 downloadFolder: next.downloadFolder,
                 musicCachePath: next.musicCachePath
               }, signal);
             case 2:
-              paths = _context331.v;
+              paths = _context333.v;
               next = repository.normalize(__spreadProps(__spreadValues(__spreadValues({}, next), paths), {
                 cachePath: paths.musicCachePath
               }));
-              _context331.n = 3;
+              _context333.n = 3;
               return effects.prepare(next, signal);
             case 3:
-              next = _context331.v;
+              next = _context333.v;
               check();
-              _context331.p = 4;
-              _context331.n = 5;
+              _context333.p = 4;
+              _context333.n = 5;
               return effects.apply(previous, next);
             case 5:
-              applied = _context331.v;
+              applied = _context333.v;
               repository.update(__spreadValues(__spreadValues({}, next), applied));
-              _context331.n = 8;
+              _context333.n = 8;
               break;
             case 6:
-              _context331.p = 6;
-              _t218 = _context331.v;
-              _context331.n = 7;
+              _context333.p = 6;
+              _t223 = _context333.v;
+              _context333.n = 7;
               return effects.rollback(previous);
             case 7:
-              throw _t218;
+              throw _t223;
             case 8:
               this.options.audio.invalidateAutoMixSource();
-              _context331.n = 9;
+              _context333.n = 9;
               return this.options.configureLibrary(previous, repository.read());
             case 9:
-              return _context331.a(2, this.state());
+              return _context333.a(2, this.state());
           }
-        }, _callee331, this, [[4, 6]]);
+        }, _callee333, this, [[4, 6]]);
       }))));
       this.pending = work.catch(() => {});
       return work;
     }
     flush() {
-      return __async$2(this, null, /*#__PURE__*/_regenerator().m(function _callee332() {
+      return __async$2(this, null, /*#__PURE__*/_regenerator().m(function _callee334() {
         var _a;
-        return _regenerator().w(function (_context332) {
-          while (1) switch (_context332.n) {
+        return _regenerator().w(function (_context334) {
+          while (1) switch (_context334.n) {
             case 0:
-              _context332.n = 1;
+              _context334.n = 1;
               return this.pending;
             case 1:
               (_a = this.cancelVolumeTimer) == null ? void 0 : _a.call(this);
               this.cancelVolumeTimer = null;
               this.persistVolume();
             case 2:
-              return _context332.a(2);
+              return _context334.a(2);
           }
-        }, _callee332, this);
+        }, _callee334, this);
       }));
     }
   }
@@ -30756,7 +30903,7 @@ var TwilightPortableCore = function (exports) {
     step: 0.01
   }), token("layout.menuWidth", "--te-menu-width", "侧边栏宽度", "layout", "sidebar", "length", "clamp(224px, 18vw, 260px)", "clamp(224px, 18vw, 260px)"), token("playback.text.page", "--te-playback-page-text", "播放页正文", "playback", "player", "color", "#f4f7fb", "#f4f7fb"), token("playback.accent", "--te-playback-accent", "播放强调色", "playback", "player", "color", "#7c4dff", "#7c4dff", {
     adaptive: "cover-accent"
-  }), token("playback.backdrop.filter", "--te-playback-backdrop-filter", "封面背景滤镜", "playback", "player", "filter", "blur(58px) saturate(1.22) brightness(0.52)", "blur(58px) saturate(1.32) brightness(0.36)"), token("playback.backdrop.scrim", "--te-playback-backdrop-scrim", "播放背景遮罩", "playback", "player", "gradient", "linear-gradient(180deg, rgba(5, 7, 11, 0.72) 0%, rgba(5, 7, 11, 0.74) 52%, rgba(5, 7, 11, 0.78) 100%)", "linear-gradient(180deg, rgba(5, 7, 11, 0.72) 0%, rgba(5, 7, 11, 0.74) 52%, rgba(5, 7, 11, 0.78) 100%)"), token("playback.backdrop.highlight", "--te-playback-backdrop-highlight", "播放背景高光", "playback", "player", "color", "rgba(255, 255, 255, 0.12)", "rgba(255, 255, 255, 0.12)"), token("playback.backdrop.fluid", "--te-playback-fluid-bg", "动态背景渐变", "playback", "player", "gradient", "linear-gradient(135deg, #0f172a, #1e3a5f, #312e81, #1e3a5f, #0f172a)", "linear-gradient(135deg, #0f172a, #1e3a5f, #312e81, #1e3a5f, #0f172a)"), token("playback.backdrop.tempo", "--te-playback-fluid-tempo", "流体光影流转周期", "playback", "player", "number", "18s", "18s", {
+  }), token("playback.backdrop.filter", "--te-playback-backdrop-filter", "封面背景滤镜", "playback", "player", "filter", "blur(58px) saturate(1.22) brightness(0.52)", "blur(58px) saturate(1.32) brightness(1)"), token("playback.backdrop.scrim", "--te-playback-backdrop-scrim", "播放背景遮罩", "playback", "player", "gradient", "linear-gradient(180deg, rgba(5, 7, 11, 0.72) 0%, rgba(5, 7, 11, 0.74) 52%, rgba(5, 7, 11, 0.78) 100%)", "linear-gradient(180deg, rgba(5, 7, 11, 0.72) 0%, rgba(5, 7, 11, 0.74) 52%, rgba(5, 7, 11, 0.78) 100%)"), token("playback.backdrop.highlight", "--te-playback-backdrop-highlight", "播放背景高光", "playback", "player", "color", "rgba(255, 255, 255, 0.12)", "rgba(255, 255, 255, 0.12)"), token("playback.backdrop.fluid", "--te-playback-fluid-bg", "动态背景渐变", "playback", "player", "gradient", "linear-gradient(135deg, #0f172a, #1e3a5f, #312e81, #1e3a5f, #0f172a)", "linear-gradient(135deg, #0f172a, #1e3a5f, #312e81, #1e3a5f, #0f172a)"), token("playback.backdrop.tempo", "--te-playback-fluid-tempo", "流体光影流转周期", "playback", "player", "number", "18s", "18s", {
     min: 6,
     max: 36,
     step: 1,
@@ -33597,14 +33744,14 @@ var TwilightPortableCore = function (exports) {
     };
   }
   function normalizeOptionalStyleId(value) {
-    var styleId = normalizeText(value, MAX_STYLE_ID_LENGTH);
+    var styleId = normalizeText$1(value, MAX_STYLE_ID_LENGTH);
     return /^[a-z0-9][a-z0-9._-]*$/i.test(styleId) ? styleId : null;
   }
   function normalizeBackgroundKind(value, fallback) {
     return value === "solid" || value === "gradient" || value === "cover" || value === "image" ? value : fallback;
   }
   function normalizeBackgroundImageUrl(value) {
-    var url = normalizeText(value, MAX_BACKGROUND_IMAGE_URL_LENGTH);
+    var url = normalizeText$1(value, MAX_BACKGROUND_IMAGE_URL_LENGTH);
     return /^background:\/\/[a-f0-9]{24}\.(?:jpg|png|webp)$/i.test(url) ? url : "";
   }
   function normalizeLayoutPreference(value, fallback) {
@@ -33627,7 +33774,7 @@ var TwilightPortableCore = function (exports) {
   function normalizeCoordinate(value, fallback) {
     return clampFiniteNumber(value, -1e5, 1e5, fallback, true);
   }
-  function normalizeText(value, maxLength) {
+  function normalizeText$1(value, maxLength) {
     return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
   }
   function clampFiniteNumber(value, min, max, fallback, integer = false) {
@@ -35100,7 +35247,7 @@ var TwilightPortableCore = function (exports) {
     } else if (typeof patch.preset === "string" && PORTABLE_EQ_PRESETS[nextPreset]) {
       nextBands = [...PORTABLE_EQ_PRESETS[nextPreset]];
     }
-    return {
+    var next = {
       enabled: typeof patch.enabled === "boolean" ? patch.enabled : current2.enabled,
       preset: nextPreset,
       preampDb: typeof patch.preampDb === "number" ? clampDb(patch.preampDb) : current2.preampDb,
@@ -35110,6 +35257,9 @@ var TwilightPortableCore = function (exports) {
       dsp: patch.dsp ? normalizePortableDspSettings(patch.dsp) : structuredClone((_a = current2.dsp) != null ? _a : defaultPortableDspSettings()),
       scenes: Array.isArray(patch.scenes) ? structuredClone(patch.scenes.slice(0, 32)) : structuredClone((_b = current2.scenes) != null ? _b : [])
     };
+    if (next.dsp.sampleRateFamilySync && !next.bitPerfect) throw new Error("Family sync requires source-first playback");
+    if (next.bitPerfect && next.dsp.outputStage.targetSampleRate > 0 && next.dsp.allowedSampleRates.length > 0 && !next.dsp.allowedSampleRates.includes(next.dsp.outputStage.targetSampleRate)) throw new Error("Fixed sample rate is not in the allowed set");
+    return next;
   }
   function aggregateLibraryCollections(tracks2) {
     var albumMap = /* @__PURE__ */new Map();
@@ -35436,13 +35586,13 @@ var TwilightPortableCore = function (exports) {
       return null;
     }
     buildQueue(command) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee333() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee335() {
         var _a, _b, _c, _d, _e, staging, _iterator149, _step149, item, snapshot, clampedIndex, selectedEntryId, record2;
-        return _regenerator().w(function (_context333) {
-          while (1) switch (_context333.n) {
+        return _regenerator().w(function (_context335) {
+          while (1) switch (_context335.n) {
             case 0:
               if (!(command.kind === "begin")) {
-                _context333.n = 1;
+                _context335.n = 1;
                 break;
               }
               this.buildingQueues.set(command.id, {
@@ -35451,7 +35601,7 @@ var TwilightPortableCore = function (exports) {
                 sequence: 0,
                 rows: []
               });
-              return _context333.a(2, {
+              return _context335.a(2, {
                 kind: "building",
                 id: command.id,
                 sequence: 0,
@@ -35459,24 +35609,24 @@ var TwilightPortableCore = function (exports) {
               });
             case 1:
               if (!(command.kind === "abort")) {
-                _context333.n = 2;
+                _context335.n = 2;
                 break;
               }
               this.buildingQueues.delete(command.id);
-              return _context333.a(2, {
+              return _context335.a(2, {
                 kind: "aborted",
                 id: command.id
               });
             case 2:
               staging = this.buildingQueues.get(command.id);
               if (staging) {
-                _context333.n = 3;
+                _context335.n = 3;
                 break;
               }
               throw new Error(`Unknown queue build session: ${command.id}`);
             case 3:
               if (!(command.kind === "append")) {
-                _context333.n = 4;
+                _context335.n = 4;
                 break;
               }
               _iterator149 = _createForOfIteratorHelper(command.items);
@@ -35498,7 +35648,7 @@ var TwilightPortableCore = function (exports) {
                 _iterator149.f();
               }
               staging.sequence = command.sequence;
-              return _context333.a(2, {
+              return _context335.a(2, {
                 kind: "building",
                 id: command.id,
                 sequence: staging.sequence,
@@ -35519,28 +35669,28 @@ var TwilightPortableCore = function (exports) {
                 undoStack: []
               };
               this.queues.set(record2.id, record2);
-              return _context333.a(2, {
+              return _context335.a(2, {
                 kind: "ready",
                 id: command.id,
                 queue: this.snapshotOf(record2)
               });
           }
-        }, _callee333, this);
+        }, _callee335, this);
       }));
     }
     createQueue(query2, selectedId) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee334() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee336() {
         var _a, _b, page2, rows, selectedIndex, found, record2;
-        return _regenerator().w(function (_context334) {
-          while (1) switch (_context334.n) {
+        return _regenerator().w(function (_context336) {
+          while (1) switch (_context336.n) {
             case 0:
-              _context334.n = 1;
+              _context336.n = 1;
               return this.queryTracks(__spreadProps(__spreadValues({}, query2), {
                 offset: 0,
                 limit: 1e4
               }));
             case 1:
-              page2 = _context334.v;
+              page2 = _context336.v;
               rows = page2.tracks.map((track, idx) => ({
                 queueEntryId: this.nextEntryId(),
                 originalOrder: idx,
@@ -35563,44 +35713,44 @@ var TwilightPortableCore = function (exports) {
                 undoStack: []
               };
               this.queues.set(record2.id, record2);
-              return _context334.a(2, this.snapshotOf(record2));
+              return _context336.a(2, this.snapshotOf(record2));
           }
-        }, _callee334, this);
+        }, _callee336, this);
       }));
     }
     getQueue(id2) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee335() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee337() {
         var record2;
-        return _regenerator().w(function (_context335) {
-          while (1) switch (_context335.n) {
+        return _regenerator().w(function (_context337) {
+          while (1) switch (_context337.n) {
             case 0:
               record2 = this.queues.get(id2);
               if (record2) {
-                _context335.n = 1;
+                _context337.n = 1;
                 break;
               }
               throw new Error(`Playback queue ${id2} was not found`);
             case 1:
-              return _context335.a(2, this.snapshotOf(record2));
+              return _context337.a(2, this.snapshotOf(record2));
           }
-        }, _callee335, this);
+        }, _callee337, this);
       }));
     }
     readQueue(_0) {
-      return __async$1(this, arguments, /*#__PURE__*/_regenerator().m(function _callee336(id2, offset = 0, limit = LIBRARY_PAGE_SIZE, options) {
+      return __async$1(this, arguments, /*#__PURE__*/_regenerator().m(function _callee338(id2, offset = 0, limit = LIBRARY_PAGE_SIZE, options) {
         var record2, pos, items, start, slice;
-        return _regenerator().w(function (_context336) {
-          while (1) switch (_context336.n) {
+        return _regenerator().w(function (_context338) {
+          while (1) switch (_context338.n) {
             case 0:
               record2 = this.queues.get(id2);
               if (record2) {
-                _context336.n = 1;
+                _context338.n = 1;
                 break;
               }
               throw new Error(`Playback queue ${id2} was not found`);
             case 1:
               if (!((options == null ? void 0 : options.expectedRevision) !== void 0 && options.expectedRevision !== record2.revision)) {
-                _context336.n = 2;
+                _context338.n = 2;
                 break;
               }
               throw Object.assign(new Error("Playback queue revision changed"), {
@@ -35608,7 +35758,7 @@ var TwilightPortableCore = function (exports) {
               });
             case 2:
               if (!(options == null ? void 0 : options.occurrenceId)) {
-                _context336.n = 3;
+                _context338.n = 3;
                 break;
               }
               pos = record2.rows.findIndex(r => r.queueEntryId === options.occurrenceId);
@@ -35617,7 +35767,7 @@ var TwilightPortableCore = function (exports) {
                 position: pos,
                 track: this.resolveRowTrack(record2.rows[pos])
               }] : [];
-              return _context336.a(2, {
+              return _context338.a(2, {
                 items,
                 lastPlayablePosition: record2.rows.length > 0 ? record2.rows.length - 1 : void 0,
                 total: record2.rows.length,
@@ -35628,7 +35778,7 @@ var TwilightPortableCore = function (exports) {
             case 3:
               start = Math.max(0, offset);
               slice = record2.rows.slice(start, start + Math.max(1, limit));
-              return _context336.a(2, {
+              return _context338.a(2, {
                 items: slice.map((row, idx) => ({
                   queueEntryId: row.queueEntryId,
                   position: start + idx,
@@ -35641,24 +35791,24 @@ var TwilightPortableCore = function (exports) {
                 offset: start
               });
           }
-        }, _callee336, this);
+        }, _callee338, this);
       }));
     }
     editQueue(id2, expectedRevision, edit2) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee337() {
-        var _a, _b, _c, record2, reachedEnd, pushUndo, idx, nextIdx, targetOrder, newRows, _iterator150, _step150, item, snapshot, _iterator151, _step151, trackId, _snapshot2, insertAt, _idx, _idx2, selIdx, removeSet, currentSelected, previousIndex, fromIdx, _record2$rows$splice, _record2$rows$splice2, moved, toIdx, beforeIdx, _selIdx, last, _t219;
-        return _regenerator().w(function (_context337) {
-          while (1) switch (_context337.n) {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee339() {
+        var _a, _b, _c, record2, reachedEnd, pushUndo, idx, nextIdx, targetOrder, newRows, _iterator150, _step150, item, snapshot, _iterator151, _step151, trackId, _snapshot2, insertAt, _idx, _idx2, selIdx, removeSet, currentSelected, previousIndex, fromIdx, _record2$rows$splice, _record2$rows$splice2, moved, toIdx, beforeIdx, _selIdx, last, _t224;
+        return _regenerator().w(function (_context339) {
+          while (1) switch (_context339.n) {
             case 0:
               record2 = this.queues.get(id2);
               if (record2) {
-                _context337.n = 1;
+                _context339.n = 1;
                 break;
               }
               throw new Error(`Playback queue ${id2} was not found`);
             case 1:
               if (!(record2.revision !== expectedRevision)) {
-                _context337.n = 2;
+                _context339.n = 2;
                 break;
               }
               throw Object.assign(new Error("Playback queue revision mismatch"), {
@@ -35677,13 +35827,13 @@ var TwilightPortableCore = function (exports) {
                 });
                 if (record2.undoStack.length > 10) record2.undoStack.shift();
               };
-              _t219 = edit2.kind;
-              _context337.n = _t219 === "select" ? 3 : _t219 === "step" ? 5 : _t219 === "mode" ? 7 : _t219 === "order" ? 8 : _t219 === "insert" ? 9 : _t219 === "remove" ? 10 : _t219 === "move" ? 11 : _t219 === "clear" ? 13 : _t219 === "undo" ? 14 : 16;
+              _t224 = edit2.kind;
+              _context339.n = _t224 === "select" ? 3 : _t224 === "step" ? 5 : _t224 === "mode" ? 7 : _t224 === "order" ? 8 : _t224 === "insert" ? 9 : _t224 === "remove" ? 10 : _t224 === "move" ? 11 : _t224 === "clear" ? 13 : _t224 === "undo" ? 14 : 16;
               break;
             case 3:
               idx = record2.rows.findIndex(r => r.queueEntryId === edit2.entryId);
               if (!(idx < 0)) {
-                _context337.n = 4;
+                _context339.n = 4;
                 break;
               }
               throw new Error(`Queue entry ${edit2.entryId} not found`);
@@ -35691,14 +35841,14 @@ var TwilightPortableCore = function (exports) {
               record2.index = idx;
               record2.selectedEntryId = record2.rows[idx].queueEntryId;
               record2.revision++;
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 5:
               if (!(record2.rows.length === 0)) {
-                _context337.n = 6;
+                _context339.n = 6;
                 break;
               }
               reachedEnd = true;
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 6:
               nextIdx = record2.index + edit2.direction;
               if (nextIdx >= 0 && nextIdx < record2.rows.length) {
@@ -35712,7 +35862,7 @@ var TwilightPortableCore = function (exports) {
               } else {
                 reachedEnd = true;
               }
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 7:
               record2.playMode = edit2.mode;
               targetOrder = edit2.mode === "shuffle" ? "shuffle" : "original";
@@ -35720,13 +35870,13 @@ var TwilightPortableCore = function (exports) {
                 this.reorderRows(record2, targetOrder);
               }
               record2.revision++;
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 8:
               if (record2.order !== edit2.order) {
                 this.reorderRows(record2, edit2.order);
               }
               record2.revision++;
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 9:
               pushUndo("insert");
               newRows = [];
@@ -35785,7 +35935,7 @@ var TwilightPortableCore = function (exports) {
                 record2.selectedEntryId = record2.rows[0].queueEntryId;
               }
               record2.revision++;
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 10:
               pushUndo("remove");
               removeSet = new Set(edit2.entryIds);
@@ -35802,12 +35952,12 @@ var TwilightPortableCore = function (exports) {
                 record2.selectedEntryId = record2.rows[record2.index].queueEntryId;
               }
               record2.revision++;
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 11:
               pushUndo("move");
               fromIdx = record2.rows.findIndex(r => r.queueEntryId === edit2.entryId);
               if (!(fromIdx < 0)) {
-                _context337.n = 12;
+                _context339.n = 12;
                 break;
               }
               throw new Error(`Queue entry ${edit2.entryId} not found`);
@@ -35824,18 +35974,18 @@ var TwilightPortableCore = function (exports) {
                 if (_selIdx >= 0) record2.index = _selIdx;
               }
               record2.revision++;
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 13:
               pushUndo("clear");
               record2.rows = [];
               record2.index = 0;
               record2.selectedEntryId = null;
               record2.revision++;
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 14:
               last = record2.undoStack.pop();
               if (last) {
-                _context337.n = 15;
+                _context339.n = 15;
                 break;
               }
               throw new Error("Nothing to undo");
@@ -35846,14 +35996,14 @@ var TwilightPortableCore = function (exports) {
               record2.order = last.order;
               record2.playMode = last.playMode;
               record2.revision++;
-              return _context337.a(3, 16);
+              return _context339.a(3, 16);
             case 16:
-              return _context337.a(2, {
+              return _context339.a(2, {
                 queue: this.snapshotOf(record2),
                 reachedEnd
               });
           }
-        }, _callee337, this);
+        }, _callee339, this);
       }));
     }
     reorderRows(record2, order) {
@@ -35878,66 +36028,66 @@ var TwilightPortableCore = function (exports) {
       }
     }
     deleteQueue(id2, _expectedRevision) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee338() {
-        return _regenerator().w(function (_context338) {
-          while (1) switch (_context338.n) {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee340() {
+        return _regenerator().w(function (_context340) {
+          while (1) switch (_context340.n) {
             case 0:
               this.queues.delete(id2);
               this.pruneDetachedTracks();
             case 1:
-              return _context338.a(2);
+              return _context340.a(2);
           }
-        }, _callee338, this);
+        }, _callee340, this);
       }));
     }
     readNeighbor(id2, revision2, index, direction, wrap) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee339() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee341() {
         var record2, target, row;
-        return _regenerator().w(function (_context339) {
-          while (1) switch (_context339.n) {
+        return _regenerator().w(function (_context341) {
+          while (1) switch (_context341.n) {
             case 0:
               record2 = this.queues.get(id2);
               if (!(!record2 || record2.revision !== revision2 || record2.rows.length === 0)) {
-                _context339.n = 1;
+                _context341.n = 1;
                 break;
               }
-              return _context339.a(2, null);
+              return _context341.a(2, null);
             case 1:
               target = index + direction;
               if (!(target < 0 || target >= record2.rows.length)) {
-                _context339.n = 3;
+                _context341.n = 3;
                 break;
               }
               if (wrap) {
-                _context339.n = 2;
+                _context341.n = 2;
                 break;
               }
-              return _context339.a(2, null);
+              return _context341.a(2, null);
             case 2:
               target = direction > 0 ? 0 : record2.rows.length - 1;
             case 3:
               row = record2.rows[target];
               if (row) {
-                _context339.n = 4;
+                _context341.n = 4;
                 break;
               }
-              return _context339.a(2, null);
+              return _context341.a(2, null);
             case 4:
-              return _context339.a(2, {
+              return _context341.a(2, {
                 queueEntryId: row.queueEntryId,
                 position: target,
                 track: this.resolveRowTrack(row)
               });
           }
-        }, _callee339, this);
+        }, _callee341, this);
       }));
     }
     getMetadata() {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee340() {
-        return _regenerator().w(function (_context340) {
-          while (1) switch (_context340.n) {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee342() {
+        return _regenerator().w(function (_context342) {
+          while (1) switch (_context342.n) {
             case 0:
-              return _context340.a(2, {
+              return _context342.a(2, {
                 revision: this.libraryRevisionCounter,
                 trackCount: this.libraryIds.size,
                 fileCount: this.libraryIds.size,
@@ -35945,14 +36095,14 @@ var TwilightPortableCore = function (exports) {
                 exclusions: []
               });
           }
-        }, _callee340, this);
+        }, _callee342, this);
       }));
     }
     queryTracks() {
-      return __async$1(this, arguments, /*#__PURE__*/_regenerator().m(function _callee341(query2 = {}) {
+      return __async$1(this, arguments, /*#__PURE__*/_regenerator().m(function _callee343(query2 = {}) {
         var _a, _b, list, idSet, q, offset, limit, slice;
-        return _regenerator().w(function (_context341) {
-          while (1) switch (_context341.n) {
+        return _regenerator().w(function (_context343) {
+          while (1) switch (_context343.n) {
             case 0:
               list = this.libraryTracks();
               if (query2.ids) {
@@ -35969,7 +36119,7 @@ var TwilightPortableCore = function (exports) {
               offset = Math.max(0, (_a = query2.offset) != null ? _a : 0);
               limit = Math.max(1, (_b = query2.limit) != null ? _b : LIBRARY_PAGE_SIZE);
               slice = list.slice(offset, offset + limit).map(t => structuredClone(t));
-              return _context341.a(2, {
+              return _context343.a(2, {
                 tracks: slice,
                 versions: {},
                 total: list.length,
@@ -35977,17 +36127,17 @@ var TwilightPortableCore = function (exports) {
                 offset
               });
           }
-        }, _callee341, this);
+        }, _callee343, this);
       }));
     }
     getTracksByIds(ids) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee342() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee344() {
         var found;
-        return _regenerator().w(function (_context342) {
-          while (1) switch (_context342.n) {
+        return _regenerator().w(function (_context344) {
+          while (1) switch (_context344.n) {
             case 0:
               found = ids.map(id2 => this.getTrack(id2)).filter(t => Boolean(t));
-              return _context342.a(2, {
+              return _context344.a(2, {
                 tracks: found,
                 versions: {},
                 total: found.length,
@@ -35995,14 +36145,14 @@ var TwilightPortableCore = function (exports) {
                 offset: 0
               });
           }
-        }, _callee342, this);
+        }, _callee344, this);
       }));
     }
     queryCollections(_0) {
-      return __async$1(this, arguments, /*#__PURE__*/_regenerator().m(function _callee343(kind, query2 = {}) {
+      return __async$1(this, arguments, /*#__PURE__*/_regenerator().m(function _callee345(kind, query2 = {}) {
         var _a, _b, groups, _iterator152, _step152, track, albumName, key, existing, artistName, _key6, _existing, genreName, _key7, _existing2, items, q, offset, limit;
-        return _regenerator().w(function (_context343) {
-          while (1) switch (_context343.n) {
+        return _regenerator().w(function (_context345) {
+          while (1) switch (_context345.n) {
             case 0:
               groups = /* @__PURE__ */new Map();
               _iterator152 = _createForOfIteratorHelper(this.libraryTracks());
@@ -36072,7 +36222,7 @@ var TwilightPortableCore = function (exports) {
               }
               offset = Math.max(0, (_a = query2.offset) != null ? _a : 0);
               limit = Math.max(1, (_b = query2.limit) != null ? _b : LIBRARY_PAGE_SIZE);
-              return _context343.a(2, {
+              return _context345.a(2, {
                 revision: this.libraryRevisionCounter,
                 total: items.length,
                 offset,
@@ -36080,21 +36230,21 @@ var TwilightPortableCore = function (exports) {
                 letterOffsets: {}
               });
           }
-        }, _callee343, this);
+        }, _callee345, this);
       }));
     }
     syncPlaylistView(sync) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee344() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee346() {
         var _a, current2;
-        return _regenerator().w(function (_context344) {
-          while (1) switch (_context344.n) {
+        return _regenerator().w(function (_context346) {
+          while (1) switch (_context346.n) {
             case 0:
               if (!(sync.kind === "drop")) {
-                _context344.n = 1;
+                _context346.n = 1;
                 break;
               }
               this.playlistViews.delete(sync.id);
-              return _context344.a(2, {
+              return _context346.a(2, {
                 id: sync.id,
                 sequence: 0,
                 count: 0,
@@ -36102,7 +36252,7 @@ var TwilightPortableCore = function (exports) {
               });
             case 1:
               if (!(sync.kind === "begin")) {
-                _context344.n = 2;
+                _context346.n = 2;
                 break;
               }
               this.playlistViews.set(sync.id, {
@@ -36110,7 +36260,7 @@ var TwilightPortableCore = function (exports) {
                 committed: false,
                 entries: []
               });
-              return _context344.a(2, {
+              return _context346.a(2, {
                 id: sync.id,
                 sequence: 0,
                 count: 0,
@@ -36123,12 +36273,12 @@ var TwilightPortableCore = function (exports) {
                 entries: []
               };
               if (!(sync.kind === "groups")) {
-                _context344.n = 3;
+                _context346.n = 3;
                 break;
               }
               current2.sequence = sync.sequence;
               this.playlistViews.set(sync.id, current2);
-              return _context344.a(2, {
+              return _context346.a(2, {
                 id: sync.id,
                 sequence: sync.sequence,
                 count: sync.groups.length,
@@ -36136,13 +36286,13 @@ var TwilightPortableCore = function (exports) {
               });
             case 3:
               if (!(sync.kind === "append")) {
-                _context344.n = 4;
+                _context346.n = 4;
                 break;
               }
               current2.sequence = sync.sequence;
               current2.entries.push(...sync.entries);
               this.playlistViews.set(sync.id, current2);
-              return _context344.a(2, {
+              return _context346.a(2, {
                 id: sync.id,
                 sequence: sync.sequence,
                 count: current2.entries.length,
@@ -36152,21 +36302,21 @@ var TwilightPortableCore = function (exports) {
               current2.sequence = sync.sequence;
               current2.committed = true;
               this.playlistViews.set(sync.id, current2);
-              return _context344.a(2, {
+              return _context346.a(2, {
                 id: sync.id,
                 sequence: sync.sequence,
                 count: current2.entries.length,
                 committed: true
               });
           }
-        }, _callee344, this);
+        }, _callee346, this);
       }));
     }
     lookupTracksByPaths(paths) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee345() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee347() {
         var byPath, _iterator153, _step153, track;
-        return _regenerator().w(function (_context345) {
-          while (1) switch (_context345.n) {
+        return _regenerator().w(function (_context347) {
+          while (1) switch (_context347.n) {
             case 0:
               byPath = /* @__PURE__ */new Map();
               _iterator153 = _createForOfIteratorHelper(this.libraryTracks());
@@ -36182,7 +36332,7 @@ var TwilightPortableCore = function (exports) {
               } finally {
                 _iterator153.f();
               }
-              return _context345.a(2, {
+              return _context347.a(2, {
                 revision: this.libraryRevisionCounter,
                 ids: paths.map(p => {
                   var _a;
@@ -36190,14 +36340,14 @@ var TwilightPortableCore = function (exports) {
                 })
               });
           }
-        }, _callee345, this);
+        }, _callee347, this);
       }));
     }
     lookupPlaylistTracks(request) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee346() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee348() {
         var byPath, _iterator154, _step154, track;
-        return _regenerator().w(function (_context346) {
-          while (1) switch (_context346.n) {
+        return _regenerator().w(function (_context348) {
+          while (1) switch (_context348.n) {
             case 0:
               byPath = /* @__PURE__ */new Map();
               _iterator154 = _createForOfIteratorHelper(this.libraryTracks());
@@ -36213,7 +36363,7 @@ var TwilightPortableCore = function (exports) {
               } finally {
                 _iterator154.f();
               }
-              return _context346.a(2, {
+              return _context348.a(2, {
                 revision: this.libraryRevisionCounter,
                 ids: request.entries.map(entry => {
                   if (entry.id && this.libraryIds.has(entry.id)) return entry.id;
@@ -36222,7 +36372,7 @@ var TwilightPortableCore = function (exports) {
                 })
               });
           }
-        }, _callee346, this);
+        }, _callee348, this);
       }));
     }
   }
@@ -36238,6 +36388,8 @@ var TwilightPortableCore = function (exports) {
       /** Latest native observation; natural-end checks read it, never a guess. */
       __publicField(this, "info", null);
       __publicField(this, "transportRevision", 0);
+      /** Pause, resume and seek do not change the native queue's identity. */
+      __publicField(this, "queueMutationRevision", 0);
       __publicField(this, "continuationIntent", 0);
       __publicField(this, "endEligible", false);
       __publicField(this, "unsubscribePort", null);
@@ -36317,19 +36469,19 @@ var TwilightPortableCore = function (exports) {
       return this.currentQueueToken;
     }
     getPlaybackInfo() {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee347() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee349() {
         var info;
-        return _regenerator().w(function (_context347) {
-          while (1) switch (_context347.n) {
+        return _regenerator().w(function (_context349) {
+          while (1) switch (_context349.n) {
             case 0:
-              _context347.n = 1;
+              _context349.n = 1;
               return this.port.getSnapshot();
             case 1:
-              info = _context347.v;
+              info = _context349.v;
               this.info = info;
-              return _context347.a(2, info);
+              return _context349.a(2, info);
           }
-        }, _callee347, this);
+        }, _callee349, this);
       }));
     }
     getQueueSnapshot() {
@@ -36355,227 +36507,228 @@ var TwilightPortableCore = function (exports) {
     /** Opens the next decoder only after a confirmed natural end. Every await is
      * fenced against a later transport command; unknown outcomes escape. */
     continueAfterPlaybackEnd(request) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee348() {
-        var end, expected, loading, loadRevision, loadIntent, changingMode, modeRevision, modeIntent, playIntent, playing, playRevision, result, _t220;
-        return _regenerator().w(function (_context348) {
-          while (1) switch (_context348.p = _context348.n) {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee350() {
+        var end, expected, loading, loadRevision, loadIntent, changingMode, modeRevision, modeIntent, playIntent, playing, playRevision, result, _t225;
+        return _regenerator().w(function (_context350) {
+          while (1) switch (_context350.p = _context350.n) {
             case 0:
-              _context348.n = 1;
+              _context350.n = 1;
               return this.getPlaybackInfo();
             case 1:
               end = this.getPlaybackEnd();
               expected = request.expected;
               if (!(!request.isCurrent() || !end || end.intent !== expected.intent || end.selection.queueToken !== expected.selection.queueToken || end.selection.index !== expected.selection.index || end.selection.id !== expected.selection.id || end.selection.source !== expected.selection.source)) {
-                _context348.n = 2;
+                _context350.n = 2;
                 break;
               }
-              return _context348.a(2, false);
+              return _context350.a(2, false);
             case 2:
               loading = this.loadQueue([request.item], 0);
               loadRevision = this.transportRevision;
               loadIntent = this.continuationIntent;
-              _context348.n = 3;
+              _context350.n = 3;
               return loading;
             case 3:
               if (this.queueItems.length === 1 && this.currentQueueToken && this.queueItems[0].queueEntryId === request.item.queueEntryId && this.queueItems[0].source === request.item.source) request.onSelected();
               if (!(!request.isCurrent() || loadRevision !== this.transportRevision || loadIntent !== this.continuationIntent)) {
-                _context348.n = 4;
+                _context350.n = 4;
                 break;
               }
-              return _context348.a(2, false);
+              return _context350.a(2, false);
             case 4:
               changingMode = this.setPlayMode(request.playMode);
               modeRevision = this.transportRevision;
               modeIntent = this.continuationIntent;
-              _context348.n = 5;
+              _context350.n = 5;
               return changingMode;
             case 5:
               if (!(!request.isCurrent() || modeRevision !== this.transportRevision || modeIntent !== this.continuationIntent)) {
-                _context348.n = 6;
+                _context350.n = 6;
                 break;
               }
-              return _context348.a(2, false);
+              return _context350.a(2, false);
             case 6:
               playIntent = 0;
               playing = this.play(request.item.source, 0, () => request.isCurrent() && playIntent === this.continuationIntent);
               playIntent = this.continuationIntent;
               playRevision = this.transportRevision;
-              _context348.p = 7;
-              _context348.n = 8;
+              _context350.p = 7;
+              _context350.n = 8;
               return playing;
             case 8:
-              result = _context348.v;
+              result = _context350.v;
               if (!result.superseded) {
-                _context348.n = 9;
+                _context350.n = 9;
                 break;
               }
-              return _context348.a(2, false);
+              return _context350.a(2, false);
             case 9:
               if (result.nativeStarted) {
-                _context348.n = 10;
+                _context350.n = 10;
                 break;
               }
               throw new Error("afterglow_requires_native_playback");
             case 10:
-              return _context348.a(2, true);
+              return _context350.a(2, true);
             case 11:
-              _context348.p = 11;
-              _t220 = _context348.v;
+              _context350.p = 11;
+              _t225 = _context350.v;
               if (!(playRevision === this.transportRevision && playIntent === this.continuationIntent)) {
-                _context348.n = 12;
+                _context350.n = 12;
                 break;
               }
-              _context348.n = 12;
+              _context350.n = 12;
               return this.stop();
             case 12:
-              throw _t220;
+              throw _t225;
             case 13:
-              return _context348.a(2);
+              return _context350.a(2);
           }
-        }, _callee348, this, [[7, 11]]);
+        }, _callee350, this, [[7, 11]]);
       }));
     }
     start() {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee349() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee351() {
         var _a, _b;
-        return _regenerator().w(function (_context349) {
-          while (1) switch (_context349.n) {
+        return _regenerator().w(function (_context351) {
+          while (1) switch (_context351.n) {
             case 0:
-              _context349.n = 1;
+              _context351.n = 1;
               return (_b = (_a = this.port).start) == null ? void 0 : _b.call(_a);
             case 1:
-              return _context349.a(2);
+              return _context351.a(2);
           }
-        }, _callee349, this);
+        }, _callee351, this);
       }));
     }
     loadQueue(items, startIndex = 0) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee350() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee352() {
         var revision2, nextQueue, nextIndex;
-        return _regenerator().w(function (_context350) {
-          while (1) switch (_context350.n) {
+        return _regenerator().w(function (_context352) {
+          while (1) switch (_context352.n) {
             case 0:
-              revision2 = ++this.transportRevision;
+              this.transportRevision++;
+              revision2 = ++this.queueMutationRevision;
               this.revokePlaybackEnd();
               nextQueue = items.map(item => structuredClone(item));
               nextIndex = nextQueue.length === 0 ? 0 : Math.max(0, Math.min(nextQueue.length - 1, startIndex));
               this.currentQueueToken = "";
-              _context350.n = 1;
+              _context352.n = 1;
               return this.port.loadQueue(nextQueue, nextIndex);
             case 1:
-              if (!(revision2 !== this.transportRevision)) {
-                _context350.n = 2;
+              if (!(revision2 !== this.queueMutationRevision)) {
+                _context352.n = 2;
                 break;
               }
-              return _context350.a(2);
+              return _context352.a(2);
             case 2:
               this.queueItems = nextQueue;
               this.currentQueueToken = this.nextQueueToken();
             case 3:
-              return _context350.a(2);
+              return _context352.a(2);
           }
-        }, _callee350, this);
+        }, _callee352, this);
       }));
     }
     /** Android has no native compare-and-rebind, so the portable adapter checks
      * the decoder before and after a non-interrupting LoadQueue. A race with a
      * natural track change revokes queue authority instead of guessing. */
     rebindQueue(rebind) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee351() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee353() {
         var _a, _b, _c, _d, _e, _f, _g, _h, expected, startIndex, playMode, previousToken, current2, selected, revision2, superseded, before, nextQueue, after;
-        return _regenerator().w(function (_context351) {
-          while (1) switch (_context351.n) {
+        return _regenerator().w(function (_context353) {
+          while (1) switch (_context353.n) {
             case 0:
               expected = rebind.expected, startIndex = rebind.startIndex, playMode = rebind.playMode;
               previousToken = this.currentQueueToken;
               current2 = this.queueItems[expected.index];
               selected = rebind.items[startIndex];
               if (!(!previousToken || expected.queueToken !== previousToken || !Number.isInteger(expected.index) || !Number.isInteger(startIndex) || !current2 || current2.id !== expected.id || current2.source !== expected.source || !selected || selected.id !== current2.id || selected.source !== current2.source || ((_a = selected.cueRange) == null ? void 0 : _a.startSeconds) !== ((_b = current2.cueRange) == null ? void 0 : _b.startSeconds) || ((_c = selected.cueRange) == null ? void 0 : _c.endSeconds) !== ((_d = current2.cueRange) == null ? void 0 : _d.endSeconds) || ((_f = (_e = selected.cueRange) == null ? void 0 : _e.virtualPregapSeconds) != null ? _f : 0) !== ((_h = (_g = current2.cueRange) == null ? void 0 : _g.virtualPregapSeconds) != null ? _h : 0))) {
-                _context351.n = 1;
+                _context353.n = 1;
                 break;
               }
-              return _context351.a(2, null);
+              return _context353.a(2, null);
             case 1:
-              revision2 = ++this.transportRevision;
+              revision2 = ++this.queueMutationRevision;
               this.currentQueueToken = "";
               superseded = () => new Error("Native queue handoff superseded; queue authority must be refreshed");
-              _context351.n = 2;
+              _context353.n = 2;
               return this.port.getSnapshot();
             case 2:
-              before = _context351.v;
-              if (!(revision2 !== this.transportRevision)) {
-                _context351.n = 3;
+              before = _context353.v;
+              if (!(revision2 !== this.queueMutationRevision)) {
+                _context353.n = 3;
                 break;
               }
               throw superseded();
             case 3:
               this.info = before;
               if (!(before.state === "stopped" || before.queueIndex !== expected.index || before.source !== expected.source)) {
-                _context351.n = 4;
+                _context353.n = 4;
                 break;
               }
               this.currentQueueToken = previousToken;
-              return _context351.a(2, null);
+              return _context353.a(2, null);
             case 4:
               nextQueue = rebind.items.map(item => structuredClone(item));
-              _context351.n = 5;
+              _context353.n = 5;
               return this.port.loadQueue(nextQueue, startIndex);
             case 5:
-              if (!(revision2 !== this.transportRevision)) {
-                _context351.n = 6;
+              if (!(revision2 !== this.queueMutationRevision)) {
+                _context353.n = 6;
                 break;
               }
               throw superseded();
             case 6:
               if (!(playMode !== this.playMode)) {
-                _context351.n = 9;
+                _context353.n = 9;
                 break;
               }
-              _context351.n = 7;
+              _context353.n = 7;
               return this.port.setPlayMode(playMode);
             case 7:
-              if (!(revision2 !== this.transportRevision)) {
-                _context351.n = 8;
+              if (!(revision2 !== this.queueMutationRevision)) {
+                _context353.n = 8;
                 break;
               }
               throw superseded();
             case 8:
               this.playMode = playMode;
             case 9:
-              _context351.n = 10;
+              _context353.n = 10;
               return this.port.getSnapshot();
             case 10:
-              after = _context351.v;
-              if (!(revision2 !== this.transportRevision)) {
-                _context351.n = 11;
+              after = _context353.v;
+              if (!(revision2 !== this.queueMutationRevision)) {
+                _context353.n = 11;
                 break;
               }
               throw superseded();
             case 11:
               this.info = after;
               if (!(after.source !== selected.source || after.queueIndex !== startIndex)) {
-                _context351.n = 12;
+                _context353.n = 12;
                 break;
               }
               throw new Error("Native queue handoff raced a track change; queue authority must be refreshed");
             case 12:
               this.queueItems = nextQueue;
               this.currentQueueToken = this.nextQueueToken();
-              return _context351.a(2, {
+              return _context353.a(2, {
                 queueToken: this.currentQueueToken
               });
           }
-        }, _callee351, this);
+        }, _callee353, this);
       }));
     }
     play(source, position = 0, requested) {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee352() {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee354() {
         var revision2, superseded, result;
-        return _regenerator().w(function (_context352) {
-          while (1) switch (_context352.n) {
+        return _regenerator().w(function (_context354) {
+          while (1) switch (_context354.n) {
             case 0:
               if (source) {
-                _context352.n = 1;
+                _context354.n = 1;
                 break;
               }
               throw new Error("playback source is empty");
@@ -36587,166 +36740,166 @@ var TwilightPortableCore = function (exports) {
                 fallbackReason: "",
                 superseded: true
               };
-              _context352.n = 2;
+              _context354.n = 2;
               return void 0;
             case 2:
               if (!(revision2 !== this.transportRevision || (requested == null ? void 0 : requested()) === false)) {
-                _context352.n = 3;
+                _context354.n = 3;
                 break;
               }
-              return _context352.a(2, superseded);
+              return _context354.a(2, superseded);
             case 3:
-              _context352.n = 4;
+              _context354.n = 4;
               return this.port.play(source, position);
             case 4:
-              result = _context352.v;
+              result = _context354.v;
               if (!(revision2 !== this.transportRevision)) {
-                _context352.n = 5;
+                _context354.n = 5;
                 break;
               }
-              return _context352.a(2, superseded);
+              return _context354.a(2, superseded);
             case 5:
               this.endEligible = result.nativeStarted;
-              return _context352.a(2, result);
-          }
-        }, _callee352, this);
-      }));
-    }
-    pause() {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee353() {
-        return _regenerator().w(function (_context353) {
-          while (1) switch (_context353.n) {
-            case 0:
-              this.transportRevision++;
-              this.revokePlaybackEnd();
-              _context353.n = 1;
-              return this.port.pause();
-            case 1:
-              return _context353.a(2);
-          }
-        }, _callee353, this);
-      }));
-    }
-    stop() {
-      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee354() {
-        return _regenerator().w(function (_context354) {
-          while (1) switch (_context354.n) {
-            case 0:
-              this.transportRevision++;
-              this.revokePlaybackEnd();
-              _context354.n = 1;
-              return this.port.stop();
-            case 1:
-              return _context354.a(2);
+              return _context354.a(2, result);
           }
         }, _callee354, this);
       }));
     }
-    seek(position) {
+    pause() {
       return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee355() {
-        var revision2, info;
         return _regenerator().w(function (_context355) {
           while (1) switch (_context355.n) {
             case 0:
-              revision2 = ++this.transportRevision;
+              this.transportRevision++;
               this.revokePlaybackEnd();
               _context355.n = 1;
-              return this.port.seek(position);
+              return this.port.pause();
             case 1:
-              if (!(revision2 !== this.transportRevision)) {
-                _context355.n = 2;
-                break;
-              }
-              return _context355.a(2);
-            case 2:
-              _context355.n = 3;
-              return this.port.getSnapshot();
-            case 3:
-              info = _context355.v;
-              if (!(revision2 !== this.transportRevision)) {
-                _context355.n = 4;
-                break;
-              }
-              return _context355.a(2);
-            case 4:
-              this.info = info;
-              this.endEligible = info.state === "playing";
-            case 5:
               return _context355.a(2);
           }
         }, _callee355, this);
       }));
     }
-    seekConfirmed(position) {
+    stop() {
       return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee356() {
         return _regenerator().w(function (_context356) {
           while (1) switch (_context356.n) {
             case 0:
+              this.transportRevision++;
+              this.revokePlaybackEnd();
               _context356.n = 1;
-              return this.seek(position);
+              return this.port.stop();
             case 1:
               return _context356.a(2);
           }
         }, _callee356, this);
       }));
     }
-    setVolume(volume2) {
+    seek(position) {
       return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee357() {
+        var revision2, info;
         return _regenerator().w(function (_context357) {
           while (1) switch (_context357.n) {
             case 0:
+              revision2 = ++this.transportRevision;
+              this.revokePlaybackEnd();
               _context357.n = 1;
-              return this.port.setVolume(volume2);
+              return this.port.seek(position);
             case 1:
+              if (!(revision2 !== this.transportRevision)) {
+                _context357.n = 2;
+                break;
+              }
+              return _context357.a(2);
+            case 2:
+              _context357.n = 3;
+              return this.port.getSnapshot();
+            case 3:
+              info = _context357.v;
+              if (!(revision2 !== this.transportRevision)) {
+                _context357.n = 4;
+                break;
+              }
+              return _context357.a(2);
+            case 4:
+              this.info = info;
+              this.endEligible = info.state === "playing";
+            case 5:
               return _context357.a(2);
           }
         }, _callee357, this);
       }));
     }
-    setPlaybackRate(rate) {
+    seekConfirmed(position) {
       return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee358() {
         return _regenerator().w(function (_context358) {
           while (1) switch (_context358.n) {
             case 0:
               _context358.n = 1;
-              return this.port.setPlaybackRate(rate);
+              return this.seek(position);
             case 1:
               return _context358.a(2);
           }
         }, _callee358, this);
       }));
     }
-    setPlayMode(mode) {
+    setVolume(volume2) {
       return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee359() {
-        var _a, revision2, endEligible, intent;
         return _regenerator().w(function (_context359) {
           while (1) switch (_context359.n) {
             case 0:
+              _context359.n = 1;
+              return this.port.setVolume(volume2);
+            case 1:
+              return _context359.a(2);
+          }
+        }, _callee359, this);
+      }));
+    }
+    setPlaybackRate(rate) {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee360() {
+        return _regenerator().w(function (_context360) {
+          while (1) switch (_context360.n) {
+            case 0:
+              _context360.n = 1;
+              return this.port.setPlaybackRate(rate);
+            case 1:
+              return _context360.a(2);
+          }
+        }, _callee360, this);
+      }));
+    }
+    setPlayMode(mode) {
+      return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee361() {
+        var _a, revision2, endEligible, intent;
+        return _regenerator().w(function (_context361) {
+          while (1) switch (_context361.n) {
+            case 0:
               if (!(mode === this.playMode)) {
-                _context359.n = 1;
+                _context361.n = 1;
                 break;
               }
-              return _context359.a(2);
+              return _context361.a(2);
             case 1:
               revision2 = this.transportRevision;
               endEligible = this.endEligible && ((_a = this.info) == null ? void 0 : _a.state) === "playing";
               this.revokePlaybackEnd();
               intent = this.continuationIntent;
-              _context359.n = 2;
+              _context361.n = 2;
               return this.port.setPlayMode(mode);
             case 2:
               if (!(revision2 !== this.transportRevision || intent !== this.continuationIntent)) {
-                _context359.n = 3;
+                _context361.n = 3;
                 break;
               }
-              return _context359.a(2);
+              return _context361.a(2);
             case 3:
               this.playMode = mode;
               this.endEligible = endEligible;
             case 4:
-              return _context359.a(2);
+              return _context361.a(2);
           }
-        }, _callee359, this);
+        }, _callee361, this);
       }));
     }
   }
@@ -36797,39 +36950,39 @@ var TwilightPortableCore = function (exports) {
       resolvePath: path => path
     };
     currentSettings = normalizeAppSettings(__spreadValues(__spreadValues({}, createDefaultSettings(platform)), options.initialSettings), settingsEnv);
-    var ensureEnvelopeLoaded = () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee361() {
-      return _regenerator().w(function (_context361) {
-        while (1) switch (_context361.n) {
+    var ensureEnvelopeLoaded = () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee363() {
+      return _regenerator().w(function (_context363) {
+        while (1) switch (_context363.n) {
           case 0:
             if (!envelopeLoaded) {
-              _context361.n = 1;
+              _context363.n = 1;
               break;
             }
-            return _context361.a(2);
+            return _context363.a(2);
           case 1:
             if (!envelopeLoadPromise) {
-              _context361.n = 2;
+              _context363.n = 2;
               break;
             }
-            return _context361.a(2, envelopeLoadPromise);
+            return _context363.a(2, envelopeLoadPromise);
           case 2:
-            envelopeLoadPromise = (() => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee360() {
-              var _a2, _b2, stored, parsedNum, initialRev, parsed, known, _iterator155, _step155, legacy, at, _t221;
-              return _regenerator().w(function (_context360) {
-                while (1) switch (_context360.p = _context360.n) {
+            envelopeLoadPromise = (() => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee362() {
+              var _a2, _b2, stored, parsedNum, initialRev, parsed, known, _iterator155, _step155, legacy, at, _t226;
+              return _regenerator().w(function (_context362) {
+                while (1) switch (_context362.p = _context362.n) {
                   case 0:
-                    _context360.n = 1;
+                    _context362.n = 1;
                     return options.sessionStore.load();
                   case 1:
-                    stored = _context360.v;
+                    stored = _context362.v;
                     if (stored) {
-                      _context360.n = 2;
+                      _context362.n = 2;
                       break;
                     }
                     storeRevisionToken = null;
                     sessionDataRevision = 0;
                     envelopeLoaded = true;
-                    return _context360.a(2);
+                    return _context362.a(2);
                   case 2:
                     storeRevisionToken = stored.revision;
                     parsedNum = Number.parseInt(stored.revision, 10);
@@ -36854,24 +37007,24 @@ var TwilightPortableCore = function (exports) {
                       playlistsRevision = initialRev;
                     }
                     if (!Array.isArray(parsed.customPlaylists)) {
-                      _context360.n = 11;
+                      _context362.n = 11;
                       break;
                     }
                     known = new Set(playlistsState.map(playlist => playlist.id));
                     _iterator155 = _createForOfIteratorHelper(parsed.customPlaylists);
-                    _context360.p = 3;
+                    _context362.p = 3;
                     _iterator155.s();
                   case 4:
                     if ((_step155 = _iterator155.n()).done) {
-                      _context360.n = 7;
+                      _context362.n = 7;
                       break;
                     }
                     legacy = _step155.value;
                     if (!(!legacy || typeof legacy.id !== "string" || known.has(legacy.id))) {
-                      _context360.n = 5;
+                      _context362.n = 5;
                       break;
                     }
-                    return _context360.a(3, 6);
+                    return _context362.a(3, 6);
                   case 5:
                     at = new Date(Number(legacy.updatedAtMs) || clock.nowUnixMs()).toISOString();
                     playlistsState.push({
@@ -36882,19 +37035,19 @@ var TwilightPortableCore = function (exports) {
                       updatedAt: at
                     });
                   case 6:
-                    _context360.n = 4;
+                    _context362.n = 4;
                     break;
                   case 7:
-                    _context360.n = 9;
+                    _context362.n = 9;
                     break;
                   case 8:
-                    _context360.p = 8;
-                    _t221 = _context360.v;
-                    _iterator155.e(_t221);
+                    _context362.p = 8;
+                    _t226 = _context362.v;
+                    _iterator155.e(_t226);
                   case 9:
-                    _context360.p = 9;
+                    _context362.p = 9;
                     _iterator155.f();
-                    return _context360.f(9);
+                    return _context362.f(9);
                   case 10:
                     playlistsRevision = initialRev;
                   case 11:
@@ -36908,26 +37061,26 @@ var TwilightPortableCore = function (exports) {
                     }
                     envelopeLoaded = true;
                   case 12:
-                    return _context360.a(2);
+                    return _context362.a(2);
                 }
-              }, _callee360, null, [[3, 8, 9, 10]]);
+              }, _callee362, null, [[3, 8, 9, 10]]);
             })))().finally(() => {
               envelopeLoadPromise = null;
             });
-            return _context361.a(2, envelopeLoadPromise);
+            return _context363.a(2, envelopeLoadPromise);
         }
-      }, _callee361);
+      }, _callee363);
     }));
     var persistChain = Promise.resolve();
-    var persistEnvelope = () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee363() {
+    var persistEnvelope = () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee365() {
       var work;
-      return _regenerator().w(function (_context363) {
-        while (1) switch (_context363.n) {
+      return _regenerator().w(function (_context365) {
+        while (1) switch (_context365.n) {
           case 0:
-            work = persistChain.catch(() => void 0).then(() => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee362() {
+            work = persistChain.catch(() => void 0).then(() => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee364() {
               var exported, envelope, res;
-              return _regenerator().w(function (_context362) {
-                while (1) switch (_context362.n) {
+              return _regenerator().w(function (_context364) {
+                while (1) switch (_context364.n) {
                   case 0:
                     exported = queueStore.exportState();
                     envelope = {
@@ -36941,12 +37094,12 @@ var TwilightPortableCore = function (exports) {
                       playlists: playlistsState,
                       eqConfig
                     };
-                    _context362.n = 1;
+                    _context364.n = 1;
                     return options.sessionStore.save(JSON.stringify(envelope), storeRevisionToken);
                   case 1:
-                    res = _context362.v;
+                    res = _context364.v;
                     if (res.ok) {
-                      _context362.n = 2;
+                      _context364.n = 2;
                       break;
                     }
                     throw Object.assign(new Error("Session store CAS conflict"), {
@@ -36955,45 +37108,45 @@ var TwilightPortableCore = function (exports) {
                   case 2:
                     storeRevisionToken = res.revision;
                   case 3:
-                    return _context362.a(2);
+                    return _context364.a(2);
                 }
-              }, _callee362);
+              }, _callee364);
             })));
             persistChain = work;
-            return _context363.a(2, work);
+            return _context365.a(2, work);
         }
-      }, _callee363);
+      }, _callee365);
     }));
     var sessionRepository = {
       load() {
-        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee364() {
-          return _regenerator().w(function (_context364) {
-            while (1) switch (_context364.n) {
+        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee366() {
+          return _regenerator().w(function (_context366) {
+            while (1) switch (_context366.n) {
               case 0:
-                _context364.n = 1;
+                _context366.n = 1;
                 return ensureEnvelopeLoaded();
               case 1:
                 if (!(sessionDataRevision === 0 && !currentSessionData)) {
-                  _context364.n = 2;
+                  _context366.n = 2;
                   break;
                 }
-                return _context364.a(2, null);
+                return _context366.a(2, null);
               case 2:
-                return _context364.a(2, {
+                return _context366.a(2, {
                   revision: sessionDataRevision,
                   data: currentSessionData
                 });
             }
-          }, _callee364);
+          }, _callee366);
         }));
       },
       save(sessionData, expectedRevision) {
-        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee365() {
-          return _regenerator().w(function (_context365) {
-            while (1) switch (_context365.n) {
+        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee367() {
+          return _regenerator().w(function (_context367) {
+            while (1) switch (_context367.n) {
               case 0:
                 if (!(expectedRevision !== sessionDataRevision)) {
-                  _context365.n = 1;
+                  _context367.n = 1;
                   break;
                 }
                 throw Object.assign(new Error("Session store revision conflict"), {
@@ -37002,23 +37155,23 @@ var TwilightPortableCore = function (exports) {
               case 1:
                 currentSessionData = sessionData;
                 sessionDataRevision++;
-                _context365.n = 2;
+                _context367.n = 2;
                 return persistEnvelope();
               case 2:
-                return _context365.a(2, {
+                return _context367.a(2, {
                   revision: sessionDataRevision
                 });
             }
-          }, _callee365);
+          }, _callee367);
         }));
       },
       clear(expectedRevision) {
-        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee366() {
-          return _regenerator().w(function (_context366) {
-            while (1) switch (_context366.n) {
+        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee368() {
+          return _regenerator().w(function (_context368) {
+            while (1) switch (_context368.n) {
               case 0:
                 if (!(expectedRevision !== sessionDataRevision)) {
-                  _context366.n = 1;
+                  _context368.n = 1;
                   break;
                 }
                 throw Object.assign(new Error("Session store revision conflict"), {
@@ -37027,32 +37180,32 @@ var TwilightPortableCore = function (exports) {
               case 1:
                 currentSessionData = null;
                 sessionDataRevision++;
-                _context366.n = 2;
+                _context368.n = 2;
                 return persistEnvelope();
               case 2:
-                return _context366.a(2, {
+                return _context368.a(2, {
                   revision: sessionDataRevision
                 });
             }
-          }, _callee366);
+          }, _callee368);
         }));
       }
     };
     var appInstance = null;
     var stateApi = {
-      coreStateOpen: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee367() {
-        return _regenerator().w(function (_context367) {
-          while (1) switch (_context367.n) {
+      coreStateOpen: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee369() {
+        return _regenerator().w(function (_context369) {
+          while (1) switch (_context369.n) {
             case 0:
-              return _context367.a(2);
+              return _context369.a(2);
           }
-        }, _callee367);
+        }, _callee369);
       })),
-      coreStateStatus: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee368() {
-        return _regenerator().w(function (_context368) {
-          while (1) switch (_context368.n) {
+      coreStateStatus: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee370() {
+        return _regenerator().w(function (_context370) {
+          while (1) switch (_context370.n) {
             case 0:
-              return _context368.a(2, {
+              return _context370.a(2, {
                 complete: true,
                 id: null,
                 manifest: null,
@@ -37060,34 +37213,34 @@ var TwilightPortableCore = function (exports) {
                 counts: emptyCoreStateCounts()
               });
           }
-        }, _callee368);
+        }, _callee370);
       })),
-      coreStateRead: domain => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee369() {
-        return _regenerator().w(function (_context369) {
-          while (1) switch (_context369.n) {
+      coreStateRead: domain => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee371() {
+        return _regenerator().w(function (_context371) {
+          while (1) switch (_context371.n) {
             case 0:
-              return _context369.a(2, {
+              return _context371.a(2, {
                 domain,
                 revision: 0,
                 rows: [],
                 next: null
               });
           }
-        }, _callee369);
+        }, _callee371);
       })),
-      coreStateWrite: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee370() {
-        return _regenerator().w(function (_context370) {
-          while (1) switch (_context370.n) {
+      coreStateWrite: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee372() {
+        return _regenerator().w(function (_context372) {
+          while (1) switch (_context372.n) {
             case 0:
-              return _context370.a(2, 1);
+              return _context372.a(2, 1);
           }
-        }, _callee370);
+        }, _callee372);
       })),
-      coreMigrationBegin: (id2, manifest) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee371() {
-        return _regenerator().w(function (_context371) {
-          while (1) switch (_context371.n) {
+      coreMigrationBegin: (id2, manifest) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee373() {
+        return _regenerator().w(function (_context373) {
+          while (1) switch (_context373.n) {
             case 0:
-              return _context371.a(2, {
+              return _context373.a(2, {
                 complete: false,
                 id: id2,
                 manifest,
@@ -37095,13 +37248,13 @@ var TwilightPortableCore = function (exports) {
                 counts: emptyCoreStateCounts()
               });
           }
-        }, _callee371);
+        }, _callee373);
       })),
-      coreMigrationStage: (id2, batch) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee372() {
-        return _regenerator().w(function (_context372) {
-          while (1) switch (_context372.n) {
+      coreMigrationStage: (id2, batch) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee374() {
+        return _regenerator().w(function (_context374) {
+          while (1) switch (_context374.n) {
             case 0:
-              return _context372.a(2, {
+              return _context374.a(2, {
                 complete: false,
                 id: id2,
                 manifest: null,
@@ -37109,13 +37262,13 @@ var TwilightPortableCore = function (exports) {
                 counts: emptyCoreStateCounts()
               });
           }
-        }, _callee372);
+        }, _callee374);
       })),
-      coreMigrationCommit: id2 => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee373() {
-        return _regenerator().w(function (_context373) {
-          while (1) switch (_context373.n) {
+      coreMigrationCommit: id2 => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee375() {
+        return _regenerator().w(function (_context375) {
+          while (1) switch (_context375.n) {
             case 0:
-              return _context373.a(2, {
+              return _context375.a(2, {
                 complete: true,
                 id: id2,
                 manifest: null,
@@ -37123,52 +37276,52 @@ var TwilightPortableCore = function (exports) {
                 counts: emptyCoreStateCounts()
               });
           }
-        }, _callee373);
+        }, _callee375);
       })),
-      coreMigrationAbort: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee374() {
-        return _regenerator().w(function (_context374) {
-          while (1) switch (_context374.n) {
+      coreMigrationAbort: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee376() {
+        return _regenerator().w(function (_context376) {
+          while (1) switch (_context376.n) {
             case 0:
-              return _context374.a(2);
+              return _context376.a(2);
           }
-        }, _callee374);
+        }, _callee376);
       }))
     };
     var recordingVersions = new CoreRecordingVersions({
       coreStateRead: stateApi.coreStateRead,
-      coreVersionsReplace: (_doc, expectedRevision) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee375() {
-        return _regenerator().w(function (_context375) {
-          while (1) switch (_context375.n) {
+      coreVersionsReplace: (_doc, expectedRevision) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee377() {
+        return _regenerator().w(function (_context377) {
+          while (1) switch (_context377.n) {
             case 0:
-              return _context375.a(2, expectedRevision + 1);
+              return _context377.a(2, expectedRevision + 1);
           }
-        }, _callee375);
+        }, _callee377);
       }))
     }, () => appInstance == null ? void 0 : appInstance.changed(), () => crypto.randomUUID());
     var bookmarksService = new CoreBookmarksService({
       repository: {
-        load: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee376() {
-          return _regenerator().w(function (_context376) {
-            while (1) switch (_context376.n) {
+        load: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee378() {
+          return _regenerator().w(function (_context378) {
+            while (1) switch (_context378.n) {
               case 0:
-                _context376.n = 1;
+                _context378.n = 1;
                 return ensureEnvelopeLoaded();
               case 1:
-                return _context376.a(2, {
+                return _context378.a(2, {
                   version: 2,
                   revision: bookmarksRevision,
                   savedAt: new Date(clock.nowUnixMs()).toISOString(),
                   data: clonePlaybackBookmarksDocument(bookmarksDoc)
                 });
             }
-          }, _callee376);
+          }, _callee378);
         })),
-        save: (document, expectedRevision) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee377() {
-          return _regenerator().w(function (_context377) {
-            while (1) switch (_context377.n) {
+        save: (document, expectedRevision) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee379() {
+          return _regenerator().w(function (_context379) {
+            while (1) switch (_context379.n) {
               case 0:
                 if (!(expectedRevision !== bookmarksRevision)) {
-                  _context377.n = 1;
+                  _context379.n = 1;
                   break;
                 }
                 throw Object.assign(new Error("Bookmarks revision conflict"), {
@@ -37177,17 +37330,17 @@ var TwilightPortableCore = function (exports) {
               case 1:
                 bookmarksDoc = clonePlaybackBookmarksDocument(document);
                 bookmarksRevision++;
-                _context377.n = 2;
+                _context379.n = 2;
                 return persistEnvelope();
               case 2:
-                return _context377.a(2, {
+                return _context379.a(2, {
                   version: 2,
                   revision: bookmarksRevision,
                   savedAt: new Date(clock.nowUnixMs()).toISOString(),
                   data: clonePlaybackBookmarksDocument(bookmarksDoc)
                 });
             }
-          }, _callee377);
+          }, _callee379);
         }))
       },
       now: () => clock.nowUnixMs(),
@@ -37210,28 +37363,28 @@ var TwilightPortableCore = function (exports) {
     };
     var lyricsService = new CoreLyricsService({
       repository: {
-        load: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee378() {
-          return _regenerator().w(function (_context378) {
-            while (1) switch (_context378.n) {
+        load: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee380() {
+          return _regenerator().w(function (_context380) {
+            while (1) switch (_context380.n) {
               case 0:
-                _context378.n = 1;
+                _context380.n = 1;
                 return ensureEnvelopeLoaded();
               case 1:
-                return _context378.a(2, {
+                return _context380.a(2, {
                   version: 2,
                   revision: lyricsRevision,
                   savedAt: new Date(clock.nowUnixMs()).toISOString(),
                   data: cloneLyricsManagementDocument(lyricsDoc)
                 });
             }
-          }, _callee378);
+          }, _callee380);
         })),
-        save: (document, expectedRevision) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee379() {
-          return _regenerator().w(function (_context379) {
-            while (1) switch (_context379.n) {
+        save: (document, expectedRevision) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee381() {
+          return _regenerator().w(function (_context381) {
+            while (1) switch (_context381.n) {
               case 0:
                 if (!(expectedRevision !== lyricsRevision)) {
-                  _context379.n = 1;
+                  _context381.n = 1;
                   break;
                 }
                 throw Object.assign(new Error("Lyrics revision conflict"), {
@@ -37240,106 +37393,106 @@ var TwilightPortableCore = function (exports) {
               case 1:
                 lyricsDoc = cloneLyricsManagementDocument(document);
                 lyricsRevision++;
-                _context379.n = 2;
+                _context381.n = 2;
                 return persistEnvelope();
               case 2:
-                return _context379.a(2, {
+                return _context381.a(2, {
                   version: 2,
                   revision: lyricsRevision,
                   savedAt: new Date(clock.nowUnixMs()).toISOString(),
                   data: cloneLyricsManagementDocument(lyricsDoc)
                 });
             }
-          }, _callee379);
+          }, _callee381);
         }))
       },
       now: () => clock.nowUnixMs(),
       changed: () => appInstance == null ? void 0 : appInstance.changed(),
       timers: portableTimers,
       sources: {
-        loadLocalLyrics: (track, kind, signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee380() {
+        loadLocalLyrics: (track, kind, signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee382() {
           var _a2, _b2, _c2, _d2;
-          return _regenerator().w(function (_context380) {
-            while (1) switch (_context380.n) {
-              case 0:
-                if (!((_a2 = options.lyrics) == null ? void 0 : _a2.loadLocalLyrics)) {
-                  _context380.n = 1;
-                  break;
-                }
-                return _context380.a(2, options.lyrics.loadLocalLyrics(track, kind, signal));
-              case 1:
-                if (!(kind === "original")) {
-                  _context380.n = 2;
-                  break;
-                }
-                return _context380.a(2, (_b2 = track.lyrics) != null ? _b2 : null);
-              case 2:
-                if (!(kind === "translated")) {
-                  _context380.n = 3;
-                  break;
-                }
-                return _context380.a(2, (_c2 = track.translatedLyrics) != null ? _c2 : null);
-              case 3:
-                if (!(kind === "romanized")) {
-                  _context380.n = 4;
-                  break;
-                }
-                return _context380.a(2, (_d2 = track.romanizedLyrics) != null ? _d2 : null);
-              case 4:
-                return _context380.a(2, null);
-            }
-          }, _callee380);
-        })),
-        resolveProviderLyrics: (_track, _signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee381() {
-          return _regenerator().w(function (_context381) {
-            while (1) switch (_context381.n) {
-              case 0:
-                return _context381.a(2, {
-                  lyrics: null,
-                  translatedLyrics: null
-                });
-            }
-          }, _callee381);
-        })),
-        loadAmlTtml: (_id, _signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee382() {
           return _regenerator().w(function (_context382) {
             while (1) switch (_context382.n) {
               case 0:
+                if (!((_a2 = options.lyrics) == null ? void 0 : _a2.loadLocalLyrics)) {
+                  _context382.n = 1;
+                  break;
+                }
+                return _context382.a(2, options.lyrics.loadLocalLyrics(track, kind, signal));
+              case 1:
+                if (!(kind === "original")) {
+                  _context382.n = 2;
+                  break;
+                }
+                return _context382.a(2, (_b2 = track.lyrics) != null ? _b2 : null);
+              case 2:
+                if (!(kind === "translated")) {
+                  _context382.n = 3;
+                  break;
+                }
+                return _context382.a(2, (_c2 = track.translatedLyrics) != null ? _c2 : null);
+              case 3:
+                if (!(kind === "romanized")) {
+                  _context382.n = 4;
+                  break;
+                }
+                return _context382.a(2, (_d2 = track.romanizedLyrics) != null ? _d2 : null);
+              case 4:
                 return _context382.a(2, null);
             }
           }, _callee382);
         })),
-        loadOnlineLyrics: (query2, signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee383() {
-          var _a2;
+        resolveProviderLyrics: (_track, _signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee383() {
           return _regenerator().w(function (_context383) {
             while (1) switch (_context383.n) {
               case 0:
-                if (!((_a2 = options.lyrics) == null ? void 0 : _a2.loadOnlineLyrics)) {
-                  _context383.n = 1;
-                  break;
-                }
-                return _context383.a(2, options.lyrics.loadOnlineLyrics(query2, signal));
-              case 1:
-                return _context383.a(2, null);
+                return _context383.a(2, {
+                  lyrics: null,
+                  translatedLyrics: null
+                });
             }
           }, _callee383);
+        })),
+        loadAmlTtml: (_id, _signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee384() {
+          return _regenerator().w(function (_context384) {
+            while (1) switch (_context384.n) {
+              case 0:
+                return _context384.a(2, null);
+            }
+          }, _callee384);
+        })),
+        loadOnlineLyrics: (query2, signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee385() {
+          var _a2;
+          return _regenerator().w(function (_context385) {
+            while (1) switch (_context385.n) {
+              case 0:
+                if (!((_a2 = options.lyrics) == null ? void 0 : _a2.loadOnlineLyrics)) {
+                  _context385.n = 1;
+                  break;
+                }
+                return _context385.a(2, options.lyrics.loadOnlineLyrics(query2, signal));
+              case 1:
+                return _context385.a(2, null);
+            }
+          }, _callee385);
         })),
         getAppSettings: () => ({
           value: currentSettings
         })
       },
-      search: (track, signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee384() {
+      search: (track, signal) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee386() {
         var _a2;
-        return _regenerator().w(function (_context384) {
-          while (1) switch (_context384.n) {
+        return _regenerator().w(function (_context386) {
+          while (1) switch (_context386.n) {
             case 0:
               if (!((_a2 = options.lyrics) == null ? void 0 : _a2.searchOnlineLyrics)) {
-                _context384.n = 1;
+                _context386.n = 1;
                 break;
               }
-              return _context384.a(2, options.lyrics.searchOnlineLyrics(track, signal));
+              return _context386.a(2, options.lyrics.searchOnlineLyrics(track, signal));
             case 1:
-              return _context384.a(2, {
+              return _context386.a(2, {
                 query: {
                   title: track.title,
                   artist: track.artist,
@@ -37350,23 +37503,23 @@ var TwilightPortableCore = function (exports) {
                 best: null
               });
           }
-        }, _callee384);
-      })),
-      importDraft: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee385() {
-        return _regenerator().w(function (_context385) {
-          while (1) switch (_context385.n) {
-            case 0:
-              return _context385.a(2, null);
-          }
-        }, _callee385);
-      })),
-      exportDraft: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee386() {
-        return _regenerator().w(function (_context386) {
-          while (1) switch (_context386.n) {
-            case 0:
-              return _context386.a(2, null);
-          }
         }, _callee386);
+      })),
+      importDraft: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee387() {
+        return _regenerator().w(function (_context387) {
+          while (1) switch (_context387.n) {
+            case 0:
+              return _context387.a(2, null);
+          }
+        }, _callee387);
+      })),
+      exportDraft: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee388() {
+        return _regenerator().w(function (_context388) {
+          while (1) switch (_context388.n) {
+            case 0:
+              return _context388.a(2, null);
+          }
+        }, _callee388);
       })),
       failed: error => {
         var _a2;
@@ -37385,28 +37538,28 @@ var TwilightPortableCore = function (exports) {
           revision: () => recordingVersions.getRevision()
         },
         repository: {
-          load: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee387() {
-            return _regenerator().w(function (_context387) {
-              while (1) switch (_context387.n) {
+          load: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee389() {
+            return _regenerator().w(function (_context389) {
+              while (1) switch (_context389.n) {
                 case 0:
-                  _context387.n = 1;
+                  _context389.n = 1;
                   return ensureEnvelopeLoaded();
                 case 1:
-                  return _context387.a(2, {
+                  return _context389.a(2, {
                     version: 2,
                     revision: playlistsRevision,
                     savedAt: new Date(clock.nowUnixMs()).toISOString(),
                     data: structuredClone(playlistsState)
                   });
               }
-            }, _callee387);
+            }, _callee389);
           })),
-          save: (data, expectedRevision) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee388() {
-            return _regenerator().w(function (_context388) {
-              while (1) switch (_context388.n) {
+          save: (data, expectedRevision) => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee390() {
+            return _regenerator().w(function (_context390) {
+              while (1) switch (_context390.n) {
                 case 0:
                   if (!(expectedRevision !== playlistsRevision)) {
-                    _context388.n = 1;
+                    _context390.n = 1;
                     break;
                   }
                   throw Object.assign(new Error("Playlists revision conflict"), {
@@ -37415,17 +37568,17 @@ var TwilightPortableCore = function (exports) {
                 case 1:
                   playlistsState = structuredClone(data);
                   playlistsRevision++;
-                  _context388.n = 2;
+                  _context390.n = 2;
                   return persistEnvelope();
                 case 2:
-                  return _context388.a(2, {
+                  return _context390.a(2, {
                     version: 2,
                     revision: playlistsRevision,
                     savedAt: new Date(clock.nowUnixMs()).toISOString(),
                     data: structuredClone(playlistsState)
                   });
               }
-            }, _callee388);
+            }, _callee390);
           }))
         }
       },
@@ -37440,11 +37593,11 @@ var TwilightPortableCore = function (exports) {
       versions: recordingVersions,
       changed: () => appInstance == null ? void 0 : appInstance.changed()
     });
-    var resolveSeedItems = items => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee389() {
-      return _regenerator().w(function (_context389) {
-        while (1) switch (_context389.n) {
+    var resolveSeedItems = items => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee391() {
+      return _regenerator().w(function (_context391) {
+        while (1) switch (_context391.n) {
           case 0:
-            return _context389.a(2, items.map(item => {
+            return _context391.a(2, items.map(item => {
               var _a2;
               if ("track" in item && item.track) {
                 var record2 = toTrackRecord(item.track);
@@ -37460,7 +37613,7 @@ var TwilightPortableCore = function (exports) {
               };
             }));
         }
-      }, _callee389);
+      }, _callee391);
     }));
     var resolvePlaylistInputs = createPlaylistInputResolver(inputs => resolveSeedItems(inputs), {
       getTracksByIds: ids => queueStore.getTracksByIds(ids)
@@ -37475,30 +37628,30 @@ var TwilightPortableCore = function (exports) {
       }
     });
     var presentationService = new CorePlayerPresentationService({
-      artwork: track => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee390() {
+      artwork: track => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee392() {
         var _a2, _b2;
-        return _regenerator().w(function (_context390) {
-          while (1) switch (_context390.n) {
+        return _regenerator().w(function (_context392) {
+          while (1) switch (_context392.n) {
             case 0:
-              return _context390.a(2, {
+              return _context392.a(2, {
                 cover: (_a2 = track.cover) != null ? _a2 : null,
                 coverSource: (_b2 = track.coverSource) != null ? _b2 : null
               });
           }
-        }, _callee390);
+        }, _callee392);
       })),
       playlists: {
         isFavorite: track => playlistsService.isFavorite(track),
         toggleFavorite: (track, assertCurrent) => playlistsService.toggleFavorite(track, assertCurrent)
       },
       supportedMethods: () => [],
-      callProvider: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee391() {
-        return _regenerator().w(function (_context391) {
-          while (1) switch (_context391.n) {
+      callProvider: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee393() {
+        return _regenerator().w(function (_context393) {
+          while (1) switch (_context393.n) {
             case 0:
-              return _context391.a(2, null);
+              return _context393.a(2, null);
           }
-        }, _callee391);
+        }, _callee393);
       })),
       changed: () => appInstance == null ? void 0 : appInstance.changed(),
       failed: error => {
@@ -37515,37 +37668,37 @@ var TwilightPortableCore = function (exports) {
       versions: recordingVersions,
       providers: () => [],
       playlists: playlistsService,
-      searchCollectionProvider: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee392() {
-        return _regenerator().w(function (_context392) {
-          while (1) switch (_context392.n) {
+      searchCollectionProvider: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee394() {
+        return _regenerator().w(function (_context394) {
+          while (1) switch (_context394.n) {
             case 0:
-              return _context392.a(2, {
+              return _context394.a(2, {
                 items: [],
                 total: 0
               });
           }
-        }, _callee392);
+        }, _callee394);
       })),
-      searchProvider: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee393() {
-        return _regenerator().w(function (_context393) {
-          while (1) switch (_context393.n) {
+      searchProvider: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee395() {
+        return _regenerator().w(function (_context395) {
+          while (1) switch (_context395.n) {
             case 0:
-              return _context393.a(2, {
+              return _context395.a(2, {
                 items: [],
                 total: 0
               });
           }
-        }, _callee393);
+        }, _callee395);
       })),
       network: {
         revision: () => 0,
-        search: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee394() {
-          return _regenerator().w(function (_context394) {
-            while (1) switch (_context394.n) {
+        search: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee396() {
+          return _regenerator().w(function (_context396) {
+            while (1) switch (_context396.n) {
               case 0:
-                return _context394.a(2, []);
+                return _context396.a(2, []);
             }
-          }, _callee394);
+          }, _callee396);
         }))
       }
     });
@@ -37569,21 +37722,21 @@ var TwilightPortableCore = function (exports) {
     var settingsTail = Promise.resolve();
     var settingsService = new CoreSettingsService({
       repository: settingsRepository,
-      authorizePaths: paths => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee395() {
-        return _regenerator().w(function (_context395) {
-          while (1) switch (_context395.n) {
+      authorizePaths: paths => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee397() {
+        return _regenerator().w(function (_context397) {
+          while (1) switch (_context397.n) {
             case 0:
-              return _context395.a(2, paths);
+              return _context397.a(2, paths);
           }
-        }, _callee395);
+        }, _callee397);
       })),
-      configureLibrary: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee396() {
-        return _regenerator().w(function (_context396) {
-          while (1) switch (_context396.n) {
+      configureLibrary: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee398() {
+        return _regenerator().w(function (_context398) {
+          while (1) switch (_context398.n) {
             case 0:
-              return _context396.a(2);
+              return _context398.a(2);
           }
-        }, _callee396);
+        }, _callee398);
       })),
       serialize: action => {
         var next = settingsTail.then(action, action);
@@ -37599,25 +37752,25 @@ var TwilightPortableCore = function (exports) {
         if (error instanceof Error) (_a2 = options.onFatalError) == null ? void 0 : _a2.call(options, error);
       },
       audio: {
-        setAutoMixMode: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee397() {
-          return _regenerator().w(function (_context397) {
-            while (1) switch (_context397.n) {
+        setAutoMixMode: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee399() {
+          return _regenerator().w(function (_context399) {
+            while (1) switch (_context399.n) {
               case 0:
-                return _context397.a(2, true);
+                return _context399.a(2, true);
             }
-          }, _callee397);
+          }, _callee399);
         })),
         invalidateAutoMixSource: () => {},
-        stop: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee398() {
-          return _regenerator().w(function (_context398) {
-            while (1) switch (_context398.n) {
+        stop: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee400() {
+          return _regenerator().w(function (_context400) {
+            while (1) switch (_context400.n) {
               case 0:
-                _context398.n = 1;
+                _context400.n = 1;
                 return engineAdapter.stop();
               case 1:
-                return _context398.a(2);
+                return _context400.a(2);
             }
-          }, _callee398);
+          }, _callee400);
         }))
       }
     });
@@ -37631,73 +37784,73 @@ var TwilightPortableCore = function (exports) {
         editQueue: (id2, rev, edit2) => queueStore.editQueue(id2, rev, edit2),
         deleteQueue: (id2, rev) => queueStore.deleteQueue(id2, rev),
         readNeighbor: (id2, rev, idx, dir, wrap) => queueStore.readNeighbor(id2, rev, idx, dir, wrap),
-        libraryRevision: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee399() {
-          return _regenerator().w(function (_context399) {
-            while (1) switch (_context399.n) {
+        libraryRevision: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee401() {
+          return _regenerator().w(function (_context401) {
+            while (1) switch (_context401.n) {
               case 0:
-                return _context399.a(2, queueStore.getLibraryRevision());
+                return _context401.a(2, queueStore.getLibraryRevision());
             }
-          }, _callee399);
+          }, _callee401);
         })),
         importLegacyPlaybackQueue: cmd => queueStore.buildQueue(cmd),
         restoreNamedPlaybackQueue: cmd => queueStore.buildQueue(cmd),
-        restoreHeartBaseQueue: base => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee400() {
+        restoreHeartBaseQueue: base => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee402() {
           var snapshot;
-          return _regenerator().w(function (_context400) {
-            while (1) switch (_context400.n) {
+          return _regenerator().w(function (_context402) {
+            while (1) switch (_context402.n) {
               case 0:
-                _context400.n = 1;
+                _context402.n = 1;
                 return queueStore.getQueue(base.id);
               case 1:
-                snapshot = _context400.v;
+                snapshot = _context402.v;
                 if (snapshot) {
-                  _context400.n = 2;
+                  _context402.n = 2;
                   break;
                 }
                 throw new Error(`Heart base queue not found: ${base.id}`);
               case 2:
-                return _context400.a(2, {
+                return _context402.a(2, {
                   queue: snapshot,
                   matched: true
                 });
             }
-          }, _callee400);
+          }, _callee402);
         }))
       },
       resolver: {
-        resolve: rawTrack => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee401() {
+        resolve: rawTrack => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee403() {
           var _a2, track;
-          return _regenerator().w(function (_context401) {
-            while (1) switch (_context401.n) {
+          return _regenerator().w(function (_context403) {
+            while (1) switch (_context403.n) {
               case 0:
                 track = rawTrack;
                 if (!((_a2 = options.resourceAccess) == null ? void 0 : _a2.resolveTrackSource)) {
-                  _context401.n = 1;
+                  _context403.n = 1;
                   break;
                 }
-                return _context401.a(2, options.resourceAccess.resolveTrackSource(track));
+                return _context403.a(2, options.resourceAccess.resolveTrackSource(track));
               case 1:
-                return _context401.a(2, {
+                return _context403.a(2, {
                   source: track.filePath || track.streamUrl || `resource://${track.id}`,
                   expiresAt: null
                 });
             }
-          }, _callee401);
+          }, _callee403);
         }))
       },
-      authorize: source => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee402() {
-        return _regenerator().w(function (_context402) {
-          while (1) switch (_context402.n) {
+      authorize: source => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee404() {
+        return _regenerator().w(function (_context404) {
+          while (1) switch (_context404.n) {
             case 0:
               if (!options.resourceAccess) {
-                _context402.n = 1;
+                _context404.n = 1;
                 break;
               }
-              return _context402.a(2, options.resourceAccess.authorize(source));
+              return _context404.a(2, options.resourceAccess.authorize(source));
             case 1:
-              return _context402.a(2, source);
+              return _context404.a(2, source);
           }
-        }, _callee402);
+        }, _callee404);
       })),
       repository: sessionRepository,
       resumeMode: () => currentSettings.playbackResumeMode,
@@ -37753,43 +37906,27 @@ var TwilightPortableCore = function (exports) {
       },
       state: stateApi,
       scan: {
-        initialize: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee403() {
-          return _regenerator().w(function (_context403) {
-            while (1) switch (_context403.n) {
-              case 0:
-                return _context403.a(2);
-            }
-          }, _callee403);
-        })),
-        activate: () => {},
-        snapshot: () => null,
-        start: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee404() {
-          return _regenerator().w(function (_context404) {
-            while (1) switch (_context404.n) {
-              case 0:
-                throw new Error("Local directory scan is managed by the platform scanner adapter");
-              case 1:
-                return _context404.a(2);
-            }
-          }, _callee404);
-        })),
-        pause: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee405() {
+        initialize: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee405() {
           return _regenerator().w(function (_context405) {
             while (1) switch (_context405.n) {
               case 0:
-                return _context405.a(2, false);
+                return _context405.a(2);
             }
           }, _callee405);
         })),
-        resume: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee406() {
+        activate: () => {},
+        snapshot: () => null,
+        start: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee406() {
           return _regenerator().w(function (_context406) {
             while (1) switch (_context406.n) {
               case 0:
-                return _context406.a(2, null);
+                throw new Error("Local directory scan is managed by the platform scanner adapter");
+              case 1:
+                return _context406.a(2);
             }
           }, _callee406);
         })),
-        cancel: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee407() {
+        pause: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee407() {
           return _regenerator().w(function (_context407) {
             while (1) switch (_context407.n) {
               case 0:
@@ -37797,47 +37934,63 @@ var TwilightPortableCore = function (exports) {
             }
           }, _callee407);
         })),
-        enqueueDirectories: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee408() {
+        resume: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee408() {
           return _regenerator().w(function (_context408) {
             while (1) switch (_context408.n) {
               case 0:
-                return _context408.a(2);
+                return _context408.a(2, null);
             }
           }, _callee408);
         })),
-        startup: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee409() {
+        cancel: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee409() {
           return _regenerator().w(function (_context409) {
             while (1) switch (_context409.n) {
               case 0:
-                return _context409.a(2);
+                return _context409.a(2, false);
             }
           }, _callee409);
         })),
-        poll: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee410() {
+        enqueueDirectories: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee410() {
           return _regenerator().w(function (_context410) {
             while (1) switch (_context410.n) {
               case 0:
-                return _context410.a(2, void 0);
+                return _context410.a(2);
             }
           }, _callee410);
         })),
-        shutdown: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee411() {
+        startup: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee411() {
           return _regenerator().w(function (_context411) {
             while (1) switch (_context411.n) {
               case 0:
                 return _context411.a(2);
             }
           }, _callee411);
-        }))
-      },
-      statistics: {
-        initialize: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee412() {
+        })),
+        poll: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee412() {
           return _regenerator().w(function (_context412) {
             while (1) switch (_context412.n) {
               case 0:
-                return _context412.a(2);
+                return _context412.a(2, void 0);
             }
           }, _callee412);
+        })),
+        shutdown: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee413() {
+          return _regenerator().w(function (_context413) {
+            while (1) switch (_context413.n) {
+              case 0:
+                return _context413.a(2);
+            }
+          }, _callee413);
+        }))
+      },
+      statistics: {
+        initialize: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee414() {
+          return _regenerator().w(function (_context414) {
+            while (1) switch (_context414.n) {
+              case 0:
+                return _context414.a(2);
+            }
+          }, _callee414);
         })),
         getRevision: () => 0,
         historySnapshot: () => /* @__PURE__ */new Map(),
@@ -37857,11 +38010,11 @@ var TwilightPortableCore = function (exports) {
           offset: 0,
           items: []
         }),
-        overview: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee413() {
-          return _regenerator().w(function (_context413) {
-            while (1) switch (_context413.n) {
+        overview: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee415() {
+          return _regenerator().w(function (_context415) {
+            while (1) switch (_context415.n) {
               case 0:
-                return _context413.a(2, {
+                return _context415.a(2, {
                   revision: 0,
                   trackCount: 0,
                   days: {},
@@ -37886,7 +38039,7 @@ var TwilightPortableCore = function (exports) {
                   }
                 });
             }
-          }, _callee413);
+          }, _callee415);
         })),
         previewClear: (_range, revision2) => ({
           revision: revision2,
@@ -37896,29 +38049,29 @@ var TwilightPortableCore = function (exports) {
           hasUndatedTracks: false
         }),
         observe: () => {},
-        clear: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee414() {
-          return _regenerator().w(function (_context414) {
-            while (1) switch (_context414.n) {
-              case 0:
-                return _context414.a(2);
-            }
-          }, _callee414);
-        })),
-        flush: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee415() {
-          return _regenerator().w(function (_context415) {
-            while (1) switch (_context415.n) {
-              case 0:
-                return _context415.a(2);
-            }
-          }, _callee415);
-        })),
-        shutdown: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee416() {
+        clear: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee416() {
           return _regenerator().w(function (_context416) {
             while (1) switch (_context416.n) {
               case 0:
                 return _context416.a(2);
             }
           }, _callee416);
+        })),
+        flush: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee417() {
+          return _regenerator().w(function (_context417) {
+            while (1) switch (_context417.n) {
+              case 0:
+                return _context417.a(2);
+            }
+          }, _callee417);
+        })),
+        shutdown: () => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee418() {
+          return _regenerator().w(function (_context418) {
+            while (1) switch (_context418.n) {
+              case 0:
+                return _context418.a(2);
+            }
+          }, _callee418);
         }))
       },
       ready: () => {}
@@ -37954,22 +38107,22 @@ var TwilightPortableCore = function (exports) {
       playlists: playlistsService,
       queueStore,
       initialize() {
-        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee417() {
-          return _regenerator().w(function (_context417) {
-            while (1) switch (_context417.n) {
+        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee419() {
+          return _regenerator().w(function (_context419) {
+            while (1) switch (_context419.n) {
               case 0:
-                _context417.n = 1;
+                _context419.n = 1;
                 return ensureEnvelopeLoaded();
               case 1:
-                _context417.n = 2;
+                _context419.n = 2;
                 return options.audioEngine.setVolume(currentSettings.softwareVolume);
               case 2:
-                _context417.n = 3;
+                _context419.n = 3;
                 return application.initialize();
               case 3:
-                return _context417.a(2);
+                return _context419.a(2);
             }
-          }, _callee417);
+          }, _callee419);
         }));
       },
       seedTracks(tracks2) {
@@ -37985,18 +38138,25 @@ var TwilightPortableCore = function (exports) {
         application.changed();
       },
       playTracks(tracks2, startIndex = 0) {
-        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee419() {
-          return _regenerator().w(function (_context419) {
-            while (1) switch (_context419.n) {
+        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee421() {
+          return _regenerator().w(function (_context421) {
+            while (1) switch (_context421.n) {
               case 0:
                 queueStore.upsertTracks(tracks2);
-                _context419.n = 1;
-                return playbackSession.fromPages(append => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee418() {
-                  return _regenerator().w(function (_context418) {
-                    while (1) switch (_context418.n) {
+                _context421.n = 1;
+                return playbackSession.fromPages(append => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee420() {
+                  var offset;
+                  return _regenerator().w(function (_context420) {
+                    while (1) switch (_context420.n) {
                       case 0:
-                        _context418.n = 1;
-                        return append(tracks2.map(track => {
+                        offset = 0;
+                      case 1:
+                        if (!(offset < tracks2.length)) {
+                          _context420.n = 3;
+                          break;
+                        }
+                        _context420.n = 2;
+                        return append(tracks2.slice(offset, offset + LIBRARY_PAGE_SIZE).map(track => {
                           var record2 = toTrackRecord(track);
                           return {
                             id: record2.id,
@@ -38004,20 +38164,24 @@ var TwilightPortableCore = function (exports) {
                             localSnapshot: record2
                           };
                         }));
-                      case 1:
-                        return _context418.a(2);
+                      case 2:
+                        offset += LIBRARY_PAGE_SIZE;
+                        _context420.n = 1;
+                        break;
+                      case 3:
+                        return _context420.a(2);
                     }
-                  }, _callee418);
+                  }, _callee420);
                 })), {
                   selectedIndex: startIndex
                 });
               case 1:
-                _context419.n = 2;
+                _context421.n = 2;
                 return playbackSession.flush();
               case 2:
-                return _context419.a(2);
+                return _context421.a(2);
             }
-          }, _callee419);
+          }, _callee421);
         }));
       },
       getSnapshot() {
@@ -38064,61 +38228,130 @@ var TwilightPortableCore = function (exports) {
         return structuredClone(eqConfig);
       },
       setEqConfig(patch) {
-        var work = eqTail.catch(() => void 0).then(() => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee420() {
+        var work = eqTail.catch(() => void 0).then(() => __async$1(null, null, /*#__PURE__*/_regenerator().m(function _callee422() {
           var _a2, _b2, next;
-          return _regenerator().w(function (_context420) {
-            while (1) switch (_context420.n) {
+          return _regenerator().w(function (_context422) {
+            while (1) switch (_context422.n) {
               case 0:
                 next = applyEqConfigPatch(eqConfig, patch);
-                _context420.n = 1;
+                _context422.n = 1;
                 return (_b2 = (_a2 = options.audioEngine).setDspConfig) == null ? void 0 : _b2.call(_a2, structuredClone(next));
               case 1:
                 eqConfig = next;
                 application.changed();
-                _context420.n = 2;
+                _context422.n = 2;
                 return persistEnvelope();
               case 2:
-                return _context420.a(2, structuredClone(eqConfig));
+                return _context422.a(2, structuredClone(eqConfig));
             }
-          }, _callee420);
+          }, _callee422);
         })));
         eqTail = work;
         return work;
       },
       triggerPlatformSafetyBrake(_reason) {
-        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee421() {
-          return _regenerator().w(function (_context421) {
-            while (1) switch (_context421.n) {
+        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee423() {
+          return _regenerator().w(function (_context423) {
+            while (1) switch (_context423.n) {
               case 0:
-                _context421.n = 1;
+                _context423.n = 1;
                 return playbackSession.pause();
               case 1:
-                _context421.n = 2;
+                _context423.n = 2;
                 return playbackSession.flush();
               case 2:
-                return _context421.a(2);
+                return _context423.a(2);
             }
-          }, _callee421);
+          }, _callee423);
         }));
       },
       shutdown() {
-        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee422() {
-          return _regenerator().w(function (_context422) {
-            while (1) switch (_context422.n) {
+        return __async$1(this, null, /*#__PURE__*/_regenerator().m(function _callee424() {
+          return _regenerator().w(function (_context424) {
+            while (1) switch (_context424.n) {
               case 0:
                 application.disconnect(hostClientIdentity.id);
                 messageSubscribers.clear();
-                _context422.n = 1;
+                _context424.n = 1;
                 return application.shutdown();
               case 1:
                 engineAdapter.dispose();
               case 2:
-                return _context422.a(2);
+                return _context424.a(2);
             }
-          }, _callee422);
+          }, _callee424);
         }));
       }
     };
+  }
+  new TextEncoder();
+  new TextDecoder("utf-8", {
+    fatal: false
+  });
+  var BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  var BASE64_LOOKUP = new Uint8Array(256);
+  BASE64_LOOKUP.fill(255);
+  for (var i = 0; i < BASE64_ALPHABET.length; i += 1) {
+    BASE64_LOOKUP[BASE64_ALPHABET.charCodeAt(i)] = i;
+  }
+  BASE64_LOOKUP["-".charCodeAt(0)] = 62;
+  BASE64_LOOKUP["_".charCodeAt(0)] = 63;
+  function normalizeText(value) {
+    return value.normalize("NFKC").toLocaleLowerCase("en-US").replace(/[^\p{L}\p{N}\s]+/gu, " ").replace(/\s+/g, " ").trim();
+  }
+  function scoreCandidate(query2, hit) {
+    var _a, _b, _c;
+    var titleQ = normalizeText(query2.title);
+    var artistQ = normalizeText(query2.artist);
+    var titleH = normalizeText((_a = hit.trackName) != null ? _a : "");
+    var artistH = normalizeText((_b = hit.artistName) != null ? _b : "");
+    if (!titleQ || !titleH) return 0;
+    var score = 0;
+    if (titleQ === titleH) score += 50;else if (titleH.includes(titleQ) || titleQ.includes(titleH)) score += 28;else return 0;
+    if (artistQ && artistH) {
+      if (artistQ === artistH) score += 35;else if (artistH.includes(artistQ) || artistQ.includes(artistH)) score += 18;
+    }
+    var duration = typeof hit.duration === "number" && Number.isFinite(hit.duration) ? hit.duration : null;
+    if (duration != null && query2.durationSeconds != null && Number.isFinite(query2.durationSeconds)) {
+      var delta = Math.abs(duration - query2.durationSeconds);
+      if (delta <= 3) score += 20;else if (delta <= 8) score += 12;else if (delta <= 20) score += 4;else score -= 10;
+    }
+    if (typeof hit.syncedLyrics === "string" && hit.syncedLyrics.trim()) score += 8;else if (typeof hit.plainLyrics === "string" && hit.plainLyrics.trim()) score += 2;
+    if (query2.album) {
+      var albumQ = normalizeText(query2.album);
+      var albumH = normalizeText((_c = hit.albumName) != null ? _c : "");
+      if (albumQ && albumH && (albumQ === albumH || albumH.includes(albumQ) || albumQ.includes(albumH))) {
+        score += 6;
+      }
+    }
+    return score;
+  }
+  function toCandidate(query2, hit) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    var score = scoreCandidate(query2, hit);
+    if (score < 40) return null;
+    var synced = typeof hit.syncedLyrics === "string" && hit.syncedLyrics.trim() ? hit.syncedLyrics : null;
+    var plain = typeof hit.plainLyrics === "string" && hit.plainLyrics.trim() ? hit.plainLyrics : null;
+    if (!synced && !plain) return null;
+    return {
+      id: (_c = hit.id) != null ? _c : `${(_a = hit.trackName) != null ? _a : ""}:${(_b = hit.artistName) != null ? _b : ""}`,
+      title: (_d = hit.trackName) != null ? _d : query2.title,
+      artist: (_e = hit.artistName) != null ? _e : query2.artist,
+      album: (_g = (_f = hit.albumName) != null ? _f : query2.album) != null ? _g : "",
+      durationSeconds: typeof hit.duration === "number" && Number.isFinite(hit.duration) ? hit.duration : null,
+      score,
+      syncedLyrics: synced,
+      plainLyrics: plain,
+      source: "lrclib"
+    };
+  }
+  function rankOnlineLyricsCandidates(query2, hits) {
+    return hits.map(hit => toCandidate(query2, hit)).filter(item => item != null).sort((a, b) => b.score - a.score || a.title.localeCompare(b.title, "zh"));
+  }
+  function pickOnlineLyricsText(candidate) {
+    var _a, _b;
+    if (!candidate) return null;
+    return (_b = (_a = candidate.syncedLyrics) != null ? _a : candidate.plainLyrics) != null ? _b : null;
   }
   var __async = (__this, __arguments, generator) => {
     return new Promise((resolve, reject) => {
@@ -38446,7 +38679,7 @@ var TwilightPortableCore = function (exports) {
         var at = new Date(num(bookmark.createdAtMs, Date.now())).toISOString();
         return __spreadProps(__spreadValues(__spreadValues({
           id: str(bookmark.id) || `legacy-bookmark-${trackId}-${int(bookmark.positionSec, 0)}`,
-          trackKey: `local:${(record2 == null ? void 0 : record2.filePath) || trackId}`,
+          trackKey: `local:${(record2 == null ? void 0 : record2.filePath) || trackId}${(record2 == null ? void 0 : record2.cueRange) ? `#cue:${record2.cueRange.startSeconds}` : ""}`,
           trackId
         }, (record2 == null ? void 0 : record2.title) ? {
           title: record2.title
@@ -38494,100 +38727,101 @@ ${lrc}` : lrc,
   function createSessionStore(rt) {
     return {
       load() {
-        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee423() {
-          var stored, revision2, payloadJson, parsed, _t222;
-          return _regenerator().w(function (_context423) {
-            while (1) switch (_context423.p = _context423.n) {
+        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee425() {
+          var stored, revision2, payloadJson, parsed, _t227;
+          return _regenerator().w(function (_context425) {
+            while (1) switch (_context425.p = _context425.n) {
               case 0:
-                _context423.n = 1;
+                _context425.n = 1;
                 return callPort(rt, "sessionStore", "load");
               case 1:
-                stored = _context423.v;
+                stored = _context425.v;
                 if (isObject(stored)) {
-                  _context423.n = 2;
+                  _context425.n = 2;
                   break;
                 }
-                return _context423.a(2, null);
+                return _context425.a(2, null);
               case 2:
                 revision2 = str(stored.revision) || "0";
                 payloadJson = str(stored.payloadJson);
-                _context423.p = 3;
+                _context425.p = 3;
                 parsed = JSON.parse(payloadJson);
-                _context423.n = 5;
+                _context425.n = 5;
                 break;
               case 4:
-                _context423.p = 4;
-                _t222 = _context423.v;
-                log("error", `Stored Core session is not valid JSON and was ignored: ${errorMessage(_t222)}`);
-                return _context423.a(2, {
+                _context425.p = 4;
+                _t227 = _context425.v;
+                log("error", `Stored Core session is not valid JSON and was ignored: ${errorMessage(_t227)}`);
+                return _context425.a(2, {
                   revision: revision2,
                   payloadJson: emptyEnvelopeJson()
                 });
               case 5:
                 if (isObject(parsed)) {
-                  _context423.n = 6;
+                  _context425.n = 6;
                   break;
                 }
                 log("error", "Stored Core session is not an object and was ignored");
-                return _context423.a(2, {
+                return _context425.a(2, {
                   revision: revision2,
                   payloadJson: emptyEnvelopeJson()
                 });
               case 6:
                 if (!isLegacyPayload(parsed)) {
-                  _context423.n = 7;
+                  _context425.n = 7;
                   break;
                 }
                 log("info", "Migrating legacy Android Core session payload");
-                return _context423.a(2, {
+                return _context425.a(2, {
                   revision: revision2,
                   payloadJson: JSON.stringify(migrateLegacyPayload(parsed))
                 });
               case 7:
-                return _context423.a(2, {
+                migrateCueSources(parsed);
+                return _context425.a(2, {
                   revision: revision2,
-                  payloadJson
+                  payloadJson: JSON.stringify(parsed)
                 });
             }
-          }, _callee423, null, [[3, 4]]);
+          }, _callee425, null, [[3, 4]]);
         }));
       },
       save(payloadJson, expectedRevision) {
-        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee424() {
+        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee426() {
           var result;
-          return _regenerator().w(function (_context424) {
-            while (1) switch (_context424.n) {
+          return _regenerator().w(function (_context426) {
+            while (1) switch (_context426.n) {
               case 0:
-                _context424.n = 1;
+                _context426.n = 1;
                 return callPort(rt, "sessionStore", "save", {
                   payloadJson,
                   expectedRevision
                 });
               case 1:
-                result = _context424.v;
+                result = _context426.v;
                 if (!(isObject(result) && result.ok === true && result.revision != null)) {
-                  _context424.n = 2;
+                  _context426.n = 2;
                   break;
                 }
-                return _context424.a(2, {
+                return _context426.a(2, {
                   ok: true,
                   revision: str(result.revision)
                 });
               case 2:
                 if (!(isObject(result) && result.ok === false)) {
-                  _context424.n = 3;
+                  _context426.n = 3;
                   break;
                 }
-                return _context424.a(2, {
+                return _context426.a(2, {
                   ok: false,
                   reason: "conflict"
                 });
               case 3:
                 throw wireFailure("FAILED", "Session store returned an invalid save result");
               case 4:
-                return _context424.a(2);
+                return _context426.a(2);
             }
-          }, _callee424);
+          }, _callee426);
         }));
       }
     };
@@ -38595,32 +38829,32 @@ ${lrc}` : lrc,
   function createResourceAccess(rt) {
     return {
       authorize(source) {
-        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee425() {
-          var wire, _t223;
-          return _regenerator().w(function (_context425) {
-            while (1) switch (_context425.p = _context425.n) {
+        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee427() {
+          var wire, _t228;
+          return _regenerator().w(function (_context427) {
+            while (1) switch (_context427.p = _context427.n) {
               case 0:
-                _context425.p = 0;
-                _context425.n = 1;
+                _context427.p = 0;
+                _context427.n = 1;
                 return callPort(rt, "resourceAccess", "resolveNativeUri", {
                   resourceId: source
                 });
               case 1:
                 rt.lastAuthFailure = null;
-                return _context425.a(2, source);
+                return _context427.a(2, source);
               case 2:
-                _context425.p = 2;
-                _t223 = _context425.v;
-                wire = toWireError(rt, _t223);
+                _context427.p = 2;
+                _t228 = _context427.v;
+                wire = toWireError(rt, _t228);
                 rt.lastAuthFailure = {
                   code: wire.code,
                   message: wire.message
                 };
-                throw _t223;
+                throw _t228;
               case 3:
-                return _context425.a(2);
+                return _context427.a(2);
             }
-          }, _callee425, null, [[0, 2]]);
+          }, _callee427, null, [[0, 2]]);
         }));
       }
     };
@@ -38645,6 +38879,7 @@ ${lrc}` : lrc,
       source: item.source
     };
     setOpt(row, "queueEntryId", optStr(item.queueEntryId));
+    setOpt(row, "cueRange", item.cueRange);
     return row;
   }
   function itemsForGeneration(rt, generation) {
@@ -38696,10 +38931,10 @@ ${lrc}` : lrc,
   function createAudioEngine(rt) {
     return {
       loadQueue(items, startIndex = 0) {
-        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee426() {
+        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee428() {
           var generation;
-          return _regenerator().w(function (_context426) {
-            while (1) switch (_context426.n) {
+          return _regenerator().w(function (_context428) {
+            while (1) switch (_context428.n) {
               case 0:
                 generation = ++rt.queueGeneration;
                 rt.queueGenerations.push({
@@ -38707,121 +38942,86 @@ ${lrc}` : lrc,
                   items: items.map(item => __spreadValues({}, item))
                 });
                 while (rt.queueGenerations.length > 4) rt.queueGenerations.shift();
-                _context426.n = 1;
+                _context428.n = 1;
                 return callPort(rt, "audioEngine", "loadQueue", {
                   tracks: items.map(wireQueueItem),
                   startIndex: Math.max(0, Math.round(startIndex)),
                   queueGeneration: generation
                 });
               case 1:
-                return _context426.a(2);
-            }
-          }, _callee426);
-        }));
-      },
-      play(source, positionSeconds) {
-        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee427() {
-          return _regenerator().w(function (_context427) {
-            while (1) switch (_context427.n) {
-              case 0:
-                _context427.n = 1;
-                return callPort(rt, "audioEngine", "play", {
-                  position: positionSeconds != null ? positionSeconds : 0,
-                  source
-                });
-              case 1:
-                return _context427.a(2, {
-                  nativeStarted: true,
-                  fallbackReason: ""
-                });
-            }
-          }, _callee427);
-        }));
-      },
-      pause() {
-        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee428() {
-          return _regenerator().w(function (_context428) {
-            while (1) switch (_context428.n) {
-              case 0:
-                _context428.n = 1;
-                return callPort(rt, "audioEngine", "pause");
-              case 1:
                 return _context428.a(2);
             }
           }, _callee428);
         }));
       },
-      stop() {
+      play(source, positionSeconds) {
         return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee429() {
           return _regenerator().w(function (_context429) {
             while (1) switch (_context429.n) {
               case 0:
                 _context429.n = 1;
-                return callPort(rt, "audioEngine", "stop");
+                return callPort(rt, "audioEngine", "play", {
+                  position: positionSeconds != null ? positionSeconds : 0,
+                  source
+                });
               case 1:
-                return _context429.a(2);
+                return _context429.a(2, {
+                  nativeStarted: true,
+                  fallbackReason: ""
+                });
             }
           }, _callee429);
         }));
       },
-      seek(positionSeconds) {
+      pause() {
         return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee430() {
           return _regenerator().w(function (_context430) {
             while (1) switch (_context430.n) {
               case 0:
                 _context430.n = 1;
-                return callPort(rt, "audioEngine", "seek", {
-                  positionMs: Math.max(0, Math.round(positionSeconds * 1e3))
-                });
+                return callPort(rt, "audioEngine", "pause");
               case 1:
                 return _context430.a(2);
             }
           }, _callee430);
         }));
       },
-      setVolume(volume2) {
+      stop() {
         return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee431() {
           return _regenerator().w(function (_context431) {
             while (1) switch (_context431.n) {
               case 0:
                 _context431.n = 1;
-                return callPort(rt, "audioEngine", "setVolume", {
-                  volume: volume2
-                });
+                return callPort(rt, "audioEngine", "stop");
               case 1:
                 return _context431.a(2);
             }
           }, _callee431);
         }));
       },
-      setPlaybackRate(rate) {
+      seek(positionSeconds) {
         return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee432() {
           return _regenerator().w(function (_context432) {
             while (1) switch (_context432.n) {
               case 0:
-                if (!(rate === 1)) {
-                  _context432.n = 1;
-                  break;
-                }
-                return _context432.a(2);
+                _context432.n = 1;
+                return callPort(rt, "audioEngine", "seek", {
+                  positionMs: Math.max(0, Math.round(positionSeconds * 1e3))
+                });
               case 1:
-                throw wireFailure("UNSUPPORTED_CAPABILITY", "Playback rate is not supported on this device", false);
-              case 2:
                 return _context432.a(2);
             }
           }, _callee432);
         }));
       },
-      setPlayMode(mode) {
+      setVolume(volume2) {
         return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee433() {
-          var wire;
           return _regenerator().w(function (_context433) {
             while (1) switch (_context433.n) {
               case 0:
-                wire = mode === "repeat" ? "single" : mode === "listLoop" ? "loop" : "sequence";
                 _context433.n = 1;
-                return callPort(rt, "audioEngine", "setPlayMode", {
-                  mode: wire
+                return callPort(rt, "audioEngine", "setVolume", {
+                  volume: volume2
                 });
               case 1:
                 return _context433.a(2);
@@ -38829,41 +39029,76 @@ ${lrc}` : lrc,
           }, _callee433);
         }));
       },
-      setDspConfig(config) {
+      setPlaybackRate(rate) {
         return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee434() {
           return _regenerator().w(function (_context434) {
             while (1) switch (_context434.n) {
               case 0:
-                _context434.n = 1;
-                return callPort(rt, "audioEngine", "setDspConfig", {
-                  configJson: JSON.stringify(config)
-                });
+                if (!(rate === 1)) {
+                  _context434.n = 1;
+                  break;
+                }
+                return _context434.a(2);
               case 1:
+                throw wireFailure("UNSUPPORTED_CAPABILITY", "Playback rate is not supported on this device", false);
+              case 2:
                 return _context434.a(2);
             }
           }, _callee434);
         }));
       },
-      getSnapshot() {
+      setPlayMode(mode) {
         return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee435() {
-          var raw;
+          var wire;
           return _regenerator().w(function (_context435) {
             while (1) switch (_context435.n) {
               case 0:
+                wire = mode === "repeat" ? "single" : mode === "listLoop" ? "loop" : "sequence";
                 _context435.n = 1;
+                return callPort(rt, "audioEngine", "setPlayMode", {
+                  mode: wire
+                });
+              case 1:
+                return _context435.a(2);
+            }
+          }, _callee435);
+        }));
+      },
+      setDspConfig(config) {
+        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee436() {
+          return _regenerator().w(function (_context436) {
+            while (1) switch (_context436.n) {
+              case 0:
+                _context436.n = 1;
+                return callPort(rt, "audioEngine", "setDspConfig", {
+                  configJson: JSON.stringify(config)
+                });
+              case 1:
+                return _context436.a(2);
+            }
+          }, _callee436);
+        }));
+      },
+      getSnapshot() {
+        return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee437() {
+          var raw;
+          return _regenerator().w(function (_context437) {
+            while (1) switch (_context437.n) {
+              case 0:
+                _context437.n = 1;
                 return callPort(rt, "audioEngine", "getSnapshot");
               case 1:
-                raw = _context435.v;
+                raw = _context437.v;
                 if (isObject(raw)) {
-                  _context435.n = 2;
+                  _context437.n = 2;
                   break;
                 }
                 throw wireFailure("FAILED", "Audio engine returned an invalid snapshot");
               case 2:
                 rt.raw = raw;
-                return _context435.a(2, toPlaybackInfo(rt, raw));
+                return _context437.a(2, toPlaybackInfo(rt, raw));
             }
-          }, _callee435);
+          }, _callee437);
         }));
       },
       subscribe(listener) {
@@ -38895,7 +39130,7 @@ ${lrc}` : lrc,
     return value.map(artist => typeof artist === "string" ? artist : isObject(artist) ? str(artist.name) : "").filter(name => name.length > 0);
   }
   function wireTrack(rt, view) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     var id2 = str(view.id);
     var record2 = (_a = rt.host.queueStore.getTrack(id2)) != null ? _a : {};
     var merged = __spreadValues(__spreadValues({}, record2), view);
@@ -38931,14 +39166,114 @@ ${lrc}` : lrc,
     setOpt(track, "bpm", optPositiveNum(merged.bpm));
     setOpt(track, "isrc", optStr(merged.isrc));
     setOpt(track, "catalog", optStr(merged.catalog));
+    setOpt(track, "cueRange", (_e = normalizeCueRange(merged.cueRange)) != null ? _e : void 0);
     return track;
+  }
+  function legacyCueSource(source) {
+    if (!source) return {
+      source
+    };
+    var at = source.lastIndexOf("#cue=");
+    if (at <= 0) return {
+      source
+    };
+    var parts = source.slice(at + 5).split(",");
+    if (![2, 4].includes(parts.length) || parts.some(part => !/^\d+(?:\.\d+)?(?:E-?\d+)?$/.test(part))) return {
+      source
+    };
+    var _parts$map = parts.map(Number),
+      _parts$map2 = _slicedToArray(_parts$map, 4),
+      startSeconds = _parts$map2[0],
+      endSeconds = _parts$map2[1],
+      _parts$map2$ = _parts$map2[2],
+      virtualPregapSeconds = _parts$map2$ === void 0 ? 0 : _parts$map2$,
+      _parts$map2$2 = _parts$map2[3],
+      sourcePregapSeconds = _parts$map2$2 === void 0 ? 0 : _parts$map2$2;
+    var range = normalizeCueRange({
+      startSeconds,
+      endSeconds,
+      virtualPregapSeconds,
+      sourcePregapSeconds,
+      pregapSeconds: virtualPregapSeconds || sourcePregapSeconds
+    });
+    return range ? {
+      source: source.slice(0, at),
+      range
+    } : {
+      source
+    };
+  }
+  function migrateCueSources(envelope) {
+    var bookmarkKeys = /* @__PURE__ */new Map();
+    var migrateTrack = record2 => {
+      if (!isObject(record2)) return;
+      var previous = optStr(record2.filePath);
+      var legacy = legacyCueSource(previous);
+      if (!legacy.range || record2.cueRange !== void 0) return;
+      record2.filePath = legacy.source;
+      record2.cueRange = legacy.range;
+      bookmarkKeys.set(`local:${previous}`, `local:${legacy.source}#cue:${legacy.range.startSeconds}`);
+    };
+    if (Array.isArray(envelope.tracks)) envelope.tracks.forEach(migrateTrack);
+    if (isObject(envelope.session)) {
+      migrateTrack(envelope.session.track);
+      if (Array.isArray(envelope.session.queue)) envelope.session.queue.forEach(migrateTrack);
+    }
+    if (Array.isArray(envelope.queues)) {
+      var _iterator158 = _createForOfIteratorHelper(envelope.queues),
+        _step158;
+      try {
+        for (_iterator158.s(); !(_step158 = _iterator158.n()).done;) {
+          var queue = _step158.value;
+          if (isObject(queue) && Array.isArray(queue.rows)) {
+            var _iterator159 = _createForOfIteratorHelper(queue.rows),
+              _step159;
+            try {
+              for (_iterator159.s(); !(_step159 = _iterator159.n()).done;) {
+                var row = _step159.value;
+                if (isObject(row)) migrateTrack(row.snapshot);
+              }
+            } catch (err) {
+              _iterator159.e(err);
+            } finally {
+              _iterator159.f();
+            }
+          }
+        }
+      } catch (err) {
+        _iterator158.e(err);
+      } finally {
+        _iterator158.f();
+      }
+    }
+    if (isObject(envelope.bookmarks) && Array.isArray(envelope.bookmarks.bookmarks)) {
+      var _iterator160 = _createForOfIteratorHelper(envelope.bookmarks.bookmarks),
+        _step160;
+      try {
+        for (_iterator160.s(); !(_step160 = _iterator160.n()).done;) {
+          var bookmark = _step160.value;
+          if (isObject(bookmark)) {
+            var key = bookmarkKeys.get(str(bookmark.trackKey));
+            if (key) bookmark.trackKey = key;
+          }
+        }
+      } catch (err) {
+        _iterator160.e(err);
+      } finally {
+        _iterator160.f();
+      }
+    }
   }
   function trackFromWire(raw) {
     var _a;
     if (!isObject(raw)) return null;
     var id2 = optStr(raw.id);
     if (!id2) return null;
-    var source = optStr(raw.source);
+    var legacy = legacyCueSource(optStr(raw.source));
+    var source = legacy.source;
+    var cueRange2 = raw.cueRange === void 0 ? legacy.range : normalizeCueRange(raw.cueRange);
+    if (raw.cueRange !== void 0 && !cueRange2) throw wireFailure("INVALID_REQUEST", `CUE range is invalid: ${id2}`, false);
+    if (legacy.range && cueRange2 && JSON.stringify(legacy.range) !== JSON.stringify(cueRange2)) throw wireFailure("INVALID_REQUEST", `CUE range conflicts with its source: ${id2}`, false);
     var fileName = source ? fileNameOf(source) : id2;
     var track = {
       id: id2,
@@ -38969,6 +39304,7 @@ ${lrc}` : lrc,
     setOpt(track, "bitrate", optPositiveNum(raw.bitrate));
     setOpt(track, "bpm", optPositiveNum(raw.bpm));
     setOpt(track, "addedAt", optNonNegativeInt(raw.addedAt));
+    setOpt(track, "cueRange", cueRange2);
     return track;
   }
   function collections(rt) {
@@ -39000,15 +39336,52 @@ ${lrc}` : lrc,
       };
     });
   }
-  function mergeTranslation(lines, translation) {
+  function mergeTranslation(lines, translation, synced = true) {
     if (!translation || !translation.trim()) return lines;
     var parsed = parseEmbeddedLrcLines(translation);
-    if (!parsed.synced) return lines;
-    var byTime = new Map(parsed.lines.map(line => [line.timeMs, line.text]));
-    return lines.map(line => {
-      var _a;
-      return line.translation ? line : __spreadProps(__spreadValues({}, line), {
-        translation: (_a = byTime.get(line.timeMs)) != null ? _a : null
+    if (!synced) {
+      if (parsed.synced) return lines;
+      return lines.map((line, index) => {
+        var _a, _b;
+        return line.translation ? line : __spreadProps(__spreadValues({}, line), {
+          translation: (_b = (_a = parsed.lines[index]) == null ? void 0 : _a.text) != null ? _b : null
+        });
+      });
+    }
+    if (!parsed.synced || parsed.lines.length === 0) return lines;
+    var used = /* @__PURE__ */new Set();
+    var byTime = /* @__PURE__ */new Map();
+    parsed.lines.forEach((line, index) => {
+      if (!byTime.has(line.timeMs)) byTime.set(line.timeMs, {
+        index,
+        text: line.text
+      });
+    });
+    var exactMerged = lines.map(line => {
+      if (line.translation) return line;
+      var exact = byTime.get(line.timeMs);
+      if (!exact) return line;
+      used.add(exact.index);
+      return __spreadProps(__spreadValues({}, line), {
+        translation: exact.text
+      });
+    });
+    return exactMerged.map(line => {
+      if (line.translation) return line;
+      var bestIndex = -1;
+      var bestDelta = 1501;
+      for (var _i52 = 0; _i52 < parsed.lines.length; _i52++) {
+        if (used.has(_i52)) continue;
+        var delta = Math.abs(parsed.lines[_i52].timeMs - line.timeMs);
+        if (delta <= 1500 && delta < bestDelta) {
+          bestDelta = delta;
+          bestIndex = _i52;
+        }
+      }
+      if (bestIndex < 0) return line;
+      used.add(bestIndex);
+      return __spreadProps(__spreadValues({}, line), {
+        translation: parsed.lines[bestIndex].text
       });
     });
   }
@@ -39046,7 +39419,7 @@ ${lrc}` : lrc,
     }
     var source = original.trimStart().startsWith(LYRICS_ONLINE_MARKER) ? "online" : (override == null ? void 0 : override.originalSelection) === "manual" ? "imported" : "embedded";
     var parsed = parseEmbeddedLrcLines(original);
-    var lines = parsed.synced ? mergeTranslation(parsed.lines, translation) : parsed.lines;
+    var lines = mergeTranslation(parsed.lines, translation, parsed.synced);
     return {
       trackId,
       source,
@@ -39078,7 +39451,7 @@ ${lrc}` : lrc,
     return coreState === "playing" || coreState === "paused" ? coreState : "stopped";
   }
   function projectPlayback(rt, core) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v;
     var p = core.playback;
     if (!p) return void 0;
     var raw = (_a = rt.raw) != null ? _a : {};
@@ -39161,6 +39534,7 @@ ${lrc}` : lrc,
         duration: Math.max(0, num(upcoming.duration, 0))
       };
       setOpt(row, "queueEntryId", optStr(upcoming.queueEntryId));
+      setOpt(row, "cueRange", (_v = normalizeCueRange(upcoming.cueRange)) != null ? _v : void 0);
       view.upcomingTrack = row;
     }
     return view;
@@ -39200,8 +39574,8 @@ ${lrc}` : lrc,
       };
     }
     var revisions = [["libraryRevision", core.libraryRevision], ["catalogRevision", core.catalogRevision], ["entityMetadataRevision", core.entityMetadataRevision], ["presentationRevision", core.presentationRevision], ["playlistsRevision", core.playlistsRevision], ["settingsRevision", core.settingsRevision], ["lyricsRevision", core.lyricsRevision]];
-    for (var _i52 = 0, _revisions = revisions; _i52 < _revisions.length; _i52++) {
-      var _revisions$_i = _slicedToArray(_revisions[_i52], 2),
+    for (var _i53 = 0, _revisions = revisions; _i53 < _revisions.length; _i53++) {
+      var _revisions$_i = _slicedToArray(_revisions[_i53], 2),
         key = _revisions$_i[0],
         value = _revisions$_i[1];
       if (typeof value === "number" && Number.isFinite(value)) snapshot[key] = Math.round(value);
@@ -39253,19 +39627,19 @@ ${lrc}` : lrc,
     return Math.min(1e3, Math.max(1, int(value, fallback)));
   }
   function queueWindow(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee436() {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee438() {
       var _a, offset, limit, queue, page2, items, window;
-      return _regenerator().w(function (_context436) {
-        while (1) switch (_context436.n) {
+      return _regenerator().w(function (_context438) {
+        while (1) switch (_context438.n) {
           case 0:
             offset = Math.max(0, int(payload.offset, 0));
             limit = clampLimit(payload.limit, 50);
             queue = rt.host.getSnapshot().queue;
             if (queue) {
-              _context436.n = 1;
+              _context438.n = 1;
               break;
             }
-            return _context436.a(2, {
+            return _context438.a(2, {
               queueId: "default",
               revision: 0,
               total: 0,
@@ -39275,7 +39649,7 @@ ${lrc}` : lrc,
               items: []
             });
           case 1:
-            _context436.n = 2;
+            _context438.n = 2;
             return coreRequest(rt, "query", "queue.page", {
               id: queue.id,
               revision: queue.revision,
@@ -39283,7 +39657,7 @@ ${lrc}` : lrc,
               limit
             }, wire);
           case 2:
-            page2 = _context436.v;
+            page2 = _context438.v;
             items = (Array.isArray(page2.items) ? page2.items : []).filter(isObject).map(item => {
               var row = {
                 occurrenceId: str(item.queueEntryId),
@@ -39302,16 +39676,16 @@ ${lrc}` : lrc,
               items
             };
             setOpt(window, "currentOccurrenceId", optStr(queue.occurrenceId));
-            return _context436.a(2, window);
+            return _context438.a(2, window);
         }
-      }, _callee436);
+      }, _callee438);
     }));
   }
   function searchSongs(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee437() {
-      var query2, offset, explicitLimit, limit, items, total, revision2, cursor, page2, tracks2, _iterator158, _step158, track, result;
-      return _regenerator().w(function (_context437) {
-        while (1) switch (_context437.n) {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee439() {
+      var query2, offset, explicitLimit, limit, items, total, revision2, cursor, page2, tracks2, _iterator161, _step161, track, result;
+      return _regenerator().w(function (_context439) {
+        while (1) switch (_context439.n) {
           case 0:
             query2 = str(payload.query).trim();
             offset = Math.max(0, int(payload.offset, 0));
@@ -39321,7 +39695,7 @@ ${lrc}` : lrc,
             total = 0;
             cursor = offset;
           case 1:
-            _context437.n = 2;
+            _context439.n = 2;
             return coreRequest(rt, "query", "library.tracks", __spreadProps(__spreadValues({}, query2 ? {
               search: query2
             } : {}), {
@@ -39329,29 +39703,29 @@ ${lrc}` : lrc,
               limit
             }), wire);
           case 2:
-            page2 = _context437.v;
+            page2 = _context439.v;
             tracks2 = (Array.isArray(page2.tracks) ? page2.tracks : []).filter(isObject);
-            _iterator158 = _createForOfIteratorHelper(tracks2);
+            _iterator161 = _createForOfIteratorHelper(tracks2);
             try {
-              for (_iterator158.s(); !(_step158 = _iterator158.n()).done;) {
-                track = _step158.value;
+              for (_iterator161.s(); !(_step161 = _iterator161.n()).done;) {
+                track = _step161.value;
                 items.push(wireTrack(rt, track));
               }
             } catch (err) {
-              _iterator158.e(err);
+              _iterator161.e(err);
             } finally {
-              _iterator158.f();
+              _iterator161.f();
             }
             total = Math.max(0, int(page2.total, 0));
             if (typeof page2.revision === "number") revision2 = Math.round(page2.revision);
             cursor += tracks2.length;
             if (!(explicitLimit || tracks2.length === 0 || cursor >= total)) {
-              _context437.n = 3;
+              _context439.n = 3;
               break;
             }
-            return _context437.a(3, 4);
+            return _context439.a(3, 4);
           case 3:
-            _context437.n = 1;
+            _context439.n = 1;
             break;
           case 4:
             result = {
@@ -39361,9 +39735,9 @@ ${lrc}` : lrc,
               offset
             };
             setOpt(result, "revision", revision2);
-            return _context437.a(2, result);
+            return _context439.a(2, result);
         }
-      }, _callee437);
+      }, _callee439);
     }));
   }
   function resolveTracks(rt, ids) {
@@ -39386,49 +39760,52 @@ ${lrc}` : lrc,
       edit: edit2
     }, wire);
   }
-  function editTrackLyrics(rt, wire, trackId, original) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee438() {
-      var attempt, _t224;
-      return _regenerator().w(function (_context438) {
-        while (1) switch (_context438.p = _context438.n) {
+  function editTrackLyrics(rt, wire, trackId, original, translation = null) {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee440() {
+      var attempt, _t229;
+      return _regenerator().w(function (_context440) {
+        while (1) switch (_context440.p = _context440.n) {
           case 0:
             attempt = 0;
           case 1:
-            _context438.p = 1;
-            _context438.n = 2;
+            _context440.p = 1;
+            _context440.n = 2;
             return coreRequest(rt, "command", "lyrics.edit", {
               revision: rt.host.lyrics.getRevision(),
               edit: {
                 kind: "track",
                 trackId,
-                patch: {
+                patch: __spreadProps(__spreadValues({
                   source: "manual",
                   originalSelection: "manual",
-                  original,
-                  translation: null
-                }
+                  original
+                }, translation ? {
+                  translationSelection: "manual"
+                } : {}), {
+                  translation: translation != null ? translation : null
+                })
               }
             }, wire);
           case 2:
-            return _context438.a(2);
+            return _context440.a(2);
           case 3:
-            _context438.p = 3;
-            _t224 = _context438.v;
-            if (!(attempt === 0 && codeOf(_t224) === "STALE_REVISION")) {
-              _context438.n = 4;
+            _context440.p = 3;
+            _t229 = _context440.v;
+            if (!(attempt === 0 && codeOf(_t229) === "STALE_REVISION")) {
+              _context440.n = 4;
               break;
             }
-            return _context438.a(3, 5);
+            return _context440.a(3, 5);
           case 4:
-            throw _t224;
+            throw _t229;
           case 5:
             attempt++;
-            _context438.n = 1;
+            _context440.n = 1;
             break;
           case 6:
-            return _context438.a(2);
+            return _context440.a(2);
         }
-      }, _callee438, null, [[1, 3]]);
+      }, _callee440, null, [[1, 3]]);
     }));
   }
   function lyricsTarget(rt, payload) {
@@ -39449,48 +39826,20 @@ ${lrc}` : lrc,
     }
     var entry = Array.isArray(parsed) ? parsed.find(isObject) : parsed;
     if (!isObject(entry)) return "";
-    for (var _i53 = 0, _arr18 = ["syncedLyrics", "plainLyrics", "lrc"]; _i53 < _arr18.length; _i53++) {
-      var key = _arr18[_i53];
+    for (var _i54 = 0, _arr18 = ["syncedLyrics", "plainLyrics", "lrc"]; _i54 < _arr18.length; _i54++) {
+      var key = _arr18[_i54];
       var value = entry[key];
       if (typeof value === "string" && value.trim()) return value.trim();
     }
     return "";
   }
-  function fetchOnlineLyrics(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee439() {
-      var _a, trackId, record2, url, title, enc, duration, response, status, body, lrc;
-      return _regenerator().w(function (_context439) {
-        while (1) switch (_context439.n) {
+  function requestOnlineLyricsUrl(rt, url) {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee441() {
+      var _a, response, status, body;
+      return _regenerator().w(function (_context441) {
+        while (1) switch (_context441.n) {
           case 0:
-            trackId = lyricsTarget(rt, payload);
-            record2 = rt.host.queueStore.getTrack(trackId);
-            url = optStr(payload.url);
-            if (!url) {
-              _context439.n = 2;
-              break;
-            }
-            if (/^https:\/\//i.test(url)) {
-              _context439.n = 1;
-              break;
-            }
-            throw wireFailure("INVALID_REQUEST", "在线歌词地址必须使用 HTTPS", false);
-          case 1:
-            _context439.n = 4;
-            break;
-          case 2:
-            title = str(record2.title).trim();
-            if (title) {
-              _context439.n = 3;
-              break;
-            }
-            throw wireFailure("INVALID_REQUEST", "曲目缺少标题，无法匹配在线歌词", false);
-          case 3:
-            enc = encodeURIComponent;
-            url = `https://lrclib.net/api/get?track_name=${enc(title)}&artist_name=${enc(str(record2.artist))}&album_name=${enc(str(record2.album))}`;
-            duration = Math.round(num(record2.duration, 0));
-            if (duration > 0) url += `&duration=${duration}`;
-          case 4:
-            _context439.n = 5;
+            _context441.n = 1;
             return callPort(rt, "network", "request", {
               url,
               method: "GET",
@@ -39499,81 +39848,198 @@ ${lrc}` : lrc,
                 Accept: "application/json, text/plain;q=0.9"
               }
             });
-          case 5:
-            response = _context439.v;
+          case 1:
+            response = _context441.v;
             status = int(response == null ? void 0 : response.statusCode, 200);
             body = str((_a = response == null ? void 0 : response.bodyUtf8) != null ? _a : response == null ? void 0 : response.bodyText);
-            if (!(status === 404)) {
-              _context439.n = 6;
-              break;
-            }
-            throw wireFailure("NOT_FOUND", "未找到在线歌词", false);
-          case 6:
-            if (!(status < 200 || status >= 300)) {
-              _context439.n = 7;
-              break;
-            }
-            throw wireFailure("FAILED", `在线歌词请求失败（HTTP ${status}）`, status === 429 || status >= 500);
-          case 7:
             if (!(body.length > MAX_ONLINE_LYRICS_BYTES)) {
-              _context439.n = 8;
+              _context441.n = 2;
               break;
             }
             throw wireFailure("FAILED", "在线歌词过大", false);
-          case 8:
-            lrc = pickLyricsText(body);
-            if (lrc) {
-              _context439.n = 9;
+          case 2:
+            return _context441.a(2, {
+              status,
+              body
+            });
+        }
+      }, _callee441);
+    }));
+  }
+  function pickRankedSearchLyrics(body, query2) {
+    var _a;
+    var trimmed = body.trim();
+    if (!trimmed.startsWith("[")) return "";
+    var parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch (e) {
+      return "";
+    }
+    if (!Array.isArray(parsed)) return "";
+    var hits = parsed.filter(isObject);
+    if (!query2.artist) {
+      return pickLyricsText(trimmed);
+    }
+    var candidates = rankOnlineLyricsCandidates(query2, hits);
+    return ((_a = pickOnlineLyricsText(candidates[0])) != null ? _a : "").trim();
+  }
+  function fetchOnlineLyrics(rt, wire, payload) {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee442() {
+      var trackId, record2, customUrl, lrc, _yield$requestOnlineL, status, body, title, artist, album, duration, enc, getUrl, primary, searchUrl, fallback;
+      return _regenerator().w(function (_context442) {
+        while (1) switch (_context442.n) {
+          case 0:
+            trackId = lyricsTarget(rt, payload);
+            record2 = rt.host.queueStore.getTrack(trackId);
+            customUrl = optStr(payload.url);
+            lrc = "";
+            if (!customUrl) {
+              _context442.n = 5;
+              break;
+            }
+            if (/^https:\/\//i.test(customUrl)) {
+              _context442.n = 1;
+              break;
+            }
+            throw wireFailure("INVALID_REQUEST", "在线歌词地址必须使用 HTTPS", false);
+          case 1:
+            _context442.n = 2;
+            return requestOnlineLyricsUrl(rt, customUrl);
+          case 2:
+            _yield$requestOnlineL = _context442.v;
+            status = _yield$requestOnlineL.status;
+            body = _yield$requestOnlineL.body;
+            if (!(status === 404)) {
+              _context442.n = 3;
               break;
             }
             throw wireFailure("NOT_FOUND", "未找到在线歌词", false);
+          case 3:
+            if (!(status < 200 || status >= 300)) {
+              _context442.n = 4;
+              break;
+            }
+            throw wireFailure("FAILED", `在线歌词请求失败（HTTP ${status}）`, status === 429 || status >= 500);
+          case 4:
+            lrc = pickLyricsText(body);
+            _context442.n = 13;
+            break;
+          case 5:
+            title = str(record2.title).trim();
+            if (title) {
+              _context442.n = 6;
+              break;
+            }
+            throw wireFailure("INVALID_REQUEST", "曲目缺少标题，无法匹配在线歌词", false);
+          case 6:
+            artist = str(record2.artist).trim();
+            album = str(record2.album).trim();
+            duration = Math.round(num(record2.duration, 0));
+            enc = encodeURIComponent;
+            getUrl = `https://lrclib.net/api/get?track_name=${enc(title)}&artist_name=${enc(artist)}&album_name=${enc(album)}`;
+            if (duration > 0) getUrl += `&duration=${duration}`;
+            _context442.n = 7;
+            return requestOnlineLyricsUrl(rt, getUrl);
+          case 7:
+            primary = _context442.v;
+            if (!(primary.status >= 200 && primary.status < 300)) {
+              _context442.n = 8;
+              break;
+            }
+            lrc = pickLyricsText(primary.body);
+            _context442.n = 9;
+            break;
+          case 8:
+            if (!(primary.status === 429 || primary.status >= 500)) {
+              _context442.n = 9;
+              break;
+            }
+            throw wireFailure("FAILED", `在线歌词请求失败（HTTP ${primary.status}）`, true);
           case 9:
-            _context439.n = 10;
+            if (lrc) {
+              _context442.n = 13;
+              break;
+            }
+            searchUrl = artist ? `https://lrclib.net/api/search?track_name=${enc(title)}&artist_name=${enc(artist)}` : `https://lrclib.net/api/search?q=${enc(title)}`;
+            _context442.n = 10;
+            return requestOnlineLyricsUrl(rt, searchUrl);
+          case 10:
+            fallback = _context442.v;
+            if (!(fallback.status === 404)) {
+              _context442.n = 11;
+              break;
+            }
+            throw wireFailure("NOT_FOUND", "未找到在线歌词", false);
+          case 11:
+            if (!(fallback.status < 200 || fallback.status >= 300)) {
+              _context442.n = 12;
+              break;
+            }
+            throw wireFailure("FAILED", `在线歌词请求失败（HTTP ${fallback.status}）`, fallback.status === 429 || fallback.status >= 500);
+          case 12:
+            lrc = pickRankedSearchLyrics(fallback.body, __spreadValues(__spreadValues({
+              title,
+              artist
+            }, album ? {
+              album
+            } : {}), duration > 0 ? {
+              durationSeconds: duration
+            } : {}));
+          case 13:
+            if (lrc) {
+              _context442.n = 14;
+              break;
+            }
+            throw wireFailure("NOT_FOUND", "未找到在线歌词", false);
+          case 14:
+            _context442.n = 15;
             return editTrackLyrics(rt, wire, trackId, `${LYRICS_ONLINE_MARKER}
 ${lrc}`);
-          case 10:
-            return _context439.a(2, lyricsView(rt, trackId));
+          case 15:
+            return _context442.a(2, lyricsView(rt, trackId));
         }
-      }, _callee439);
+      }, _callee442);
     }));
   }
   function importLrc(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee440() {
-      var _a, trackId, text2;
-      return _regenerator().w(function (_context440) {
-        while (1) switch (_context440.n) {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee443() {
+      var _a, _b, trackId, text2, translation;
+      return _regenerator().w(function (_context443) {
+        while (1) switch (_context443.n) {
           case 0:
             trackId = lyricsTarget(rt, payload);
             text2 = str((_a = payload.lrcText) != null ? _a : payload.content).trim();
             if (text2) {
-              _context440.n = 1;
+              _context443.n = 1;
               break;
             }
             throw wireFailure("INVALID_REQUEST", "歌词内容为空", false);
           case 1:
-            _context440.n = 2;
-            return editTrackLyrics(rt, wire, trackId, text2);
+            translation = ((_b = optStr(payload.translation)) == null ? void 0 : _b.trim()) || null;
+            _context443.n = 2;
+            return editTrackLyrics(rt, wire, trackId, text2, translation);
           case 2:
-            return _context440.a(2, lyricsView(rt, trackId));
+            return _context443.a(2, lyricsView(rt, trackId));
         }
-      }, _callee440);
+      }, _callee443);
     }));
   }
   function selectQueueIndex(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee441() {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee444() {
       var queue, index, page2, row, requested;
-      return _regenerator().w(function (_context441) {
-        while (1) switch (_context441.n) {
+      return _regenerator().w(function (_context444) {
+        while (1) switch (_context444.n) {
           case 0:
             queue = requireQueue(rt);
             index = int(payload.index, -1);
             if (!(index < 0 || index >= queue.total)) {
-              _context441.n = 1;
+              _context444.n = 1;
               break;
             }
             throw wireFailure("INVALID_REQUEST", `Queue index ${index} is out of range`, false);
           case 1:
-            _context441.n = 2;
+            _context444.n = 2;
             return coreRequest(rt, "query", "queue.page", {
               id: queue.id,
               revision: queue.revision,
@@ -39581,22 +40047,22 @@ ${lrc}`);
               limit: 1
             }, wire);
           case 2:
-            page2 = _context441.v;
+            page2 = _context444.v;
             row = (Array.isArray(page2.items) ? page2.items : []).filter(isObject)[0];
             if (row) {
-              _context441.n = 3;
+              _context444.n = 3;
               break;
             }
             throw wireFailure("STALE_REVISION", "队列已变化，请重新选择", true);
           case 3:
             requested = optStr(payload.occurrenceId);
             if (!(requested && requested !== `occ-${index}` && requested !== row.queueEntryId)) {
-              _context441.n = 4;
+              _context444.n = 4;
               break;
             }
             throw wireFailure("STALE_REVISION", "队列已变化，请重新选择", true);
           case 4:
-            _context441.n = 5;
+            _context444.n = 5;
             return coreRequest(rt, "command", "queue.select", {
               id: queue.id,
               revision: queue.revision,
@@ -39604,20 +40070,20 @@ ${lrc}`);
               occurrenceId: row.queueEntryId
             }, wire);
           case 5:
-            return _context441.a(2);
+            return _context444.a(2);
         }
-      }, _callee441);
+      }, _callee444);
     }));
   }
   function replaceQueue(rt, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee443() {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee446() {
       var tracks2, store, remember, records, selectedIndex;
-      return _regenerator().w(function (_context443) {
-        while (1) switch (_context443.n) {
+      return _regenerator().w(function (_context446) {
+        while (1) switch (_context446.n) {
           case 0:
             tracks2 = Array.isArray(payload.tracks) ? payload.tracks : [];
             if (!(tracks2.length === 0)) {
-              _context443.n = 1;
+              _context446.n = 1;
               break;
             }
             throw wireFailure("INVALID_REQUEST", "Queue must not be empty", false);
@@ -39642,13 +40108,20 @@ ${lrc}`);
             });
             if (remember.length) store.rememberTracks(remember);
             selectedIndex = Math.min(Math.max(0, int(payload.startIndex, 0)), records.length - 1);
-            _context443.n = 2;
-            return rt.host.playback.fromPages(append => __async(null, null, /*#__PURE__*/_regenerator().m(function _callee442() {
-              return _regenerator().w(function (_context442) {
-                while (1) switch (_context442.n) {
+            _context446.n = 2;
+            return rt.host.playback.fromPages(append => __async(null, null, /*#__PURE__*/_regenerator().m(function _callee445() {
+              var offset;
+              return _regenerator().w(function (_context445) {
+                while (1) switch (_context445.n) {
                   case 0:
-                    _context442.n = 1;
-                    return append(records.map(track => {
+                    offset = 0;
+                  case 1:
+                    if (!(offset < records.length)) {
+                      _context445.n = 3;
+                      break;
+                    }
+                    _context445.n = 2;
+                    return append(records.slice(offset, offset + LIBRARY_PAGE_SIZE).map(track => {
                       var record2 = __spreadProps(__spreadValues({}, track), {
                         id: String(track.id),
                         filePath: typeof track.filePath === "string" ? track.filePath : ""
@@ -39659,21 +40132,25 @@ ${lrc}`);
                         localSnapshot: record2
                       };
                     }));
-                  case 1:
-                    return _context442.a(2);
+                  case 2:
+                    offset += LIBRARY_PAGE_SIZE;
+                    _context445.n = 1;
+                    break;
+                  case 3:
+                    return _context445.a(2);
                 }
-              }, _callee442);
+              }, _callee445);
             })), {
               selectedIndex,
               play: payload.play !== false
             });
           case 2:
-            _context443.n = 3;
+            _context446.n = 3;
             return rt.host.playback.flush();
           case 3:
-            return _context443.a(2);
+            return _context446.a(2);
         }
-      }, _callee443);
+      }, _callee446);
     }));
   }
   function syncLibrary(rt, payload) {
@@ -39685,29 +40162,29 @@ ${lrc}`);
     });
     if (payload.merge === true) {
       var merged = /* @__PURE__ */new Map();
-      var _iterator159 = _createForOfIteratorHelper(rt.host.queueStore.getAllTracks()),
-        _step159;
+      var _iterator162 = _createForOfIteratorHelper(rt.host.queueStore.getAllTracks()),
+        _step162;
       try {
-        for (_iterator159.s(); !(_step159 = _iterator159.n()).done;) {
-          var track = _step159.value;
+        for (_iterator162.s(); !(_step162 = _iterator162.n()).done;) {
+          var track = _step162.value;
           merged.set(track.id, track);
         }
       } catch (err) {
-        _iterator159.e(err);
+        _iterator162.e(err);
       } finally {
-        _iterator159.f();
+        _iterator162.f();
       }
-      var _iterator160 = _createForOfIteratorHelper(tracks2),
-        _step160;
+      var _iterator163 = _createForOfIteratorHelper(tracks2),
+        _step163;
       try {
-        for (_iterator160.s(); !(_step160 = _iterator160.n()).done;) {
-          var _track5 = _step160.value;
+        for (_iterator163.s(); !(_step163 = _iterator163.n()).done;) {
+          var _track5 = _step163.value;
           merged.set(_track5.id, _track5);
         }
       } catch (err) {
-        _iterator160.e(err);
+        _iterator163.e(err);
       } finally {
-        _iterator160.f();
+        _iterator163.f();
       }
       rt.host.replaceLibraryTracks([...merged.values()]);
     } else {
@@ -39715,91 +40192,91 @@ ${lrc}`);
     }
   }
   function toggleFavorite(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee444() {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee447() {
       var _resolveTracks, _resolveTracks2, track, favorite;
-      return _regenerator().w(function (_context444) {
-        while (1) switch (_context444.n) {
+      return _regenerator().w(function (_context447) {
+        while (1) switch (_context447.n) {
           case 0:
             _resolveTracks = resolveTracks(rt, [payload.trackId]), _resolveTracks2 = _slicedToArray(_resolveTracks, 1), track = _resolveTracks2[0];
-            _context444.n = 1;
+            _context447.n = 1;
             return rt.host.playlists.isFavorite(track);
           case 1:
-            favorite = _context444.v;
-            _context444.n = 2;
+            favorite = _context447.v;
+            _context447.n = 2;
             return playlistEdit(rt, wire, {
               kind: "favorite",
               tracks: [track],
               favorite: !favorite
             });
           case 2:
-            return _context444.a(2);
+            return _context447.a(2);
         }
-      }, _callee444);
+      }, _callee447);
     }));
   }
   function createPlaylist(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee445() {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee448() {
       var _a, name, tracks2, created, id2;
-      return _regenerator().w(function (_context445) {
-        while (1) switch (_context445.n) {
+      return _regenerator().w(function (_context448) {
+        while (1) switch (_context448.n) {
           case 0:
             name = str((_a = payload.name) != null ? _a : payload.playlistName).trim();
             if (name) {
-              _context445.n = 1;
+              _context448.n = 1;
               break;
             }
             throw wireFailure("INVALID_REQUEST", "歌单名称不能为空", false);
           case 1:
             tracks2 = resolveTracks(rt, payload.trackIds);
-            _context445.n = 2;
+            _context448.n = 2;
             return playlistEdit(rt, wire, {
               kind: "create",
               name
             });
           case 2:
-            created = _context445.v;
+            created = _context448.v;
             id2 = optStr(created == null ? void 0 : created.result);
             if (!(id2 && tracks2.length)) {
-              _context445.n = 3;
+              _context448.n = 3;
               break;
             }
-            _context445.n = 3;
+            _context448.n = 3;
             return playlistEdit(rt, wire, {
               kind: "add",
               id: id2,
               tracks: tracks2
             });
           case 3:
-            return _context445.a(2);
+            return _context448.a(2);
         }
-      }, _callee445);
+      }, _callee448);
     }));
   }
   function addBookmark(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee446() {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee449() {
       var state, trackId, label;
-      return _regenerator().w(function (_context446) {
-        while (1) switch (_context446.n) {
+      return _regenerator().w(function (_context449) {
+        while (1) switch (_context449.n) {
           case 0:
-            _context446.n = 1;
+            _context449.n = 1;
             return coreRequest(rt, "query", "bookmarks.state", {}, wire);
           case 1:
-            state = _context446.v;
+            state = _context449.v;
             if (state.current) {
-              _context446.n = 2;
+              _context449.n = 2;
               break;
             }
             throw wireFailure("NOT_FOUND", "当前没有正在播放的曲目", false);
           case 2:
             trackId = optStr(payload.trackId);
             if (!(trackId && trackId !== state.current.trackId)) {
-              _context446.n = 3;
+              _context449.n = 3;
               break;
             }
             throw wireFailure("STALE_REVISION", "当前曲目已变化", true);
           case 3:
             label = optStr(payload.label);
-            _context446.n = 4;
+            _context449.n = 4;
             return coreRequest(rt, "command", "bookmarks.edit", {
               revision: state.revision,
               edit: __spreadValues({
@@ -39810,25 +40287,25 @@ ${lrc}`);
               } : {})
             }, wire);
           case 4:
-            return _context446.a(2);
+            return _context449.a(2);
         }
-      }, _callee446);
+      }, _callee449);
     }));
   }
   function removeBookmark(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee447() {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee450() {
       var _a, id2;
-      return _regenerator().w(function (_context447) {
-        while (1) switch (_context447.n) {
+      return _regenerator().w(function (_context450) {
+        while (1) switch (_context450.n) {
           case 0:
             id2 = str((_a = payload.bookmarkId) != null ? _a : payload.id);
             if (rt.host.getBookmarksDocument().bookmarks.some(bookmark => bookmark.id === id2)) {
-              _context447.n = 1;
+              _context450.n = 1;
               break;
             }
             throw wireFailure("NOT_FOUND", "书签不存在", false);
           case 1:
-            _context447.n = 2;
+            _context450.n = 2;
             return coreRequest(rt, "command", "bookmarks.edit", {
               revision: rt.host.bookmarks.getRevision(),
               edit: {
@@ -39837,307 +40314,307 @@ ${lrc}`);
               }
             }, wire);
           case 2:
-            return _context447.a(2);
+            return _context450.a(2);
         }
-      }, _callee447);
+      }, _callee450);
     }));
   }
   function setEq(rt, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee448() {
-      var patch, _t225;
-      return _regenerator().w(function (_context448) {
-        while (1) switch (_context448.p = _context448.n) {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee451() {
+      var patch, _t230;
+      return _regenerator().w(function (_context451) {
+        while (1) switch (_context451.p = _context451.n) {
           case 0:
             patch = payload;
-            _context448.p = 1;
+            _context451.p = 1;
             applyEqConfigPatch(rt.host.getEqConfig(), patch);
-            _context448.n = 3;
+            _context451.n = 3;
             break;
           case 2:
-            _context448.p = 2;
-            _t225 = _context448.v;
-            throw wireFailure("INVALID_REQUEST", errorMessage(_t225), false);
+            _context451.p = 2;
+            _t230 = _context451.v;
+            throw wireFailure("INVALID_REQUEST", errorMessage(_t230), false);
           case 3:
-            _context448.n = 4;
+            _context451.n = 4;
             return rt.host.setEqConfig(patch);
           case 4:
             rt.restoreError = null;
             rt.eqRevision++;
             markDirty(rt);
           case 5:
-            return _context448.a(2);
+            return _context451.a(2);
         }
-      }, _callee448, null, [[1, 2]]);
+      }, _callee451, null, [[1, 2]]);
     }));
   }
   function editSettings(rt, wire, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee449() {
-      var patch, state, _t226;
-      return _regenerator().w(function (_context449) {
-        while (1) switch (_context449.p = _context449.n) {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee452() {
+      var patch, state, _t231;
+      return _regenerator().w(function (_context452) {
+        while (1) switch (_context452.p = _context452.n) {
           case 0:
             patch = isObject(payload.patch) ? payload.patch : null;
             if (!(!patch && typeof payload.key === "string" && payload.key)) {
-              _context449.n = 3;
+              _context452.n = 3;
               break;
             }
-            _context449.p = 1;
+            _context452.p = 1;
             patch = {
               [payload.key]: JSON.parse(str(payload.valueJson))
             };
-            _context449.n = 3;
+            _context452.n = 3;
             break;
           case 2:
-            _context449.p = 2;
-            _t226 = _context449.v;
+            _context452.p = 2;
+            _t231 = _context452.v;
             throw wireFailure("INVALID_REQUEST", `Setting ${payload.key} has an invalid value`, false);
           case 3:
             if (patch) {
-              _context449.n = 4;
+              _context452.n = 4;
               break;
             }
             throw wireFailure("INVALID_REQUEST", "Settings patch is missing", false);
           case 4:
-            _context449.n = 5;
+            _context452.n = 5;
             return coreRequest(rt, "query", "settings.state", {}, wire);
           case 5:
-            state = _context449.v;
-            _context449.n = 6;
+            state = _context452.v;
+            _context452.n = 6;
             return coreRequest(rt, "command", "settings.edit", {
               revision: state.revision,
               patch
             }, wire);
           case 6:
-            return _context449.a(2);
+            return _context452.a(2);
         }
-      }, _callee449, null, [[1, 2]]);
+      }, _callee452, null, [[1, 2]]);
     }));
   }
   function execute(rt, wire, kind, name, payload) {
-    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee450() {
-      var _a, _b, command, route, view, _view, mode, playlist, nextName, _playlist2, tracks2, _playlist3, _t227, _t228;
-      return _regenerator().w(function (_context450) {
-        while (1) switch (_context450.n) {
+    return __async(this, null, /*#__PURE__*/_regenerator().m(function _callee453() {
+      var _a, _b, command, route, view, _view, mode, playlist, nextName, _playlist2, tracks2, _playlist3, _t232, _t233;
+      return _regenerator().w(function (_context453) {
+        while (1) switch (_context453.n) {
           case 0:
             command = (coreName, corePayload = {}) => coreRequest(rt, "command", coreName, corePayload, wire);
-            _t227 = name;
-            _context450.n = _t227 === "core.getSnapshot" ? 1 : _t227 === "state.snapshot" ? 1 : _t227 === "playback.getQueueWindow" ? 2 : _t227 === "queue.page" ? 2 : _t227 === "search.songs" ? 3 : _t227 === "library.collections" ? 4 : _t227 === "playlists.list" ? 5 : _t227 === "audio.getEq" ? 6 : _t227 === "audioDevice.getRoute" ? 7 : _t227 === "audioDevice.listDevices" ? 9 : _t227 === "lyrics.current" ? 10 : _t227 === "lyrics.fetchOnline" ? 11 : _t227 === "lyrics.importLrc" ? 13 : 15;
+            _t232 = name;
+            _context453.n = _t232 === "core.getSnapshot" ? 1 : _t232 === "state.snapshot" ? 1 : _t232 === "playback.getQueueWindow" ? 2 : _t232 === "queue.page" ? 2 : _t232 === "search.songs" ? 3 : _t232 === "library.collections" ? 4 : _t232 === "playlists.list" ? 5 : _t232 === "audio.getEq" ? 6 : _t232 === "audioDevice.getRoute" ? 7 : _t232 === "audioDevice.listDevices" ? 9 : _t232 === "lyrics.current" ? 10 : _t232 === "lyrics.fetchOnline" ? 11 : _t232 === "lyrics.importLrc" ? 13 : 15;
             break;
           case 1:
-            return _context450.a(2, projectSnapshot(rt));
+            return _context453.a(2, projectSnapshot(rt));
           case 2:
-            return _context450.a(2, queueWindow(rt, wire, payload));
+            return _context453.a(2, queueWindow(rt, wire, payload));
           case 3:
-            return _context450.a(2, searchSongs(rt, wire, payload));
+            return _context453.a(2, searchSongs(rt, wire, payload));
           case 4:
-            return _context450.a(2, collections(rt).view);
+            return _context453.a(2, collections(rt).view);
           case 5:
-            return _context450.a(2, wirePlaylists(rt.host.getPlaylists()));
+            return _context453.a(2, wirePlaylists(rt.host.getPlaylists()));
           case 6:
-            return _context450.a(2, rt.host.getEqConfig());
+            return _context453.a(2, rt.host.getEqConfig());
           case 7:
-            _context450.n = 8;
+            _context453.n = 8;
             return callPort(rt, "audioDevice", "getActiveRoute");
           case 8:
-            route = _context450.v;
+            route = _context453.v;
             if (isObject(route)) rt.route = route;
-            return _context450.a(2, route);
+            return _context453.a(2, route);
           case 9:
-            return _context450.a(2, callPort(rt, "audioDevice", "listOutputDevices"));
+            return _context453.a(2, callPort(rt, "audioDevice", "listOutputDevices"));
           case 10:
-            return _context450.a(2, lyricsView(rt, optStr(payload.trackId)));
+            return _context453.a(2, lyricsView(rt, optStr(payload.trackId)));
           case 11:
-            _context450.n = 12;
+            _context453.n = 12;
             return fetchOnlineLyrics(rt, wire, payload);
           case 12:
-            view = _context450.v;
-            return _context450.a(2, kind === "command" ? __spreadProps(__spreadValues({}, view), {
+            view = _context453.v;
+            return _context453.a(2, kind === "command" ? __spreadProps(__spreadValues({}, view), {
               snapshot: projectSnapshot(rt)
             }) : view);
           case 13:
-            _context450.n = 14;
+            _context453.n = 14;
             return importLrc(rt, wire, payload);
           case 14:
-            _view = _context450.v;
-            return _context450.a(2, __spreadProps(__spreadValues({}, _view), {
+            _view = _context453.v;
+            return _context453.a(2, __spreadProps(__spreadValues({}, _view), {
               snapshot: projectSnapshot(rt)
             }));
           case 15:
             if (!(kind !== "command")) {
-              _context450.n = 16;
+              _context453.n = 16;
               break;
             }
             throw wireFailure("INVALID_REQUEST", `Unsupported request: ${name}`, false);
           case 16:
-            _t228 = name;
-            _context450.n = _t228 === "playback.play" ? 17 : _t228 === "playback.pause" ? 19 : _t228 === "playback.stop" ? 19 : _t228 === "playback.next" ? 19 : _t228 === "playback.previous" ? 19 : _t228 === "playback.seek" ? 21 : _t228 === "playback.setVolume" ? 23 : _t228 === "playback.volume" ? 23 : _t228 === "playback.setPlayMode" ? 25 : _t228 === "playback.mode" ? 25 : _t228 === "playback.selectQueueIndex" ? 28 : _t228 === "queue.select" ? 28 : _t228 === "playback.replaceQueue" ? 30 : _t228 === "queue.edit" ? 32 : _t228 === "playback.platformInterruption" ? 35 : _t228 === "library.syncTracks" ? 37 : _t228 === "playlists.toggleFavorite" ? 38 : _t228 === "playlists.create" ? 40 : _t228 === "playlists.rename" ? 42 : _t228 === "playlists.delete" ? 45 : _t228 === "playlists.addTracks" ? 47 : _t228 === "playlists.removeTrack" ? 49 : _t228 === "bookmarks.add" ? 51 : _t228 === "bookmarks.remove" ? 53 : _t228 === "audio.setEq" ? 55 : _t228 === "settings.edit" ? 57 : 59;
+            _t233 = name;
+            _context453.n = _t233 === "playback.play" ? 17 : _t233 === "playback.pause" ? 19 : _t233 === "playback.stop" ? 19 : _t233 === "playback.next" ? 19 : _t233 === "playback.previous" ? 19 : _t233 === "playback.seek" ? 21 : _t233 === "playback.setVolume" ? 23 : _t233 === "playback.volume" ? 23 : _t233 === "playback.setPlayMode" ? 25 : _t233 === "playback.mode" ? 25 : _t233 === "playback.selectQueueIndex" ? 28 : _t233 === "queue.select" ? 28 : _t233 === "playback.replaceQueue" ? 30 : _t233 === "queue.edit" ? 32 : _t233 === "playback.platformInterruption" ? 35 : _t233 === "library.syncTracks" ? 37 : _t233 === "playlists.toggleFavorite" ? 38 : _t233 === "playlists.create" ? 40 : _t233 === "playlists.rename" ? 42 : _t233 === "playlists.delete" ? 45 : _t233 === "playlists.addTracks" ? 47 : _t233 === "playlists.removeTrack" ? 49 : _t233 === "bookmarks.add" ? 51 : _t233 === "bookmarks.remove" ? 53 : _t233 === "audio.setEq" ? 55 : _t233 === "settings.edit" ? 57 : 59;
             break;
           case 17:
-            _context450.n = 18;
+            _context453.n = 18;
             return command("playback.play", payload.position === void 0 || payload.position === null ? {} : {
               position: Math.max(0, num(payload.position, 0))
             });
           case 18:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 19:
-            _context450.n = 20;
+            _context453.n = 20;
             return command(name);
           case 20:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 21:
-            _context450.n = 22;
+            _context453.n = 22;
             return command("playback.seek", {
               position: Math.max(0, num(payload.position, 0))
             });
           case 22:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 23:
-            _context450.n = 24;
+            _context453.n = 24;
             return command("playback.volume", {
               volume: num(payload.volume, Number.NaN)
             });
           case 24:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 25:
             mode = (_a = WIRE_TO_APP_MODE[str(payload.mode)]) != null ? _a : APP_TO_WIRE_MODE[payload.mode] ? payload.mode : void 0;
             if (mode) {
-              _context450.n = 26;
+              _context453.n = 26;
               break;
             }
             throw wireFailure("INVALID_REQUEST", `Unknown play mode: ${str(payload.mode)}`, false);
           case 26:
-            _context450.n = 27;
+            _context453.n = 27;
             return command("playback.mode", {
               mode
             });
           case 27:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 28:
-            _context450.n = 29;
+            _context453.n = 29;
             return selectQueueIndex(rt, wire, payload);
           case 29:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 30:
-            _context450.n = 31;
+            _context453.n = 31;
             return replaceQueue(rt, payload);
           case 31:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 32:
             if (!(!optStr(payload.id) || typeof payload.revision !== "number" || !isObject(payload.edit))) {
-              _context450.n = 33;
+              _context453.n = 33;
               break;
             }
             throw wireFailure("INVALID_REQUEST", "queue.edit requires id, revision and edit", false);
           case 33:
-            _context450.n = 34;
+            _context453.n = 34;
             return command("queue.edit", {
               id: payload.id,
               revision: coreQueueRevision(rt, str(payload.id), payload.revision),
               edit: payload.edit
             });
           case 34:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 35:
             if (!(payload.shouldPause === true)) {
-              _context450.n = 36;
+              _context453.n = 36;
               break;
             }
-            _context450.n = 36;
+            _context453.n = 36;
             return rt.host.triggerPlatformSafetyBrake(str(payload.reason) || "platform");
           case 36:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 37:
             syncLibrary(rt, payload);
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 38:
-            _context450.n = 39;
+            _context453.n = 39;
             return toggleFavorite(rt, wire, payload);
           case 39:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 40:
-            _context450.n = 41;
+            _context453.n = 41;
             return createPlaylist(rt, wire, payload);
           case 41:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 42:
             playlist = requirePlaylist(rt, payload.playlistId);
             nextName = str((_b = payload.name) != null ? _b : payload.newName).trim();
             if (nextName) {
-              _context450.n = 43;
+              _context453.n = 43;
               break;
             }
             throw wireFailure("INVALID_REQUEST", "歌单名称不能为空", false);
           case 43:
-            _context450.n = 44;
+            _context453.n = 44;
             return playlistEdit(rt, wire, {
               kind: "rename",
               id: playlist.id,
               name: nextName
             });
           case 44:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 45:
-            _context450.n = 46;
+            _context453.n = 46;
             return playlistEdit(rt, wire, {
               kind: "delete",
               id: requirePlaylist(rt, payload.playlistId).id
             });
           case 46:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 47:
             _playlist2 = requirePlaylist(rt, payload.playlistId);
             tracks2 = resolveTracks(rt, payload.trackIds);
             if (!tracks2.length) {
-              _context450.n = 48;
+              _context453.n = 48;
               break;
             }
-            _context450.n = 48;
+            _context453.n = 48;
             return playlistEdit(rt, wire, {
               kind: "add",
               id: _playlist2.id,
               tracks: tracks2
             });
           case 48:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 49:
             _playlist3 = requirePlaylist(rt, payload.playlistId);
-            _context450.n = 50;
+            _context453.n = 50;
             return playlistEdit(rt, wire, {
               kind: "remove",
               id: _playlist3.id,
               ids: [str(payload.trackId)]
             });
           case 50:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 51:
-            _context450.n = 52;
+            _context453.n = 52;
             return addBookmark(rt, wire, payload);
           case 52:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 53:
-            _context450.n = 54;
+            _context453.n = 54;
             return removeBookmark(rt, wire, payload);
           case 54:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 55:
-            _context450.n = 56;
+            _context453.n = 56;
             return setEq(rt, payload);
           case 56:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 57:
-            _context450.n = 58;
+            _context453.n = 58;
             return editSettings(rt, wire, payload);
           case 58:
-            return _context450.a(3, 60);
+            return _context453.a(3, 60);
           case 59:
             throw wireFailure("INVALID_REQUEST", `Unsupported request: ${name}`, false);
           case 60:
             markDirty(rt);
-            return _context450.a(2, {
+            return _context453.a(2, {
               snapshot: projectSnapshot(rt)
             });
         }
-      }, _callee450);
+      }, _callee453);
     }));
   }
   function respond(rt, wire, result) {
@@ -40163,8 +40640,8 @@ ${lrc}`);
   }
   function retire(rt, reason = "Core host was restarted", shutDownHost = true) {
     if (rt.retired) return;
-    for (var _i54 = 0, _arr19 = [...rt.wire.values()]; _i54 < _arr19.length; _i54++) {
-      var wire = _arr19[_i54];
+    for (var _i55 = 0, _arr19 = [...rt.wire.values()]; _i55 < _arr19.length; _i55++) {
+      var wire = _arr19[_i55];
       respond(rt, wire, {
         ok: false,
         error: {
@@ -40294,59 +40771,59 @@ ${lrc}`);
       }
     });
     current = rt;
-    void (() => __async(null, null, /*#__PURE__*/_regenerator().m(function _callee451() {
-      var raw, route, _t229, _t230, _t231, _t232;
-      return _regenerator().w(function (_context451) {
-        while (1) switch (_context451.p = _context451.n) {
+    void (() => __async(null, null, /*#__PURE__*/_regenerator().m(function _callee454() {
+      var raw, route, _t234, _t235, _t236, _t237;
+      return _regenerator().w(function (_context454) {
+        while (1) switch (_context454.p = _context454.n) {
           case 0:
-            _context451.p = 0;
-            _context451.n = 1;
+            _context454.p = 0;
+            _context454.n = 1;
             return rt.host.initialize();
           case 1:
-            _context451.p = 1;
-            _context451.n = 2;
+            _context454.p = 1;
+            _context454.n = 2;
             return callPort(rt, "audioEngine", "getSnapshot");
           case 2:
-            raw = _context451.v;
+            raw = _context454.v;
             if (isObject(raw)) rt.raw = raw;
-            _context451.n = 4;
+            _context454.n = 4;
             break;
           case 3:
-            _context451.p = 3;
-            _t229 = _context451.v;
-            log("warn", `Initial audio snapshot failed: ${errorMessage(_t229)}`);
+            _context454.p = 3;
+            _t234 = _context454.v;
+            log("warn", `Initial audio snapshot failed: ${errorMessage(_t234)}`);
           case 4:
-            _context451.p = 4;
-            _context451.n = 5;
+            _context454.p = 4;
+            _context454.n = 5;
             return callPort(rt, "audioDevice", "getActiveRoute");
           case 5:
-            route = _context451.v;
+            route = _context454.v;
             if (isObject(route)) rt.route = route;
-            _context451.n = 7;
+            _context454.n = 7;
             break;
           case 6:
-            _context451.p = 6;
-            _t230 = _context451.v;
-            log("warn", `Initial audio route failed: ${errorMessage(_t230)}`);
+            _context454.p = 6;
+            _t235 = _context454.v;
+            log("warn", `Initial audio route failed: ${errorMessage(_t235)}`);
           case 7:
-            _context451.p = 7;
-            _context451.n = 8;
+            _context454.p = 7;
+            _context454.n = 8;
             return callPort(rt, "audioEngine", "setDspConfig", {
               configJson: JSON.stringify(rt.host.getEqConfig())
             });
           case 8:
-            _context451.n = 10;
+            _context454.n = 10;
             break;
           case 9:
-            _context451.p = 9;
-            _t231 = _context451.v;
-            rt.restoreError = errorMessage(_t231) || "Audio settings restore failed";
+            _context454.p = 9;
+            _t236 = _context454.v;
+            rt.restoreError = errorMessage(_t236) || "Audio settings restore failed";
           case 10:
             if (!rt.retired) {
-              _context451.n = 11;
+              _context454.n = 11;
               break;
             }
-            return _context451.a(2);
+            return _context454.a(2);
           case 11:
             rt.booted = true;
             markDirty(rt);
@@ -40355,18 +40832,18 @@ ${lrc}`);
               ok: true,
               epoch
             });
-            _context451.n = 14;
+            _context454.n = 14;
             break;
           case 12:
-            _context451.p = 12;
-            _t232 = _context451.v;
+            _context454.p = 12;
+            _t237 = _context454.v;
             if (!rt.retired) {
-              _context451.n = 13;
+              _context454.n = 13;
               break;
             }
-            return _context451.a(2);
+            return _context454.a(2);
           case 13:
-            rt.bootError = errorMessage(_t232) || "Core boot failed";
+            rt.bootError = errorMessage(_t237) || "Core boot failed";
             markDirty(rt);
             push(rt, {
               type: "boot",
@@ -40375,9 +40852,9 @@ ${lrc}`);
               error: rt.bootError
             });
           case 14:
-            return _context451.a(2);
+            return _context454.a(2);
         }
-      }, _callee451, null, [[7, 9], [4, 6], [1, 3], [0, 12]]);
+      }, _callee454, null, [[7, 9], [4, 6], [1, 3], [0, 12]]);
     })))();
     return out({
       ok: true,
@@ -40626,30 +41103,30 @@ ${lrc}`);
       } catch (error) {
         log("error", `Core event loop failed: ${errorMessage(error)}`);
       }
-      var _iterator161 = _createForOfIteratorHelper(loop.takeErrors()),
-        _step161;
+      var _iterator164 = _createForOfIteratorHelper(loop.takeErrors()),
+        _step164;
       try {
-        for (_iterator161.s(); !(_step161 = _iterator161.n()).done;) {
-          var error = _step161.value;
+        for (_iterator164.s(); !(_step164 = _iterator164.n()).done;) {
+          var error = _step164.value;
           log("error", errorMessage(error));
         }
       } catch (err) {
-        _iterator161.e(err);
+        _iterator164.e(err);
       } finally {
-        _iterator161.f();
+        _iterator164.f();
       }
-      var _iterator162 = _createForOfIteratorHelper(loop.takeLogs()),
-        _step162;
+      var _iterator165 = _createForOfIteratorHelper(loop.takeLogs()),
+        _step165;
       try {
-        for (_iterator162.s(); !(_step162 = _iterator162.n()).done;) {
-          var entry = _step162.value;
+        for (_iterator165.s(); !(_step165 = _iterator165.n()).done;) {
+          var entry = _step165.value;
           var level = entry == null ? void 0 : entry.level;
           log(level === "debug" || level === "info" || level === "warn" || level === "error" ? level : "info", str(entry == null ? void 0 : entry.message));
         }
       } catch (err) {
-        _iterator162.e(err);
+        _iterator165.e(err);
       } finally {
-        _iterator162.f();
+        _iterator165.f();
       }
     }
     var rt = current;
@@ -40685,11 +41162,11 @@ ${lrc}`);
     var timedMap = /* @__PURE__ */new Map();
     var untimed = [];
     var timeRegex = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
-    var _iterator163 = _createForOfIteratorHelper(rawLines),
-      _step163;
+    var _iterator166 = _createForOfIteratorHelper(rawLines),
+      _step166;
     try {
-      for (_iterator163.s(); !(_step163 = _iterator163.n()).done;) {
-        var rawLine = _step163.value;
+      for (_iterator166.s(); !(_step166 = _iterator166.n()).done;) {
+        var rawLine = _step166.value;
         var trimmed = rawLine.trim();
         if (!trimmed) continue;
         var matches = [...trimmed.matchAll(timeRegex)];
@@ -40705,8 +41182,8 @@ ${lrc}`);
         }
         var textContent = trimmed.replace(timeRegex, "").trim();
         if (!textContent) continue;
-        for (var _i55 = 0, _matches = matches; _i55 < _matches.length; _i55++) {
-          var match = _matches[_i55];
+        for (var _i56 = 0, _matches = matches; _i56 < _matches.length; _i56++) {
+          var match = _matches[_i56];
           var minutes = Number(match[1] || 0);
           var seconds = Number(match[2] || 0);
           var fracRaw = match[3] || "0";
@@ -40723,9 +41200,9 @@ ${lrc}`);
         }
       }
     } catch (err) {
-      _iterator163.e(err);
+      _iterator166.e(err);
     } finally {
-      _iterator163.f();
+      _iterator166.f();
     }
     if (timedMap.size > 0) return {
       synced: true,

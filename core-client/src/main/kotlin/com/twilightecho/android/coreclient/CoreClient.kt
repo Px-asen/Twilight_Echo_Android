@@ -1,6 +1,10 @@
 package com.twilightecho.android.coreclient
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -9,6 +13,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -65,15 +70,20 @@ interface CoreClient {
     suspend fun removeTrackFromPlaylist(playlistId: String, trackId: String): Result<CoreResponseEnvelope>
     suspend fun setEqConfig(config: CoreEqConfigView): Result<CoreResponseEnvelope>
     suspend fun getEqConfig(): Result<CoreEqConfigView>
+    suspend fun getCurrentLyrics(trackId: String? = null): Result<CoreLyricsView> =
+        Result.failure(UnsupportedOperationException("lyrics.current not implemented"))
     suspend fun fetchOnlineLyrics(trackId: String? = null, customUrl: String? = null): Result<CoreLyricsView>
     suspend fun importLrcLyrics(trackId: String, lrcText: String): Result<CoreResponseEnvelope>
+    suspend fun importLrcLyrics(trackId: String, lrcText: String, translation: String?): Result<CoreResponseEnvelope> =
+        importLrcLyrics(trackId, lrcText)
 }
 
 class DefaultCoreClient(
     override val identity: CoreClientIdentity,
     private val transport: CoreTransport,
     private val scope: CoroutineScope,
-    private val json: Json = DefaultJson
+    private val json: Json = DefaultJson,
+    private val processingDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : CoreClient {
 
     private val reconcileMutex = Mutex()
@@ -119,7 +129,9 @@ class DefaultCoreClient(
         val requestId = "req-${requestCounter.getAndIncrement()}"
         val commandId = "cmd-${UUID.randomUUID()}"
 
-        val payload = encodeCommandPayload(command, resolvedExpectedRevision)
+        val payload = withContext(processingDispatcher) { encodeCommandPayload(command, resolvedExpectedRevision) }
+        if (origin != transport.generation) return CoreResult.Failure(
+            CoreErrorView(CoreErrorCode.CANCELLED, "播放来源已切换，请重新选择"), currentEpoch)
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
             commandId = commandId,
@@ -146,8 +158,8 @@ class DefaultCoreClient(
         val valueObj = (response.value as? JsonObject) ?: JsonObject(emptyMap())
         // If response includes an inline snapshot, apply it immediately with sequence monotonicity
         valueObj["snapshot"]?.let { snapshotElem ->
-            runCatching {
-                json.decodeFromJsonElement<CoreSnapshot>(snapshotElem)
+            runCatchingView {
+                decodeView<CoreSnapshot>(snapshotElem)
             }.getOrNull()?.let { inlineSnapshot ->
                 val before = _snapshot.value
                 val applied = applySnapshotIfNewer(inlineSnapshot, forceEpochReset = false, expectedGeneration = origin)
@@ -155,6 +167,8 @@ class DefaultCoreClient(
                     refreshQueueWindowForSnapshot(inlineSnapshot)
             }
         }
+        if (origin != transport.generation) return CoreResult.Failure(
+            CoreErrorView(CoreErrorCode.CANCELLED, "播放来源已切换，请重新选择"), response.epoch)
         return CoreResult.Success(valueObj, response.epoch)
     }
 
@@ -176,8 +190,10 @@ class DefaultCoreClient(
                 epoch = response.epoch
             )
         }
-        return runCatching {
-            val snap = json.decodeFromJsonElement<CoreSnapshot>(response.value)
+        return runCatchingView {
+            val snap = decodeView<CoreSnapshot>(response.value)
+            if (origin != transport.generation) return@runCatchingView CoreResult.Failure(
+                CoreErrorView(CoreErrorCode.CANCELLED, "播放来源已切换，请重新选择"), response.epoch)
             applySnapshotIfNewer(snap, forceEpochReset = true, expectedGeneration = origin)
             CoreResult.Success(snap, response.epoch)
         }.getOrElse { err ->
@@ -213,13 +229,13 @@ class DefaultCoreClient(
                 epoch = response.epoch
             )
         }
-        return runCatching {
-            val window = json.decodeFromJsonElement<CoreQueueWindowView>(response.value)
-            if (origin != transport.generation) return@runCatching CoreResult.Failure(
+        return runCatchingView {
+            val window = decodeView<CoreQueueWindowView>(response.value)
+            if (origin != transport.generation) return@runCatchingView CoreResult.Failure(
                 CoreErrorView(CoreErrorCode.CANCELLED, "播放来源已切换，请重新选择"), response.epoch)
             val current = _snapshot.value
             if (current?.epoch != response.epoch || current.queue?.id != window.queueId || current.queue.revision != window.revision) {
-                if (current?.queue != null) return@runCatching CoreResult.Failure(
+                if (current?.queue != null) return@runCatchingView CoreResult.Failure(
                     CoreErrorView(CoreErrorCode.STALE_REVISION, "队列已变化，请重新选择"), response.epoch)
             }
             _queueWindow.value = window
@@ -234,15 +250,15 @@ class DefaultCoreClient(
 
     override suspend fun syncLocalTracks(tracks: List<CoreTrackView>, merge: Boolean): Result<CoreResponseEnvelope> {
         val requestId = "req-${requestCounter.getAndIncrement()}"
-        val payload = buildJsonObject {
-            put(
-                "tracks",
-                buildJsonArray {
-                    tracks.forEach { add(json.encodeToJsonElement(it)) }
-                }
-            )
-            if (merge) put("merge", JsonPrimitive(true))
+        val origin = transport.generation
+        val payload = withContext(processingDispatcher) {
+            buildJsonObject {
+                put("tracks", buildJsonArray { tracks.forEach { add(json.encodeToJsonElement(it)) } })
+                if (merge) put("merge", JsonPrimitive(true))
+            }
         }
+        if (origin != transport.generation) return Result.failure(CoreRequestException(
+            CoreErrorView(CoreErrorCode.CANCELLED, "播放来源已切换，请重新选择")))
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
             commandId = "cmd-${UUID.randomUUID()}",
@@ -281,8 +297,8 @@ class DefaultCoreClient(
             val msg = response.error?.message ?: "Failed to execute search.songs"
             return Result.failure(CoreRequestException(response.error ?: CoreErrorView(CoreErrorCode.FAILED, msg)))
         }
-        return runCatching {
-            json.decodeFromJsonElement<CoreLibrarySearchPage>(response.value)
+        return runCatchingView {
+            decodeView<CoreLibrarySearchPage>(response.value)
         }
     }
 
@@ -354,8 +370,8 @@ class DefaultCoreClient(
             val msg = response.error?.message ?: "Failed to execute library.collections"
             return Result.failure(IllegalStateException(msg))
         }
-        return runCatching {
-            json.decodeFromJsonElement<CoreCollectionsView>(response.value)
+        return runCatchingView {
+            decodeView<CoreCollectionsView>(response.value)
         }
     }
 
@@ -373,8 +389,8 @@ class DefaultCoreClient(
             val msg = response.error?.message ?: "Failed to execute playlists.list"
             return Result.failure(IllegalStateException(msg))
         }
-        return runCatching {
-            json.decodeFromJsonElement<List<CorePlaylistView>>(response.value)
+        return runCatchingView {
+            decodeView<List<CorePlaylistView>>(response.value)
         }
     }
 
@@ -526,8 +542,34 @@ class DefaultCoreClient(
             val msg = response.error?.message ?: "Failed to execute audio.getEq"
             return Result.failure(IllegalStateException(msg))
         }
-        return runCatching {
-            json.decodeFromJsonElement<CoreEqConfigView>(response.value)
+        return runCatchingView {
+            decodeView<CoreEqConfigView>(response.value)
+        }
+    }
+
+    override suspend fun getCurrentLyrics(trackId: String?): Result<CoreLyricsView> {
+        resetChangedSource()
+        val origin = transport.generation
+        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val payload = buildJsonObject {
+            trackId?.let { put("trackId", JsonPrimitive(it)) }
+        }
+        val envelope = CoreRequestEnvelope(
+            requestId = requestId,
+            epoch = currentEpoch,
+            kind = "query",
+            name = "lyrics.current",
+            payload = payload
+        )
+        val response = transport.sendRequest(envelope)
+        if (!response.ok || response.value == null) {
+            val msg = response.error?.message ?: "Failed to execute lyrics.current"
+            return Result.failure(CoreRequestException(response.error ?: CoreErrorView(CoreErrorCode.FAILED, msg)))
+        }
+        return runCatchingView {
+            val view = decodeView<CoreLyricsView>(response.value)
+            applyRemoteLyricsViewIfMatching(view, trackId, origin)
+            view
         }
     }
 
@@ -535,6 +577,7 @@ class DefaultCoreClient(
         trackId: String?,
         customUrl: String?
     ): Result<CoreLyricsView> {
+        val origin = transport.generation
         val requestId = "req-${requestCounter.getAndIncrement()}"
         val payload = buildJsonObject {
             trackId?.let { put("trackId", JsonPrimitive(it)) }
@@ -552,19 +595,30 @@ class DefaultCoreClient(
             val msg = response.error?.message ?: "Failed to execute lyrics.fetchOnline"
             return Result.failure(IllegalStateException(msg))
         }
-        return runCatching {
-            json.decodeFromJsonElement<CoreLyricsView>(response.value)
+        return runCatchingView {
+            val view = decodeView<CoreLyricsView>(response.value)
+            if (transport.isRemote) {
+                applyRemoteLyricsViewIfMatching(view, trackId, origin)
+            }
+            view
         }
     }
 
     override suspend fun importLrcLyrics(
         trackId: String,
         lrcText: String
+    ): Result<CoreResponseEnvelope> = importLrcLyrics(trackId, lrcText, null)
+
+    override suspend fun importLrcLyrics(
+        trackId: String,
+        lrcText: String,
+        translation: String?
     ): Result<CoreResponseEnvelope> {
         val requestId = "req-${requestCounter.getAndIncrement()}"
         val payload = buildJsonObject {
             put("trackId", JsonPrimitive(trackId))
             put("lrcText", JsonPrimitive(lrcText))
+            translation?.takeIf { it.isNotBlank() }?.let { put("translation", JsonPrimitive(it)) }
         }
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
@@ -577,21 +631,39 @@ class DefaultCoreClient(
         return sendEnvelopeAndExtractResponse(envelope)
     }
 
+    private suspend fun applyRemoteLyricsViewIfMatching(
+        view: CoreLyricsView,
+        requestedTrackId: String?,
+        expectedGeneration: Long
+    ) = reconcileMutex.withLock {
+        if (expectedGeneration != transport.generation) return@withLock
+        val snap = _snapshot.value ?: return@withLock
+        val activeTrackId = snap.track?.id ?: return@withLock
+        val matchesTrack = (requestedTrackId == null || requestedTrackId == activeTrackId) &&
+            (view.trackId.isBlank() || view.trackId == activeTrackId)
+        if (matchesTrack) {
+            _snapshot.value = snap.copy(currentLyrics = view.takeIf { it.lines.isNotEmpty() })
+        }
+    }
+
     private suspend fun sendEnvelopeAndExtractResponse(
         envelope: CoreRequestEnvelope
     ): Result<CoreResponseEnvelope> {
+        val origin = transport.generation
         val response = transport.sendRequest(envelope)
         if (!response.ok) {
             val msg = response.error?.message ?: "Command ${envelope.name} failed"
             return Result.failure(IllegalStateException(msg))
         }
         (response.value as? JsonObject)?.get("snapshot")?.let { snapshotElem ->
-            runCatching {
-                json.decodeFromJsonElement<CoreSnapshot>(snapshotElem)
+            runCatchingView {
+                decodeView<CoreSnapshot>(snapshotElem)
             }.getOrNull()?.let { inlineSnapshot ->
-                applySnapshotIfNewer(inlineSnapshot, forceEpochReset = false)
+                applySnapshotIfNewer(inlineSnapshot, forceEpochReset = false, expectedGeneration = origin)
             }
         }
+        if (origin != transport.generation) return Result.failure(CoreRequestException(
+            CoreErrorView(CoreErrorCode.CANCELLED, "播放来源已切换，请重新选择")))
         return Result.success(response)
     }
 
@@ -611,17 +683,29 @@ class DefaultCoreClient(
     ): Boolean = reconcileMutex.withLock {
         if (expectedGeneration != null && expectedGeneration != transport.generation) return@withLock false
         resetChangedSource()
-        val epochChanged = incoming.epoch != currentEpoch
-        if (epochChanged || lastAppliedSequence < 0L || (forceEpochReset && incoming.sequence == lastAppliedSequence)) {
+        val previous = _snapshot.value
+        val merged = if (
+            transport.isRemote &&
+            incoming.currentLyrics == null &&
+            previous?.currentLyrics != null &&
+            incoming.track?.id != null &&
+            incoming.track.id == previous.track?.id
+        ) {
+            incoming.copy(currentLyrics = previous.currentLyrics)
+        } else {
+            incoming
+        }
+        val epochChanged = merged.epoch != currentEpoch
+        if (epochChanged || lastAppliedSequence < 0L || (forceEpochReset && merged.sequence == lastAppliedSequence)) {
             if (epochChanged) _queueWindow.value = CoreQueueWindowView()
-            currentEpoch = incoming.epoch
-            lastAppliedSequence = incoming.sequence
-            _snapshot.value = incoming
+            currentEpoch = merged.epoch
+            lastAppliedSequence = merged.sequence
+            _snapshot.value = merged
             return@withLock true
         }
-        if (incoming.sequence > lastAppliedSequence) {
-            lastAppliedSequence = incoming.sequence
-            _snapshot.value = incoming
+        if (merged.sequence > lastAppliedSequence) {
+            lastAppliedSequence = merged.sequence
+            _snapshot.value = merged
             return@withLock true
         }
         false
@@ -642,6 +726,19 @@ class DefaultCoreClient(
         lastAppliedSequence = -1L
         _snapshot.value = null
         _queueWindow.value = CoreQueueWindowView()
+    }
+
+    // Queues, library pages and inline snapshots can contain thousands of tracks. Their
+    // JSON work must not run on the UI/media-session caller's main thread.
+    private suspend inline fun <reified T> decodeView(value: JsonElement): T =
+        withContext(processingDispatcher) { json.decodeFromJsonElement<T>(value) }
+
+    private inline fun <T> runCatchingView(block: () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Throwable) {
+        Result.failure(error)
     }
 
     private fun encodeCommandPayload(

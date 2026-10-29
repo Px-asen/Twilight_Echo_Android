@@ -54,11 +54,11 @@ class DesktopMediaRangeReaderTest {
             server.createContext("/steal") { error("Redirect must not receive device credentials") }
             server.start()
         }
-        fun reader() = DesktopMediaRangeReader(ref) { requested ->
+        fun reader(contentType: String = "audio/flac") = DesktopMediaRangeReader(ref) { requested ->
             resolutions++
             if (requested.sourceVersion != null && requested.sourceVersion != version) throw IOException("source changed")
             AuthorizedDesktopMedia(base, "device-secret", DesktopMediaPlan("library-1", "source-1", version,
-                "/media/" + (if (resolutions == 1) "a" else "b").repeat(24), "audio/flac", data.size.toLong(),
+                "/media/" + (if (resolutions == 1) "a" else "b").repeat(24), contentType, data.size.toLong(),
                 System.currentTimeMillis() + 900000, 262144), identity.fingerprint)
         }
         override fun close() { stall?.countDown(); server.stop(0) }
@@ -155,6 +155,23 @@ class DesktopMediaRangeReaderTest {
                 val closing = worker.submit { reader.close() }
                 assertTrue(task.get(2, TimeUnit.SECONDS)); closing.get(2, TimeUnit.SECONDS)
             } finally { f.stall!!.countDown(); reader.close(); worker.shutdownNow() }
+        }
+    }
+
+    @Test fun alacMp4AndOtherSupportedAudioContainersStreamWhileUnknownMimeIsRejected() {
+        for (mime in listOf("audio/mp4", "audio/wav", "audio/ogg", "audio/opus", "audio/x-ape", "audio/x-wavpack")) {
+            Fixture().use { f ->
+                f.reader(mime).use { reader ->
+                    val chunk = ByteArray(32)
+                    assertEquals(32, reader.readAt(0, chunk, 0, 32))
+                    assertArrayEquals(f.data.copyOfRange(0, 32), chunk)
+                }
+            }
+        }
+        Fixture().use { f ->
+            f.reader("application/octet-stream").use { reader ->
+                assertThrows(IOException::class.java) { reader.readAt(0, ByteArray(8), 0, 8) }
+            }
         }
     }
 }

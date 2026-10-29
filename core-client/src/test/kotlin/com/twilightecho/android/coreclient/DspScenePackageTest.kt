@@ -49,6 +49,32 @@ class DspScenePackageTest {
 
     private fun parse(text: String) = Json.parseToJsonElement(text)
 
+    @Test fun `PCM policy round trips without saving a device capability snapshot`() {
+        val config = CoreEqConfigView(bitPerfect = true, dsp = CoreDspConfig(sampleRateFamilySync = true,
+            allowedSampleRates = listOf(44100, 48000, 96000)))
+        val original = scene("pcm", "家族同步", config)
+        val exported = DspScenePackage.export(config.copy(scenes = listOf(original)), { null }).manifest
+        assertFalse("deviceSampleRates" in exported.toString())
+        val imported = DspScenePackage.import(exported, CoreEqConfigView())
+        assertTrue(imported.rejected.isEmpty())
+        val restored = saved(imported.scenes.single().scene)
+        assertTrue(restored.bitPerfect)
+        assertTrue(restored.dsp.sampleRateFamilySync)
+        assertEquals(config.dsp.allowedSampleRates, restored.dsp.allowedSampleRates)
+    }
+
+    @Test fun `malformed PCM extension rejects only its scene and old graphs retain defaults`() {
+        val valid = parse("""{"id":"old","graph":{"nodes":[]}}""").jsonObject
+        listOf("\"bad\"", "[48000,48000]", "[7999]", "[48000.5]", "null").forEach { bad ->
+            val invalid = parse("""{"id":"bad","graph":{"nodes":[]},"android":{"allowedSampleRates":$bad}}""")
+            val result = DspScenePackage.import(JsonArray(listOf(invalid, valid)), CoreEqConfigView())
+            assertEquals(1, result.rejected.size)
+            assertEquals("old", result.scenes.single().scene.id)
+            assertFalse(saved(result.scenes.single().scene).dsp.sampleRateFamilySync)
+            assertTrue(saved(result.scenes.single().scene).dsp.allowedSampleRates.isEmpty())
+        }
+    }
+
     @Test
     fun `phone scenes export as desktop graphs and import back unchanged`() {
         val current = CoreEqConfigView(scenes = listOf(graphicScene, parametricScene)).withScene(parametricScene)

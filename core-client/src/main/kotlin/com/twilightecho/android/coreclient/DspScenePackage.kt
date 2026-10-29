@@ -218,6 +218,8 @@ object DspScenePackage {
             put("exclusive", dsp.exclusive)
             put("bufferFrames", dsp.bufferFrames)
             put("continuitySampleRate", dsp.continuitySampleRate)
+            put("sampleRateFamilySync", dsp.sampleRateFamilySync)
+            put("allowedSampleRates", JsonArray(dsp.allowedSampleRates.map(::JsonPrimitive)))
             put("playbackRate", dsp.playbackRate)
         })
     }
@@ -344,13 +346,31 @@ object DspScenePackage {
         }
         val graphic = eq?.graphic ?: savedGraphic ?: FLAT
         val defaults = base.dsp
+        val familySync = phone?.bool("sampleRateFamilySync") ?: false
+        val rawRates = phone?.get("allowedSampleRates")
+        val allowedRates = (rawRates as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.intOrNull }.orEmpty()
+        if ((phone != null && "sampleRateFamilySync" in phone && phone.bool("sampleRateFamilySync") == null) ||
+            (rawRates != null && (rawRates !is JsonArray || allowedRates.size != rawRates.size)) ||
+            allowedRates.size > 32 || allowedRates.any { it !in 8000..384000 } || allowedRates.distinct().size != allowedRates.size) {
+            issues += "采样率策略或允许集合无效"
+            return null
+        }
+        val sourceFirst = phone?.bool("bitPerfect") ?: base.bitPerfect
+        if (familySync && (!sourceFirst || stage.targetSampleRate != 0)) {
+            issues += "家族同步不能与固定采样率或连续播放策略同时启用"
+            return null
+        }
+        if (sourceFirst && stage.targetSampleRate > 0 && allowedRates.isNotEmpty() && stage.targetSampleRate !in allowedRates) {
+            issues += "固定采样率不在允许集合中"
+            return null
+        }
         val config = CoreEqConfigView(
             enabled = eq?.enabled ?: false,
             preset = phone?.string("preset")?.trim()?.take(40)?.takeIf { it.isNotEmpty() }
                 ?: CoreEqConfigView.PRESETS.entries.firstOrNull { it.value == graphic }?.key ?: "Custom",
             preampDb = eq?.preampDb ?: 0.0,
             bandsDb = graphic,
-            bitPerfect = phone?.bool("bitPerfect") ?: base.bitPerfect,
+            bitPerfect = sourceFirst,
             gapless = phone?.bool("gapless") ?: base.gapless,
             dsp = CoreDspConfig(
                 enabled = phone?.bool("dspEnabled") ?: true,
@@ -369,7 +389,9 @@ object DspScenePackage {
                     ?: defaults.bufferFrames,
                 continuitySampleRate = phone?.number("continuitySampleRate")?.takeIf { it in setOf(44100.0, 48000.0, 96000.0) }?.toInt()
                     ?: defaults.continuitySampleRate,
-                playbackRate = phone?.number("playbackRate")?.takeIf { it in 0.5..2.0 } ?: defaults.playbackRate
+                playbackRate = phone?.number("playbackRate")?.takeIf { it in 0.5..2.0 } ?: defaults.playbackRate,
+                sampleRateFamilySync = familySync,
+                allowedSampleRates = allowedRates.sorted()
             )
         )
         val sceneConfig = JsonObject(json.encodeToJsonElement(CoreEqConfigView.serializer(), config).jsonObject - "scenes")

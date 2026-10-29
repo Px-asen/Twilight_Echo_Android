@@ -1,5 +1,6 @@
 package com.twilightecho.android.coreclient
 
+import kotlinx.serialization.Serializable
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
@@ -12,6 +13,7 @@ import java.util.Locale
  * in the file. The parsing and splitting rules are the desktop's (`src/shared/cue.ts`, `cueLibrary.ts`), so a
  * sheet splits the same way on both.
  */
+@Serializable
 data class CueRange(
     /** INDEX 01 in the audio file. */
     val startSeconds: Double,
@@ -20,17 +22,17 @@ data class CueRange(
     /** Silence before INDEX 01; only an explicit PREGAP creates it. */
     val virtualPregapSeconds: Double = 0.0,
     /** INDEX 00 to INDEX 01. That audio stays at the end of the previous song. */
-    val sourcePregapSeconds: Double = 0.0
+    val sourcePregapSeconds: Double = 0.0,
+    /** Legacy presentation value; it does not create synthetic silence. */
+    val pregapSeconds: Double = if (virtualPregapSeconds != 0.0) virtualPregapSeconds else sourcePregapSeconds
 ) {
-    /** What players show as the pregap: the declared PREGAP, otherwise INDEX 00 to INDEX 01. */
-    val pregapSeconds: Double get() = if (virtualPregapSeconds != 0.0) virtualPregapSeconds else sourcePregapSeconds
-
     val durationSeconds: Double get() = virtualPregapSeconds + endSeconds - startSeconds
 
     /** The engine refuses a whole queue that holds any other range. */
     val isValid: Boolean get() = startSeconds.isFinite() && endSeconds.isFinite() && virtualPregapSeconds.isFinite() &&
         sourcePregapSeconds.isFinite() && startSeconds >= 0 && endSeconds > startSeconds && endSeconds <= MAX_SAFE_INTEGER &&
-        virtualPregapSeconds >= 0 && sourcePregapSeconds >= 0 && sourcePregapSeconds <= startSeconds
+        virtualPregapSeconds >= 0 && sourcePregapSeconds >= 0 && sourcePregapSeconds <= startSeconds &&
+        pregapSeconds.isFinite() && pregapSeconds >= 0
 
     private companion object { const val MAX_SAFE_INTEGER = 9007199254740991.0 }
 }
@@ -342,7 +344,8 @@ fun CueSheet.project(base: CoreTrackView, audioKey: String, sheetKey: String): L
             album = title.orEmpty().ifEmpty { base.album },
             // MediaStore's album ID names the whole file's album, which a sheet with its own title replaces.
             albumId = base.albumId.takeIf { title.isNullOrEmpty() },
-            source = CueSource.encode(audio, track.range),
+            source = audio,
+            cueRange = track.range,
             duration = track.range.durationSeconds,
             trackNumber = track.number,
             // A file's ISRC names the whole recording, not one song in it.
@@ -358,9 +361,8 @@ fun cueTrackId(audioKey: String, sheetKey: String, number: Int): String {
 }
 
 /**
- * A library song's source carries its CUE range, `<audio>#cue=<start>,<end>[,<pregap>,<source pregap>]`: Music
- * Core keeps a source unchanged, and the audio engine reads the range back into its queue. Numbers are written
- * exactly, so one song's end and the next song's start stay equal and the engine plays them seamlessly.
+ * Compatibility with saved sources in `<audio>#cue=<start>,<end>[,<pregap>,<source pregap>]` form.
+ * New library rows use the shared `cueRange` field and keep the audio URI unchanged.
  */
 object CueSource {
     private const val MARK = "#cue="

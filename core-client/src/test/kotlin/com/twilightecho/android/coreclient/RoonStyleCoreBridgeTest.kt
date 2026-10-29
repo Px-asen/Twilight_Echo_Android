@@ -176,7 +176,8 @@ class RoonStyleCoreBridgeTest {
             rawBaseUrl = "192.168.1.50:18492",
             scope = scope,
             ioDispatcher = dispatcher,
-            httpExecutor = fakeDesktopHttp
+            httpExecutor = fakeDesktopHttp,
+            monotonicMs = { testScheduler.currentTime }
         )
         val tokenRes = remoteTransport.pairWithPin("654321")
         assertEquals("pc-lan-token-777", tokenRes.getOrThrow())

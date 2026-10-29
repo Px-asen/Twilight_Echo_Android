@@ -120,6 +120,7 @@ data class CoreSnapshot(
     val audioRevision: Long? = null,
     val settingsRevision: Long? = null,
     val lyricsRevision: Long? = null,
+    val lyricsContentRevision: Long? = null,
     val favoriteTrackIds: List<String> = emptyList(),
     val bookmarks: List<CoreBookmarkView> = emptyList(),
     val playlists: List<CorePlaylistView> = emptyList(),

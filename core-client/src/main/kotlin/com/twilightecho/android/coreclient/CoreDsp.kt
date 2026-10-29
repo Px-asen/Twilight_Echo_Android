@@ -48,7 +48,10 @@ data class CoreDspConfig(
     val exclusive: Boolean = false,
     val bufferFrames: Int = 0,
     val continuitySampleRate: Int = 48000,
-    val playbackRate: Double = 1.0
+    val playbackRate: Double = 1.0,
+    val sampleRateFamilySync: Boolean = false,
+    /** Empty follows the existing request policy; nonempty constrains PCM requests, not system hardware. */
+    val allowedSampleRates: List<Int> = emptyList()
 )
 
 @Serializable

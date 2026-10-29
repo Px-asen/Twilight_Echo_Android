@@ -85,7 +85,7 @@ class DesktopMediaRangeReader(
         val p = next.plan
         if (p.libraryId != reference.libraryId || p.sourceId != reference.sourceId ||
             p.size <= 0 || p.maxRangeBytes !in 1..262144 ||
-            p.contentType !in listOf("audio/flac", "audio/mpeg") ||
+            p.contentType !in SUPPORTED_CONTENT_TYPES ||
             !Regex("^/media/[a-zA-Z0-9_-]{24}$").matches(p.contentPath) ||
             (pinnedVersion != null && p.sourceVersion != pinnedVersion))
             throw IOException("电脑音源已变化，请重新选择歌曲")
@@ -161,6 +161,18 @@ class DesktopMediaRangeReader(
     }
 
     companion object {
+        val SUPPORTED_CONTENT_TYPES = setOf(
+            "audio/flac",
+            "audio/mpeg",
+            "audio/mp4",
+            "audio/aac",
+            "audio/wav",
+            "audio/ogg",
+            "audio/opus",
+            "audio/aiff",
+            "audio/x-ape",
+            "audio/x-wavpack"
+        )
         // Reuse the project's HTTP stack: Call.cancel closes a stalled body immediately.
         private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
             .connectTimeout(8, TimeUnit.SECONDS)

@@ -28,7 +28,7 @@ const server = new RemoteHttpServer({ staticRoot: '', addresses: () => ['127.0.0
   } })
 const settings = createDefaultSettings('win32')
 const preview = `data:image/jpeg;base64,${readFileSync(new URL('../app/src/androidTest/assets/music/01.jpg', import.meta.url)).toString('base64')}`
-const tracks = Array.from({ length: 125 }, (_, i) => ({ id: `D:/interop-private/${i}.flac`, source: 'local',
+const tracks = Array.from({ length: Number(process.env.TWILIGHT_FIXTURE_TRACK_COUNT ?? 125) }, (_, i) => ({ id: `D:/interop-private/${i}.flac`, source: 'local',
   title: i === 0 ? '来自电脑的音乐' : i === 1 ? '电脑 MP3 测试曲' : `电脑歌曲 ${i + 1}`, artist: '共享艺术家', artists: [{ name: '共享艺术家' }],
   album: '共享专辑', duration: i === 1 ? 16 : 42, format: i === 1 ? 'MP3' : 'FLAC', sampleRate: 48000, bitDepth: 16,
   bitrate: i === 1 ? 320000 : 1022519.7329376856 }))

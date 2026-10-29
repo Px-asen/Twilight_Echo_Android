@@ -116,7 +116,8 @@ class RemoteNetworkCoreTransport(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val json: Json = DefaultCoreClient.DefaultJson,
     val certificatePin: DesktopCertificatePin = DesktopCertificatePin(),
-    private val httpExecutor: RemoteHttpExecutor = UrlConnectionRemoteHttpExecutor(certificatePin = certificatePin)
+    private val httpExecutor: RemoteHttpExecutor = UrlConnectionRemoteHttpExecutor(certificatePin = certificatePin),
+    monotonicMs: () -> Long = { System.nanoTime() / 1_000_000 }
 ) : CoreTransport, Closeable {
     override val isRemote = true
 
@@ -150,6 +151,7 @@ class RemoteNetworkCoreTransport(
     val baseUrl: String = normalizeBaseUrl(rawBaseUrl)
 
     private val closed = AtomicBoolean(false)
+    private val rpcBudget = DesktopRpcBudget(monotonicMs)
     private var sseJob: Job? = null
     private val mutableConnection = MutableStateFlow(RemoteConnectionState(RemoteConnectionPhase.CONNECTING))
     val connection = mutableConnection.asStateFlow()
@@ -328,6 +330,8 @@ class RemoteNetworkCoreTransport(
 
     override suspend fun sendRequest(envelope: CoreRequestEnvelope): CoreResponseEnvelope =
         withContext(ioDispatcher) {
+            val urgent = envelope.kind == "command" || envelope.name in setOf(
+                "core.handshake", "core.getSnapshot", "state.snapshot", "playback.getQueueWindow", "media.resolve")
             if (closed.get()) {
                 return@withContext CoreResponseEnvelope(
                     requestId = envelope.requestId,
@@ -339,13 +343,31 @@ class RemoteNetworkCoreTransport(
                     )
                 )
             }
+            if (!rpcBudget.acquire(urgent, waitForSlot = envelope.kind == "query"))
+                return@withContext CoreResponseEnvelope(requestId = envelope.requestId, epoch = envelope.epoch, ok = false,
+                    error = CoreErrorView(CoreErrorCode.BUSY, "电脑请求较多，请稍后重试"))
+            if (closed.get()) return@withContext CoreResponseEnvelope(
+                requestId = envelope.requestId, epoch = envelope.epoch, ok = false,
+                error = CoreErrorView(CoreErrorCode.NOT_READY, "电脑连接已关闭"))
             runCatching {
                 val bodyJson = wireBody(envelope)
-                val httpRes = httpExecutor.executePostJson(
+                var httpRes = httpExecutor.executePostJson(
                     url = "$baseUrl/api/core/rpc",
                     headers = authHeaders(),
                     bodyJson = bodyJson
                 )
+                if (httpRes.statusCode == 429) {
+                    rpcBudget.rateLimited()
+                    // Only an explicitly rejected read is replayed; commands are never replayed.
+                    if (envelope.kind == "query") {
+                        rpcBudget.acquire(urgent)
+                        if (closed.get()) return@withContext CoreResponseEnvelope(
+                            requestId = envelope.requestId, epoch = envelope.epoch, ok = false,
+                            error = CoreErrorView(CoreErrorCode.NOT_READY, "电脑连接已关闭"))
+                        httpRes = httpExecutor.executePostJson("$baseUrl/api/core/rpc", authHeaders(), bodyJson)
+                        if (httpRes.statusCode == 429) rpcBudget.rateLimited()
+                    }
+                }
                 if (httpRes.statusCode == 401) {
                     requirePairing()
                     return@withContext CoreResponseEnvelope(

@@ -245,4 +245,59 @@ class DesktopBridgeContractTest {
             assertTrue(runCatching { RemoteNetworkCoreTransport.normalizeBaseUrl(bad) }.isFailure)
         }
     }
+
+    @Test fun remoteLyricsPersistAcrossPlaybackTicksUntilTrackChangesAndDesktopMediaLyricsResolves() = runTest {
+        state = state.copy(track = CoreTrackView("remote-track:now", title = "Song"))
+        val t = object : CoreTransport {
+            override val isRemote = true
+            override val stateEvents = events
+            override suspend fun cancelRequest(envelope: CoreCancelEnvelope) {}
+            override suspend fun sendRequest(envelope: CoreRequestEnvelope): CoreResponseEnvelope {
+                requests += envelope
+                val value = when (envelope.name) {
+                    "core.getSnapshot" -> json.encodeToJsonElement(state)
+                    "playback.getQueueWindow" -> json.encodeToJsonElement(CoreQueueWindowView(
+                        queueId = state.queue!!.id, revision = state.queue!!.revision, total = 2))
+                    "lyrics.current" -> json.encodeToJsonElement(CoreLyricsView(
+                        trackId = "remote-track:now",
+                        source = "sidecar",
+                        synced = true,
+                        lines = listOf(CoreLyricLine(1000L, "Hello", "你好"))
+                    ))
+                    "media.lyrics" -> json.encodeToJsonElement(CoreLyricsView(
+                        trackId = "src-1",
+                        source = "online",
+                        synced = true,
+                        lines = listOf(CoreLyricLine(2500L, "World", "世界"))
+                    ))
+                    else -> error("Unexpected ${envelope.name}")
+                }
+                return CoreResponseEnvelope(requestId = envelope.requestId, epoch = state.epoch, ok = true, value = value)
+            }
+        }
+        val client = DefaultCoreClient(CoreClientIdentity.androidPrimaryClient(), t, backgroundScope)
+        client.reconcileState()
+        val fetched = client.getCurrentLyrics("remote-track:now").getOrThrow()
+        assertEquals("你好", fetched.lines.single().translation)
+        assertEquals("Hello", client.snapshot.value?.currentLyrics?.lines?.single()?.text)
+
+        // Subsequent SSE playback ticks omit inline currentLyrics; remote client must preserve them for the same track.
+        events.emit(CoreEventMessage(epoch = "desktop", sequence = 2, snapshot = state.copy(
+            sequence = 2, playback = CorePlaybackView(state = "playing", position = 42.0), currentLyrics = null
+        )))
+        runCurrent()
+        assertEquals("Hello", client.snapshot.value?.currentLyrics?.lines?.single()?.text)
+
+        // Switching to a different track clears the old track's lyrics until the new track's lyrics are fetched.
+        events.emit(CoreEventMessage(epoch = "desktop", sequence = 3, snapshot = state.copy(
+            sequence = 3, track = CoreTrackView("remote-track:next", title = "Next"), currentLyrics = null
+        )))
+        runCurrent()
+        assertNull(client.snapshot.value?.currentLyrics)
+
+        val desktopLib = DesktopLibraryClient(t) { state.epoch }
+        val mediaLyrics = desktopLib.resolveLyrics(DesktopMediaReference("srv-1", "lib-1", "src-1")).getOrThrow()
+        assertEquals("World", mediaLyrics.lines.single().text)
+        assertEquals("世界", mediaLyrics.lines.single().translation)
+    }
 }

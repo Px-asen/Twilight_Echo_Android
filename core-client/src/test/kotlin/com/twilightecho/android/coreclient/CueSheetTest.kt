@@ -193,7 +193,8 @@ class CueSheetTest {
             it.format == "FLAC" && it.albumId == null && it.cover == base.cover && it.sampleRate == 44100 && it.discNumber == 1 &&
                 it.releaseDate == "1990" && it.genre == "Classical" && it.size == base.size
         })
-        assertEquals("content://doc/Album.flac" to CueRange(0.0, 240.0), CueSource.decode(first.source!!))
+        assertEquals("content://doc/Album.flac", first.source)
+        assertEquals(CueRange(0.0, 240.0), first.cueRange)
 
         // Without sheet tags the file's own tags remain.
         val bare = CueSheets.split(base, "a", listOf(CueCandidate(FolderFile("c", "c.cue"),
