@@ -23,4 +23,16 @@ class ProviderArtworkTest {
             assertTrue(url, runCatching { providerArtworkUrl(url, 1024) }.isFailure)
         }
     }
+
+    @Test fun artworkCancellationHookCanCloseTheCallBeforeAnyNetworkWork() {
+        var notified = false
+        val failure = runCatching {
+            PluginHttp().request("https://p1.music.126.net/cancelled-cover.jpg", listOf("p1.music.126.net"), onCall = {
+                notified = true
+                it.cancel()
+            })
+        }.exceptionOrNull()
+        assertTrue(notified)
+        assertTrue(failure is java.io.IOException)
+    }
 }

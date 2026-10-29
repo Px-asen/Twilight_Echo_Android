@@ -38,19 +38,20 @@ internal class PluginHttp {
                 ((it.address[0].toInt() and 254) == 252 && it.address.size == 16) }) { "插件不能访问内网地址" }
         } }).build()
     data class Reply(val status: Int, val bytes: ByteArray, val cookies: List<String>)
-    fun request(url: String, hosts: List<String>, body: String? = null, headers: Map<String, String> = emptyMap(), maxBytes: Int = 8 * 1024 * 1024, downloadRedirects: Int = 0): Reply {
+    fun request(url: String, hosts: List<String>, body: String? = null, headers: Map<String, String> = emptyMap(), maxBytes: Int = 8 * 1024 * 1024, downloadRedirects: Int = 0,
+        onCall: (Call) -> Unit = {}): Reply {
         val uri = URI(url)
         require(uri.scheme == "https" && uri.host in hosts && uri.userInfo == null && (uri.port == -1 || uri.port == 443)) { "插件未获准访问此网络地址" }
         val builder = Request.Builder().url(url)
         headers.forEach { (k, v) -> require(!k.equals("Host", true) && !k.equals("Connection", true)); builder.header(k, v) }
         if (body != null) builder.post(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
-        return client.newCall(builder.build()).execute().use { response ->
+        return client.newCall(builder.build()).also(onCall).execute().use { response ->
             if (downloadRedirects > 0 && response.code in listOf(301, 302, 303, 307, 308)) {
                 // Repository/package fetches may follow public HTTPS CDNs. Plugin network calls never broaden their grant.
                 require(body == null && headers.isEmpty())
                 val target = uri.resolve(response.header("Location") ?: error("下载重定向缺少地址"))
                 response.close()
-                return@use request(target.toString(), listOf(target.host ?: ""), maxBytes = maxBytes, downloadRedirects = downloadRedirects - 1)
+                return@use request(target.toString(), listOf(target.host ?: ""), maxBytes = maxBytes, downloadRedirects = downloadRedirects - 1, onCall = onCall)
             }
             val stream = response.body ?: error("服务器没有返回内容")
             require(stream.contentLength() <= maxBytes) { "服务器返回内容过大" }

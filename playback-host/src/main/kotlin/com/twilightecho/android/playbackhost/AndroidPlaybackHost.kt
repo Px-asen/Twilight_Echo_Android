@@ -141,12 +141,15 @@ class AndroidPlaybackHost private constructor(
     val nativeAudioEngine: NativeAudioEngineAdapter = NativeAudioEngineAdapter(
         resourceAccess = resourceAccessAdapter,
         appContext = appContext,
+        deviceSampleRates = audioDeviceAdapter::sampleRatesForOutput,
         onUserPause = { if (platformPauses.get() == 0) noteUserPlaybackChange() },
         desktopStream = { resourceId ->
             val reference = DesktopMediaReference.parse(resourceId) ?: error("电脑音源引用无效")
             DesktopStreamDataSource(DesktopMediaRangeReader(reference, ::resolveDesktopMedia))
         },
         providerStream = { source ->
+            // Plugins-repository providers (QQ, Kugou, Jellyfin, ...) resolve through the plugin that queued the song.
+            if (!source.startsWith("provider://ncm/")) return@NativeAudioEngineAdapter plugins.openStream(source)
             val uri = java.net.URI(source)
             require(uri.host == "ncm" && uri.path.matches(Regex("/[0-9]+"))) { "音源引用无效" }
             val quality = userPreferences.state.value.ncmQuality
@@ -306,6 +309,15 @@ class AndroidPlaybackHost private constructor(
                 val route = audioDeviceAdapter.getActiveRoute()
                 outputPresets.outputChanged { audioDeviceAdapter.outputIdentity(route) }
                 outputPresets.start()
+                hostScope.launch {
+                    outputRoute.collect {
+                        try { nativeAudioEngine.refreshOutputCapabilities() }
+                        catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            android.util.Log.e("TwilightPlaybackHost", "PCM output capability update failed", error)
+                        }
+                    }
+                }
                 if (!userChoseConnection.get()) autoReconnectJob = hostScope.launch { reconnectLastDesktop() }
             }
             hostScope.launch { localCoreClient.snapshot.collect { refreshSystemMediaRoute() } }
@@ -614,6 +626,15 @@ class AndroidPlaybackHost private constructor(
     /** Cover previews for songs of a specific computer, independent of which library is being browsed. */
     suspend fun desktopArtwork(serverId: String, ids: List<String>): Result<TrackArtworkPage> =
         connections[serverId]?.library?.artwork(ids) ?: Result.failure(IllegalStateException("电脑未连接"))
+
+    /** Resolves lyrics from the paired computer for a phone-streamed [DesktopMediaReference] song. */
+    suspend fun resolveDesktopLyrics(resourceId: String): Result<com.twilightecho.android.coreclient.CoreLyricsView> {
+        val reference = DesktopMediaReference.parse(resourceId)
+            ?: return Result.failure(IllegalArgumentException("音源引用无效"))
+        val connection = connections[reference.serverId]
+            ?: return Result.failure(IllegalStateException("电脑未连接"))
+        return connection.library.resolveLyrics(reference)
+    }
 
     /** Exact source membership joins a merged phone collection to the computer's curated artist. */
     suspend fun desktopArtistMetadata(serverId: String, sourceIds: Set<String>, name: String): Result<EntityMetadataDetail?> {

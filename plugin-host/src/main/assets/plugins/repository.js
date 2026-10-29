@@ -690,8 +690,44 @@
   }
 
   // src/core/plugins/mobileRepository.ts
+  var MOBILE_UNSUPPORTED = "\u79FB\u52A8\u7AEF\u4E0D\u9002\u914D";
+  var V2_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+  function v2Hosts(value, limit, wildcards) {
+    if (!Array.isArray(value) || value.length > limit || value.some((host) => typeof host !== "string" || !V2_HOST.test(wildcards && host.startsWith("*.") ? host.slice(2) : host)))
+      throw new Error("\u63D2\u4EF6\u7F51\u7EDC\u6388\u6743\u5FC5\u987B\u662F\u660E\u786E\u7684 HTTPS \u4E3B\u673A\u540D");
+    return [...new Set(value)];
+  }
+  function androidPluginRuntimeV2(value) {
+    if (typeof value.entry !== "string" || !/^[\w-]+(?:\/[\w-]+)*\.js$/.test(value.entry)) throw new Error("Android \u63D2\u4EF6\u5165\u53E3\u8DEF\u5F84\u65E0\u6548");
+    if (!Array.isArray(value.permissions) || value.permissions.some((p) => p !== "network" && p !== "settings"))
+      throw new Error("\u6B64\u63D2\u4EF6\u9700\u8981 Android \u5C1A\u4E0D\u652F\u6301\u7684\u6743\u9650");
+    const networkHosts = v2Hosts(value.networkHosts, 48, false);
+    const mediaHosts = value.mediaHosts === void 0 ? [] : v2Hosts(value.mediaHosts, 32, true);
+    const cleartextHosts = value.cleartextHosts === void 0 ? [] : v2Hosts(value.cleartextHosts, 16, false);
+    if (value.userServer !== void 0 && typeof value.userServer !== "boolean") throw new Error("\u63D2\u4EF6\u670D\u52A1\u5668\u6388\u6743\u65E0\u6548");
+    const userServer = value.userServer === true;
+    if (!userServer && !networkHosts.length) throw new Error("\u63D2\u4EF6\u7F51\u7EDC\u6388\u6743\u5FC5\u987B\u662F\u660E\u786E\u7684 HTTPS \u4E3B\u673A\u540D");
+    const granted = [...networkHosts, ...mediaHosts];
+    if (cleartextHosts.some((host) => !granted.some((pattern) => pattern.startsWith("*.") ? host.endsWith(pattern.slice(1)) : pattern === host)))
+      throw new Error("\u660E\u6587 HTTP \u4E3B\u673A\u5FC5\u987B\u5DF2\u83B7\u7F51\u7EDC\u6388\u6743");
+    return {
+      apiVersion: 2,
+      entry: value.entry,
+      permissions: [...new Set(value.permissions)],
+      networkHosts,
+      mediaHosts,
+      cleartextHosts,
+      userServer
+    };
+  }
+  function runsOnAndroid(manifest, runtime) {
+    var _a;
+    const type = (runtime == null ? void 0 : runtime.apiVersion) === 2 ? manifest.type.includes("provider") && manifest.type.every((item) => item === "provider" || item === "ui") : manifest.type.length === 1 && manifest.type[0] === "provider";
+    return !!runtime && type && !manifest.binary && !Object.keys((_a = manifest.dependencies) != null ? _a : {}).length;
+  }
   function androidPluginRuntime(raw) {
     const value = raw;
+    if ((value == null ? void 0 : value.apiVersion) === 2) return androidPluginRuntimeV2(value);
     if (!value || value.apiVersion !== 1) throw new Error("\u6B64\u63D2\u4EF6\u5C1A\u672A\u63D0\u4F9B Android \u8FD0\u884C\u5165\u53E3");
     if (typeof value.entry !== "string" || !/^[\w/-]+\.js$/.test(value.entry) || value.entry.split("/").some((part) => part === ".." || part === "") || value.entry.startsWith("/"))
       throw new Error("Android \u63D2\u4EF6\u5165\u53E3\u8DEF\u5F84\u65E0\u6548");
@@ -702,10 +738,9 @@
     return __spreadProps(__spreadValues({}, value), { permissions: [...new Set(value.permissions)], networkHosts: [...new Set(value.networkHosts)] });
   }
   function mobilePluginManifest(raw, appVersion = "1.4.0-perview.1") {
-    var _a;
     const manifest = validatePluginManifest(raw);
     if (!isCompatibleTwilightRange(manifest.engines.twilightEcho, appVersion)) throw new Error("\u63D2\u4EF6\u9700\u8981\u5176\u4ED6\u7248\u672C\u7684 Twilight Echo");
-    if (manifest.type.length !== 1 || manifest.type[0] !== "provider" || manifest.binary || Object.keys((_a = manifest.dependencies) != null ? _a : {}).length) throw new Error("Android \u5F53\u524D\u652F\u6301\u72EC\u7ACB\u7684 JavaScript Provider \u63D2\u4EF6");
+    if (!runsOnAndroid(manifest, raw.androidRuntime)) throw new Error(MOBILE_UNSUPPORTED);
     return __spreadProps(__spreadValues({}, manifest), { androidRuntime: androidPluginRuntime(raw.androidRuntime) });
   }
   function mobileRepositoryRequest(input) {
@@ -724,8 +759,8 @@
           seen.add(manifest.id);
           if (!/^[a-f0-9]{64}$/i.test(raw.checksumSha256)) throw new Error("\u63D2\u4EF6\u7F3A\u5C11\u6709\u6548\u7684\u5B8C\u6574\u6027\u6821\u9A8C");
           if (typeof raw.sourceUrl !== "string" || !raw.sourceUrl) throw new Error("\u63D2\u4EF6\u7F3A\u5C11\u4E0B\u8F7D\u5730\u5740");
-          let unsupportedReason = null;
-          try {
+          let unsupportedReason = runsOnAndroid(manifest, raw.androidRuntime) ? null : MOBILE_UNSUPPORTED;
+          if (!unsupportedReason) try {
             mobilePluginManifest(raw);
           } catch (e) {
             unsupportedReason = e.message;

@@ -2,8 +2,10 @@ package com.twilightecho.android.plugins
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.MediaDataSource
 import app.cash.quickjs.QuickJs
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -11,13 +13,23 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import java.io.Closeable
 import java.io.File
+import java.io.IOException
 import java.net.URI
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.ZipInputStream
 
 /** Settings key under which the NCM plugin keeps its account cookie (read fresh on every request). */
 private const val ACCOUNT_COOKIE_KEY = "cookie"
+/** ABI v2 invocations: the SDK's own ceiling. Host calls get two seconds more, and the worker kills at 60 s. */
+private const val CALL_DEADLINE_MS = 50_000
+private val HOST_DEADLINE_NANOS = TimeUnit.SECONDS.toNanos(52)
+private const val MEDIA_TIMEOUT_MS = 20_000L
+private fun ownerKey(providerId: String) = "owner:$providerId"
+private fun userServerKey(pluginId: String) = "userServer:$pluginId"
 
 /** Platform IO/runtime for shared Music Core's mobile plugin repository rules. */
 class AndroidPluginRepository(context: Context) : Closeable {
@@ -28,13 +40,21 @@ class AndroidPluginRepository(context: Context) : Closeable {
     private val preferences = app.getSharedPreferences("plugin-repository", Context.MODE_PRIVATE)
     private val http = PluginHttp()
     private val gateway = NcmGateway(http, preferences.getString("deviceId", null) ?: UUID.randomUUID().toString().replace("-", "").also { preferences.edit().putString("deviceId", it).apply() })
+    private val network = PluginNetwork()
+    private val spoolDirectory = File(app.cacheDir, "provider-media")
     private val worker = PluginWorkerConnection(app)
     private val mutex = Mutex()
     private var initialized = false
     private var index = JsonObject(emptyMap())
-    private val active = mutableMapOf<String, Pair<Int, MobileProvider>>()
+    /** A running plugin: the worker it was loaded into, what it registered, and (ABI v2) its host API. */
+    private class ActivePlugin(val generation: Int, val provider: MobileProvider, val runtime: AndroidPluginRuntime, val host: PluginHostApi?)
+    /** Written under [mutex]; read without it to open media for a stream that is already playing. */
+    private val active = ConcurrentHashMap<String, ActivePlugin>()
     private val mutableState = MutableStateFlow(PluginRepositoryState(indexUrl = preferences.getString("indexUrl", DEFAULT_PLUGIN_INDEX)!!))
     val state = mutableState.asStateFlow()
+    private val mutableNotices = MutableSharedFlow<Pair<String, PluginNotice>>(extraBufferCapacity = 16, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    /** `twilight.ui.notify()` messages from v2 plugins, by plugin id. */
+    val notices: SharedFlow<Pair<String, PluginNotice>> = mutableNotices.asSharedFlow()
     private val revalidating = AtomicBoolean(false)
     @Volatile private var lastRevalidation = 0L
 
@@ -48,6 +68,8 @@ class AndroidPluginRepository(context: Context) : Closeable {
     }
     private fun initializeLocked() {
         if (initialized) return
+        // Spools of an earlier process; an open file outlives its name, so a live stream keeps reading.
+        spoolDirectory.listFiles()?.forEach { it.delete() }
         val installed = readAtomic(stateFile)?.let { pluginJson.decodeFromString<List<InstalledPlugin>>(it.toString(Charsets.UTF_8)) } ?: emptyList()
         mutableState.update { it.copy(installed = installed, ready = true) }
         val cached = File(root, "catalog.json")
@@ -83,7 +105,11 @@ class AndroidPluginRepository(context: Context) : Closeable {
             known += manifest(record).let { JsonObject(it + mapOf("sourceUrl" to JsonPrimitive(record.origin), "checksumSha256" to JsonPrimitive(record.checksumSha256))) }
         }
         val catalog = rules("catalog", "index" to buildJsonObject { put("schemaVersion", 1); put("plugins", JsonArray(known)) }, "installed" to pluginJson.encodeToJsonElement(installed))
-        mutableState.update { it.copy(entries = pluginJson.decodeFromJsonElement(catalog)) }
+        // The rules pass a desktop-only plugin's androidRuntime through unchecked; it is never read, so it cannot break the list.
+        val entries = catalog.jsonArray.map { entry ->
+            entry.jsonObject.let { if ((it["unsupportedReason"] as? JsonPrimitive)?.contentOrNull != null) JsonObject(it - "androidRuntime") else it }
+        }
+        mutableState.update { it.copy(entries = pluginJson.decodeFromJsonElement(JsonArray(entries))) }
     }
     suspend fun refresh(indexUrl: String = state.value.indexUrl) = operation {
         val url = repositoryUri(indexUrl)
@@ -176,33 +202,196 @@ class AndroidPluginRepository(context: Context) : Closeable {
         check(mutableState.value.installed.any { it.id == id })
         closePlugin(id)
         saveInstalled(mutableState.value.installed.filterNot { it.id == id })
-        File(root, id).deleteRecursively(); secrets.delete(id); rebuildEntries()
+        File(root, id).deleteRecursively(); secrets.delete(id)
+        preferences.edit().apply {
+            remove(userServerKey(id))
+            preferences.all.filter { (key, owner) -> key.startsWith("owner:") && owner == id }.keys.forEach { remove(it) }
+        }.apply()
+        rebuildEntries()
     }
     private fun saveInstalled(records: List<InstalledPlugin>) {
         writeAtomic(stateFile, pluginJson.encodeToString(records).utf8())
         mutableState.update { it.copy(installed = records) }
     }
     private fun manifest(record: InstalledPlugin) = pluginJson.parseToJsonElement(File(root, "${record.id}/${record.version}/plugin.json").readText()).jsonObject
-    private suspend fun ensureActive(record: InstalledPlugin): MobileProvider {
+    private suspend fun ensureActive(record: InstalledPlugin): ActivePlugin {
         worker.connect()
-        if (active.values.any { it.first != worker.generation }) { active.clear(); publishProviders() }
-        active[record.id]?.takeIf { it.first == worker.generation }?.let { return it.second }
-        val raw = manifest(record)
-        val validated = rules("manifest", "manifest" to raw).jsonObject
+        if (active.values.any { it.generation != worker.generation }) resetActive()
+        active[record.id]?.let { return it }
+        val validated = rules("manifest", "manifest" to manifest(record)).jsonObject
         val runtime = pluginJson.decodeFromJsonElement<AndroidPluginRuntime>(validated.getValue("androidRuntime"))
         val script = File(root, "${record.id}/${record.version}/${runtime.entry}").readText()
-        val value = unwrap(worker.execute(record.id, script, "{\"operation\":\"activate\"}") { method, args -> callback(record.id, runtime, method, args) })
-        val provider = pluginJson.decodeFromJsonElement<MobileProvider>(value).copy(pluginId = record.id)
-        check(active.values.none { it.second.id == provider.id && it.second.pluginId != record.id }) { "音源 ID 已被另一插件占用" }
-        active[record.id] = worker.generation to provider; publishProviders(); return provider
+        val host = if (runtime.apiVersion != 2) null else PluginHostApi(runtime, object : PluginSettingsStore {
+            override fun read() = secrets.read(record.id)
+            override fun write(value: String) = secrets.write(record.id, value)
+        }, network) { level, message ->
+            if (level == "warn" || level == "error") android.util.Log.w("TwilightPlugin", "${record.id}: $message")
+        }.apply { if (runtime.userServer) userServerOrigin = preferences.getString(userServerKey(record.id), null) }
+        try {
+            val request = buildJsonObject {
+                put("operation", "activate")
+                if (host != null) { put("manifest", validated); put("deadlineMs", CALL_DEADLINE_MS) }
+            }
+            val raw = execute(record.id, script, runtime, host, request.toString()) ?: error("插件运行环境内存不足，请稍后重试")
+            val described = unwrap(raw, record.id) as? JsonObject ?: error("插件没有注册音源")
+            // Absent and null fields both take the model's defaults.
+            val provider = pluginJson.decodeFromJsonElement<MobileProvider>(JsonObject(described.filterValues { it !is JsonNull })).copy(pluginId = record.id)
+            check(provider.apiVersion == runtime.apiVersion) { "插件运行接口与清单声明不一致" }
+            check(host == null || isPluginProviderId(provider.id)) { "音源 ID 无效" }
+            check(active.values.none { it.provider.id == provider.id && it.provider.pluginId != record.id }) { "音源 ID 已被另一插件占用" }
+            val plugin = ActivePlugin(worker.generation, provider, runtime, host)
+            active[record.id] = plugin
+            if (host != null) {
+                ProviderMediaGrants.register(record.id, host)
+                // Queued songs name their provider; this finds the plugin again after a restart.
+                preferences.edit().putString(ownerKey(provider.id), record.id).apply()
+            }
+            publishProviders(); return plugin
+        } catch (error: Throwable) {
+            host?.close()
+            if (error !is IllegalStateException || error.cause !is android.os.RemoteException)
+                runCatching { worker.execute(record.id, null, "close") { _, _ -> "{}" } }
+            throw error
+        }
     }
     private fun closePlugin(id: String) {
-        if (active.remove(id) != null) runCatching { worker.execute(id, null, "close") { _, _ -> "{}" } }
+        val plugin = active.remove(id)
+        if (plugin != null) {
+            ProviderMediaGrants.unregister(id)
+            plugin.host?.let { host ->
+                val request = buildJsonObject { put("operation", "deactivate"); put("deadlineMs", 5_000) }.toString()
+                runCatching { execute(id, null, plugin.runtime, host, request) }
+            }
+            runCatching { worker.execute(id, null, "close") { _, _ -> "{}" } }
+            plugin.host?.close()
+        }
         publishProviders()
     }
-    private fun publishProviders() { mutableState.update { it.copy(providers = active.values.map { p -> p.second }) } }
+    /** The worker is gone or was replaced: every engine went with it. */
+    private fun resetActive() {
+        for (id in active.keys.toList()) { active.remove(id)?.host?.close(); ProviderMediaGrants.unregister(id) }
+        publishProviders()
+    }
+    private fun publishProviders() { mutableState.update { it.copy(providers = active.values.map { p -> p.provider }.sortedBy { p -> p.pluginId }) } }
+
+    /** Null when the worker unloaded the engine; a dead worker took every engine with it. */
+    private fun execute(id: String, script: String?, runtime: AndroidPluginRuntime, host: PluginHostApi?, input: String): String? {
+        val deadline = System.nanoTime() + HOST_DEADLINE_NANOS
+        return try {
+            worker.execute(id, script, input) { method, args -> host?.call(method, args, deadline) ?: callback(id, runtime, method, args) }
+        } catch (error: android.os.RemoteException) {
+            resetActive(); throw IllegalStateException("插件进程已退出；主播放器保持运行，请重试", error)
+        }
+    }
+    /** Runs [request] in [record]'s engine; one the worker unloaded meanwhile is activated again, once. */
+    private suspend fun invoke(record: InstalledPlugin, request: (ActivePlugin) -> JsonObject): JsonElement {
+        repeat(2) {
+            val plugin = ensureActive(record)
+            execute(record.id, null, plugin.runtime, plugin.host, request(plugin).toString())?.let { return unwrap(it, record.id) }
+            active.remove(record.id)?.host?.close(); ProviderMediaGrants.unregister(record.id); publishProviders()
+        }
+        error("插件运行环境内存不足，请稍后重试")
+    }
+    private fun enabledRecord(pluginId: String) =
+        mutableState.value.installed.singleOrNull { it.id == pluginId && it.enabled } ?: error("请先安装并启用音源插件")
+
     suspend fun call(pluginId: String, method: String, args: JsonArray = JsonArray(emptyList())): JsonElement = withContext(Dispatchers.IO) {
         mutex.withLock { callLocked(pluginId, method, args) }
+    }
+
+    /** What [pluginId] registered: its methods, `ui` declaration and settings panels. Activates the plugin. */
+    suspend fun provider(pluginId: String): MobileProvider = withContext(Dispatchers.IO) {
+        mutex.withLock { initializeLocked(); ensureActive(enabledRecord(pluginId)).provider }
+    }
+
+    /** Runs a v2 plugin's UI command: its settings panels and the forms they return. */
+    suspend fun command(pluginId: String, command: String, args: JsonArray = JsonArray(emptyList())): JsonElement = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            initializeLocked()
+            invoke(enabledRecord(pluginId)) { plugin ->
+                check(plugin.host != null) { "插件不支持此操作" }
+                buildJsonObject { put("operation", "command"); put("command", command); put("args", args); put("deadlineMs", CALL_DEADLINE_MS) }
+            }
+        }
+    }
+
+    /**
+     * Desktop's server sign-in (Jellyfin, Navidrome). The typed server is granted to this plugin alone, LAN and plain
+     * HTTP included, and is kept only when the sign-in succeeds.
+     */
+    suspend fun loginWithServer(pluginId: String, address: String, username: String, password: String): JsonElement = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            initializeLocked()
+            val record = enabledRecord(pluginId)
+            val plugin = ensureActive(record)
+            check(plugin.runtime.userServer && plugin.host != null && "loginWithServer" in plugin.provider.methods) { "此音源不支持服务器登录" }
+            val url = serverAddress(address)
+            val key = userServerKey(record.id)
+            val previous = preferences.getString(key, null)
+            // Saved first, so an engine activated again during the call is granted the same server.
+            fun grant(origin: String?) {
+                preferences.edit().apply { if (origin == null) remove(key) else putString(key, origin) }.commit()
+                active[record.id]?.host?.userServerOrigin = origin
+            }
+            grant(serverOriginOf(url))
+            try {
+                callLocked(pluginId, "loginWithServer", buildJsonArray { add(url); add(username); add(password) }).also { result ->
+                    check(((result as? JsonObject)?.get("loggedIn") as? JsonPrimitive)?.booleanOrNull == true) { "登录未成功，请检查服务器地址和账号" }
+                }
+            } catch (error: Throwable) { grant(previous); throw error }
+        }
+    }
+
+    /** A queued v2 track's audio for the player. The stream URL is resolved on the first read, never here. */
+    fun openStream(source: String): MediaDataSource {
+        val ref = parseProviderSource(source) ?: throw IllegalArgumentException("音源引用无效")
+        val resolved = AtomicReference<ActivePlugin?>()
+        return ProviderMediaDataSource(ProviderMediaReader(
+            resolve = { force -> runBlocking { resolvePlayback(ref, force) }.let { (plugin, playback) -> resolved.set(plugin); playback } },
+            open = { playback, range, onCall ->
+                // The grants of the plugin that resolved the URL; a worker restart does not revoke them, disabling does.
+                val plugin = resolved.get()?.takeIf { plugin -> state.value.installed.any { it.id == plugin.provider.pluginId && it.enabled } }
+                    ?: throw IOException("音源插件已停用")
+                plugin.host!!.openMedia(playback.url, playback.headers, range, MEDIA_TIMEOUT_MS, onCall)
+            },
+            spoolDirectory = spoolDirectory))
+    }
+    private suspend fun resolvePlayback(ref: ProviderTrackRef, force: Boolean): Pair<ActivePlugin, ProviderPlayback> = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            initializeLocked()
+            val record = ownerOf(ref.providerId)
+            // Desktop's sourceResolver: `[track, options]`, with `force` when a signed URL expired.
+            val value = callLocked(record.id, "getPlaybackUrl", buildJsonArray { add(ref.track); add(buildJsonObject { if (force) put("force", true) }) })
+            val plugin = active[record.id] ?: error("音源插件已停用")
+            plugin to (providerPlayback(value) ?: error("此歌曲暂时无法播放"))
+        }
+    }
+
+    /** A queued v2 track's timed lyrics as LRC; null when its provider has none. */
+    suspend fun providerLyrics(source: String): String? {
+        val ref = parseProviderSource(source) ?: return null
+        return withContext(Dispatchers.IO) {
+            mutex.withLock {
+                initializeLocked()
+                val record = ownerOf(ref.providerId)
+                if ("getLyrics" !in active.getValue(record.id).provider.methods) null
+                else providerLrc(callLocked(record.id, "getLyrics", buildJsonArray { add(ref.track) }))
+            }
+        }
+    }
+
+    /** The enabled v2 plugin registering [providerId]: the one active now or remembered, else the first that does. */
+    private suspend fun ownerOf(providerId: String): InstalledPlugin {
+        val enabled = mutableState.value.installed.filter { it.enabled }
+        val known = active.values.firstOrNull { it.provider.id == providerId }?.provider?.pluginId ?: preferences.getString(ownerKey(providerId), null)
+        val owner = enabled.firstOrNull { it.id == known }?.takeIf { ensureActive(it).provider.id == providerId }
+            ?: enabled.filter { it.id != known }.firstOrNull { record ->
+                try { ensureActive(record).provider.id == providerId }
+                catch (error: CancellationException) { throw error }
+                catch (_: Exception) { false }
+            } ?: error("请先安装并启用这首歌的音源插件")
+        check(active.getValue(owner.id).host != null) { "此音源插件不支持在 Android 播放" }
+        return owner
     }
 
     /**
@@ -224,15 +413,12 @@ class AndroidPluginRepository(context: Context) : Closeable {
 
     private suspend fun callLocked(pluginId: String, method: String, args: JsonArray): JsonElement {
         initializeLocked()
-        val record = mutableState.value.installed.singleOrNull { it.id == pluginId && it.enabled } ?: error("请先安装并启用音源插件")
-        val provider = ensureActive(record)
-        check(method in provider.methods) { "插件不支持此方法" }
-        val runtime = pluginJson.decodeFromJsonElement<AndroidPluginRuntime>(manifest(record).getValue("androidRuntime"))
-        val request = buildJsonObject { put("operation", "call"); put("method", method); put("args", args) }.toString()
-        try { return unwrap(worker.execute(record.id, null, request) { m, a -> callback(record.id, runtime, m, a) }) }
-        catch (error: Throwable) {
-            if (error is android.os.RemoteException) { active.clear(); publishProviders(); throw IllegalStateException("插件进程已退出；主播放器保持运行，请重试", error) }
-            throw error
+        return invoke(enabledRecord(pluginId)) { plugin ->
+            check(method in plugin.provider.methods) { "插件不支持此方法" }
+            buildJsonObject {
+                put("operation", "call"); put("method", method); put("args", args)
+                if (plugin.host != null) put("deadlineMs", CALL_DEADLINE_MS)
+            }
         }
     }
     private suspend fun operation(action: suspend () -> Unit) = withContext(Dispatchers.IO) {
@@ -244,6 +430,7 @@ class AndroidPluginRepository(context: Context) : Closeable {
             finally { mutableState.update { it.copy(busy = false) } }
         }
     }
+    /** ABI v1 (the bundled NCM plugin) host calls. */
     private fun callback(id: String, runtime: AndroidPluginRuntime, method: String, argsJson: String): String = try {
         require(argsJson.length <= 500_000)
         val args = pluginJson.parseToJsonElement(argsJson).jsonObject
@@ -290,12 +477,16 @@ class AndroidPluginRepository(context: Context) : Closeable {
             require(it.length <= 500_000) { "插件宿主返回数据过大，请减小分页大小" }
         }
     } catch (error: Throwable) { buildJsonObject { put("ok", false); put("error", error.message ?: "插件宿主调用失败") }.toString() }
-    private fun unwrap(raw: String): JsonElement {
+    /** A v2 envelope's notices are published whether the call succeeded or not. */
+    private fun unwrap(raw: String, pluginId: String? = null): JsonElement {
         val result = pluginJson.parseToJsonElement(raw).jsonObject
+        if (pluginId != null) (result["notices"] as? JsonArray)?.take(8)?.forEach { item ->
+            runCatching { pluginJson.decodeFromJsonElement<PluginNotice>(item) }.getOrNull()?.let { mutableNotices.tryEmit(pluginId to it) }
+        }
         check(result["ok"]?.jsonPrimitive?.booleanOrNull == true) { result.string("error", "插件运行失败") }
         return result["value"] ?: JsonNull
     }
-    override fun close() { worker.close() }
+    override fun close() { resetActive(); worker.close() }
 }
 
 /** Safe .tep/ZIP extraction is independent of the runtime and accepts no paths outside staging. */
