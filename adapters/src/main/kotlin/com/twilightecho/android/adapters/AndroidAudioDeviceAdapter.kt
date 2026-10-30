@@ -9,6 +9,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import com.twilightecho.android.coreclient.PcmSampleRates
 import com.twilightecho.android.coreclient.OutputDeviceIdentity
 import com.twilightecho.android.runtimehost.AudioDevicePort
 import com.twilightecho.android.runtimehost.AudioDeviceRouteInfo
@@ -85,7 +86,7 @@ class AndroidAudioDeviceAdapter(
         val explicit = deviceId.substringBefore(':').toIntOrNull()
         val selected = if (explicit != null) devices.firstOrNull { it.id == explicit }
             else mediaRouteDevice(devices) ?: devices.firstOrNull { it.id == playbackOutput?.actualDeviceId?.toIntOrNull() }
-        return selected?.sampleRates?.filter { it in 8000..384000 }?.distinct()?.sorted().orEmpty()
+        return selected?.sampleRates?.filter { it in PcmSampleRates.range }?.distinct()?.sorted().orEmpty()
     }
 
     /**

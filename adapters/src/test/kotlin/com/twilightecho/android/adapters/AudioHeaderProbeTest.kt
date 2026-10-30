@@ -10,6 +10,7 @@ class AudioHeaderProbeTest {
     }
 
     private fun le(value: Long, bytes: Int) = ByteArray(bytes) { (value ushr (8 * it)).toByte() }
+    private fun be(value: Long, bytes: Int) = ByteArray(bytes) { (value ushr (8 * (bytes - 1 - it))).toByte() }
     private fun ascii(text: String) = text.toByteArray(Charsets.ISO_8859_1)
 
     @Test
@@ -70,5 +71,23 @@ class AudioHeaderProbeTest {
         assertNull(probe(block(0, 1000, (9L shl 23) or 0x80000000L)))
         assertNull(probe(ascii("OggS") + ByteArray(60)))
         assertNull(probe(ByteArray(0)))
+    }
+
+    @Test
+    fun `DSF and DFF headers give exact DSD sample rates and durations`() {
+        // DSD64 (2 822 400 Hz), 2 channels, 1 bit, 10 seconds = 28 224 000 samples per channel.
+        val dsfChunk = ascii("DSD ") + le(28, 8) + le(10_000_000, 8) + le(0, 8)
+        val fmtChunk = ascii("fmt ") + le(52, 8) + le(1, 4) + le(0, 4) + le(2, 4) + le(2, 4) +
+            le(2_822_400, 4) + le(1, 4) + le(28_224_000, 8) + le(4096, 4) + le(0, 4)
+        assertEquals(AudioHeader(10.0, 2_822_400, 1), probe(dsfChunk + fmtChunk))
+
+        // DSDIFF (FRM8 / DSD ): 2 channels, 2 822 400 Hz, 20 seconds -> (20 * 2_822_400 * 2) / 8 = 14_112_000 bytes.
+        fun dffChunk(id: String, body: ByteArray) = ascii(id) + be(body.size.toLong(), 8) + body
+        val fsSub = dffChunk("FS  ", be(2_822_400, 4))
+        val chnlSub = dffChunk("CHNL", be(2, 2) + ascii("SLFTSRGT"))
+        val prop = dffChunk("PROP", ascii("SND ") + fsSub + chnlSub)
+        val dsdHeader = ascii("DSD ") + be(14_112_000L, 8)
+        val dff = ascii("FRM8") + be(0, 8) + ascii("DSD ") + prop + dsdHeader
+        assertEquals(AudioHeader(20.0, 2_822_400, 1), probe(dff))
     }
 }

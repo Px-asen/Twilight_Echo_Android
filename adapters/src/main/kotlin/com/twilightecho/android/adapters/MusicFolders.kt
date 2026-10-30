@@ -93,17 +93,18 @@ object StorageLocation {
 object MusicFolders {
     private val COVER_NAMES = listOf("cover", "folder", "front", "albumart")
     private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
+    private val FOLDER_AUDIO_EXTENSIONS = CueSheets.AUDIO_EXTENSIONS + setOf("dsf", "dff")
     /** A sheet may split an MP4 file, but on its own one is more likely a video. */
-    private val SONG_EXTENSIONS = CueSheets.AUDIO_EXTENSIONS - "mp4"
+    private val SONG_EXTENSIONS = FOLDER_AUDIO_EXTENSIONS - "mp4"
 
     /**
      * One folder's songs over [mediaStore], MediaStore's songs by [StorageLocation]. A file a sheet splits
      * becomes the sheet's songs; any other file MediaStore lists stays MediaStore's song.
      */
-    fun songs(folder: ListedFolder, mediaStore: Map<String, CoreTrackView>, reader: FolderReader): FolderSongs {
+    fun songs(folder: ListedFolder, mediaStore: Map<String, CoreTrackView> = emptyMap(), reader: FolderReader): FolderSongs {
         // Names starting with a dot are hidden, including the `._` copies macOS leaves beside each file.
         val files = folder.files.filter { !it.name.startsWith(".") }
-        val audio = files.filter { extension(it.name) in CueSheets.AUDIO_EXTENSIONS }
+        val audio = files.filter { extension(it.name) in FOLDER_AUDIO_EXTENSIONS }
         val sheets = files.filter { extension(it.name) == "cue" }
         val images = files.filter { extension(it.name) in IMAGE_EXTENSIONS }
         val folderCover = COVER_NAMES.firstNotNullOfOrNull { name -> images.firstOrNull { baseName(it.name) == name } }

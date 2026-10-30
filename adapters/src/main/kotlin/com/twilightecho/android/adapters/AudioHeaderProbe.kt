@@ -29,6 +29,8 @@ object AudioHeaderProbe {
             head.ascii(0, 4) == "RIFF" && head.ascii(8, 4) == "WAVE" -> wav(read, start)
             head.ascii(0, 4) == "MAC " -> ape(read, start)
             head.ascii(0, 4) == "wvpk" -> wavPack(read(start, 32 + 1024))
+            head.ascii(0, 4) == "DSD " -> dsf(read(start, 80))
+            head.ascii(0, 4) == "FRM8" && head.ascii(12, 4) == "DSD " -> dff(read, start)
             else -> null
         }
     }.getOrNull()
@@ -127,12 +129,62 @@ object AudioHeaderProbe {
         return null
     }
 
+    private fun dsf(head: ByteArray): AudioHeader? {
+        // DSD chunk (28 bytes) followed immediately by fmt chunk (>= 52 bytes).
+        if (head.size < 72 || head.u64(4) != 28L || head.ascii(28, 4) != "fmt " || head.u64(32) < 52L) return null
+        val rate = head.u32(56).toInt()
+        val bits = head.u32(60).toInt().takeIf { it > 0 }
+        val samples = head.u64(64)
+        return header(samples, rate, bits)
+    }
+
+    private fun dff(read: (Long, Int) -> ByteArray, start: Long): AudioHeader? {
+        var offset = start + 16
+        var rate = 0
+        var channels = 0
+        repeat(32) {
+            val chunk = read(offset, 16)
+            if (chunk.size < 12) return null
+            val id = chunk.ascii(0, 4)
+            val size = chunk.be64(4)
+            if (size < 0) return null
+            when (id) {
+                "PROP" -> if (size >= 4 && chunk.ascii(12, 4) == "SND ") {
+                    var sub = offset + 16
+                    val propEnd = offset + 12 + size
+                    repeat(32) {
+                        if (sub + 12 > propEnd) return@repeat
+                        val prop = read(sub, 16)
+                        if (prop.size < 12) return null
+                        val propId = prop.ascii(0, 4)
+                        val propSize = prop.be64(4)
+                        if (propSize < 0) return null
+                        when (propId) {
+                            "FS  " -> if (prop.size >= 16) rate = prop.be32(12).toInt()
+                            "CHNL" -> if (prop.size >= 14) channels = prop.be16(12)
+                        }
+                        sub += 12 + propSize + (propSize and 1)
+                    }
+                }
+                "DSD " -> return if (channels > 0 && rate > 0 && size <= Long.MAX_VALUE / 8) {
+                    header((size * 8) / channels, rate, 1)
+                } else null
+            }
+            offset += 12 + size + (size and 1)
+        }
+        return null
+    }
+
     private fun header(samples: Long, rate: Int, bits: Int?): AudioHeader? =
         if (samples <= 0 || rate <= 0) null else AudioHeader(samples.toDouble() / rate, rate, bits)
 
     private fun ByteArray.u8(index: Int) = this[index].toInt() and 0xFF
     private fun ByteArray.u16(index: Int) = u8(index) or (u8(index + 1) shl 8)
     private fun ByteArray.u32(index: Int) = (u16(index).toLong() or (u16(index + 2).toLong() shl 16))
+    private fun ByteArray.u64(index: Int) = u32(index) or (u32(index + 4) shl 32)
+    private fun ByteArray.be16(index: Int) = (u8(index) shl 8) or u8(index + 1)
+    private fun ByteArray.be32(index: Int) = (be16(index).toLong() shl 16) or be16(index + 2).toLong()
+    private fun ByteArray.be64(index: Int) = (be32(index) shl 32) or be32(index + 4)
     private fun ByteArray.ascii(index: Int, length: Int) =
         if (size < index + length) "" else String(this, index, length, Charsets.ISO_8859_1)
 }

@@ -23,15 +23,16 @@ data class MusicFolder(val uri: String, val label: String)
 data class MusicFolderScan(val songs: FolderSongs, val unreadable: List<MusicFolder>)
 
 /**
- * What a library scan found: all songs, how many CUE sheets split off, the sheets that split nothing and why.
- * [withDeviceMusic] is false when Android's music permission was refused and only the music folders were read.
+ * What a library folder scan found: all songs, how many CUE sheets split off, the sheets that split nothing and why,
+ * and how many selected folders are currently active.
  */
 data class LibraryScanSummary(
     val songs: Int,
     val cueSongs: Int,
     val skipped: List<CueSkip>,
     val unreadableFolders: List<MusicFolder>,
-    val withDeviceMusic: Boolean = true
+    val withDeviceMusic: Boolean = false,
+    val folderCount: Int = 0
 )
 
 /**
@@ -65,9 +66,8 @@ class AndroidMusicFolderScanner(private val context: Context) {
         runCatching { resolver.releasePersistableUriPermission(Uri.parse(uri), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
 
-    /** Every folder's songs over MediaStore's. A folder inside another picked folder is walked once. */
-    suspend fun scan(mediaStore: List<MediaStoreTrack>): MusicFolderScan = withContext(Dispatchers.IO) {
-        val byLocation = mediaStore.mapNotNull { entry -> entry.location?.let { it to entry.track } }.toMap()
+    /** Reads every selected music folder. A folder inside another picked folder is walked once. */
+    suspend fun scan(): MusicFolderScan = withContext(Dispatchers.IO) {
         val visited = HashSet<String>()
         val parts = mutableListOf<FolderSongs>()
         val unreadable = mutableListOf<MusicFolder>()
@@ -76,7 +76,7 @@ class AndroidMusicFolderScanner(private val context: Context) {
             val reader = TreeReader(tree)
             val readable = walk(tree, visited) { listed ->
                 ensureActive()
-                parts += MusicFolders.songs(listed, byLocation, reader)
+                parts += MusicFolders.songs(folder = listed, reader = reader)
             }
             if (!readable) unreadable += folder
         }

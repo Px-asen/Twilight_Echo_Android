@@ -110,4 +110,48 @@ class MusicFoldersTest {
         assertEquals(listOf(CueSkip("CueTest/Album.cue", "第 1 轨超出音频文件长度")), songs.skipped)
         assertEquals(emptyList<String>(), reader.described)
     }
+
+    @Test
+    fun `folder-only scan indexes regular audio, DSD files, CUE splits and covers without MediaStore`() {
+        val reader = FakeReader(
+            texts = mapOf(
+                "Disc.cue" to "PERFORMER \"暮色乐团\"\nTITLE \"精选集\"\nFILE \"Disc.flac\" WAVE\n" +
+                    "TRACK 01 AUDIO\nTITLE \"序曲\"\nINDEX 01 00:00:00\n" +
+                    "TRACK 02 AUDIO\nTITLE \"终章\"\nINDEX 01 03:00:00"
+            ),
+            headers = mapOf(
+                "Disc.flac" to AudioHeader(420.0, 96000, 24),
+                "Song.mp3" to AudioHeader(210.0, 44100, null),
+                "Master.dsf" to AudioHeader(180.0, 2_822_400, 1)
+            ),
+            tags = mapOf(
+                "Song.mp3" to FileTags(title = "Golden Hour", artist = "Twilight", album = "Singles", trackNumber = 1)
+            )
+        )
+        val folderFiles = listOf("Disc.flac", "Disc.cue", "Song.mp3", "Master.dsf", "cover.png", "Video.mp4").map(::file)
+        val songs = MusicFolders.songs(folder = ListedFolder("Music/HiFi", folderFiles), reader = reader)
+
+        assertTrue(songs.replaced.isEmpty())
+        assertTrue(songs.covers.isEmpty())
+        assertTrue(songs.skipped.isEmpty())
+        assertEquals(4, songs.tracks.size)
+
+        val cueTracks = songs.tracks.filter { it.id.startsWith("local:cue:") }
+        assertEquals(listOf("序曲", "终章"), cueTracks.map { it.title })
+        assertEquals(listOf(180.0, 240.0), cueTracks.map { it.duration })
+        assertTrue(cueTracks.all { it.cover == "content://tree/document/primary:Music/CueTest/cover.png" })
+
+        val mp3 = songs.tracks.single { it.title == "Golden Hour" }
+        assertEquals(MusicFolders.folderTrackId("primary:Music/CueTest/Song.mp3"), mp3.id)
+        assertEquals("Twilight", mp3.artist)
+        assertEquals("Singles", mp3.album)
+        assertEquals("MP3", mp3.format)
+
+        val dsd = songs.tracks.single { it.title == "Master" }
+        assertEquals(MusicFolders.folderTrackId("primary:Music/CueTest/Master.dsf"), dsd.id)
+        assertEquals("DSD", dsd.format)
+        assertEquals(2_822_400, dsd.sampleRate)
+        assertEquals(1, dsd.bitDepth)
+        assertEquals("HiFi", dsd.album)
+    }
 }
