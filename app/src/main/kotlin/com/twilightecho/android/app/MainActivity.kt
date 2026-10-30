@@ -23,10 +23,9 @@ import com.twilightecho.android.playbackhost.AndroidPlaybackHost
 import com.twilightecho.android.ui.theme.TwilightEchoTheme
 
 /**
- * Main Activity hosting Jetpack Compose UI (`NowPlayingScreen`), handling runtime audio permission
- * requests (`READ_MEDIA_AUDIO` on API 33+ or `READ_EXTERNAL_STORAGE` on API <= 32), notification
- * permission on API 33+, and connecting
- * to `TwilightMediaSessionService` so system media notifications stay active during playback.
+ * Main Activity hosting Jetpack Compose UI (`NowPlayingScreen`), handling notification permission
+ * on API 33+, and connecting to `TwilightMediaSessionService` so system media notifications stay
+ * active during playback. Local music comes exclusively from user-selected SAF folders.
  */
 class MainActivity : ComponentActivity() {
 
@@ -44,13 +43,6 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { /* Playback remains available when notifications are declined. */ }
 
-    private val requestAudioPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) playerViewModel.onScanDeviceMusic()
-        else playerViewModel.onScanPermissionDenied()
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
@@ -60,8 +52,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             TwilightEchoTheme {
                 NowPlayingScreen(
-                    viewModel = playerViewModel,
-                    onRequestScanMusicPermission = ::ensurePermissionAndScanDeviceMusic
+                    viewModel = playerViewModel
                 )
             }
         }
@@ -76,20 +67,6 @@ class MainActivity : ComponentActivity() {
         // Ask once, not on every launch after a refusal. Settings retains a direct system entry.
         preferences.edit().putBoolean("notifications_requested", true).apply()
         requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-    }
-
-    private fun ensurePermissionAndScanDeviceMusic() {
-        val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_AUDIO
-        } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-
-        if (ContextCompat.checkSelfPermission(this, requiredPermission) == PackageManager.PERMISSION_GRANTED) {
-            playerViewModel.onScanDeviceMusic()
-        } else {
-            requestAudioPermissionLauncher.launch(requiredPermission)
-        }
     }
 
     override fun onStart() {

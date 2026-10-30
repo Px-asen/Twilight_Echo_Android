@@ -57,7 +57,7 @@ class P2PcmOutputTest {
         val adapter = AndroidAudioDeviceAdapter(context)
         try {
             raw.forEach { device ->
-                assertEquals(device.sampleRates.filter { it in 8000..384000 }.distinct().sorted(),
+                assertEquals(device.sampleRates.filter { it in PcmSampleRates.range }.distinct().sorted(),
                     adapter.sampleRatesForOutput(device.id.toString()))
             }
             assertTrue(adapter.sampleRatesForOutput(Int.MAX_VALUE.toString()).isEmpty())
@@ -66,7 +66,7 @@ class P2PcmOutputTest {
                     .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build()
                 val route = manager.getAudioDevicesForAttributes(media).firstOrNull()
                 val device = raw.firstOrNull { it.type == route?.type && it.address == route?.address }
-                assertEquals(device?.sampleRates?.filter { it in 8000..384000 }?.distinct()?.sorted().orEmpty(),
+                assertEquals(device?.sampleRates?.filter { it in PcmSampleRates.range }?.distinct()?.sorted().orEmpty(),
                     adapter.sampleRatesForOutput("auto"))
             }
         } finally { adapter.close() }
@@ -158,4 +158,59 @@ class P2PcmOutputTest {
     }
 
     private suspend fun await(condition: suspend () -> Boolean) = withTimeout(15000) { while (!condition()) delay(50) }
+
+    @Test fun highFixedRequestsReportNegotiationOrRecoverFromBackendRejection() = runBlocking {
+        val directory = File(context.cacheDir, "p2-high-${System.nanoTime()}").apply { mkdirs() }
+        val file = source(directory)
+        rates = listOf(48000, 705600, 768000) // Injected declaration; AAudio still negotiates on the real device.
+        val report = mutableListOf<String>()
+        try {
+            Session(directory).use { session ->
+                session.start()
+                fun config(rate: Int) = CoreEqConfigView(bitPerfect = true, dsp = CoreDspConfig(
+                    allowedSampleRates = listOf(rate), outputStage = CoreDspOutputStage(targetSampleRate = rate)))
+                check(session.client.setEqConfig(config(48000)).isSuccess)
+                session.command(CoreTypedCommand.ReplaceQueue(tracks = listOf(CoreTrackView(
+                    "p2-high", title = "P2 high PCM", source = file.absolutePath, duration = 42.0)), play = false))
+                session.command(CoreTypedCommand.Play(6.25))
+                session.command(CoreTypedCommand.Pause)
+                session.command(CoreTypedCommand.Seek(6.25))
+                for (rate in listOf(705600, 768000)) {
+                    val result = session.client.setEqConfig(config(rate))
+                    if (result.isSuccess) {
+                        val actual = session.audio.getSnapshot()
+                        assertEquals(rate, actual.requestedSampleRate)
+                        assertTrue(actual.actualSampleRate!! > 0)
+                        assertEquals("paused", actual.state)
+                        assertEquals(6250.0, actual.positionMs.toDouble(), 3.0)
+                        assertFalse(actual.outputPerfect)
+                        report += "requested=$rate actual=${actual.actualSampleRate} hardware=${actual.hardwareSampleRate} state=${actual.state}"
+                        session.command(CoreTypedCommand.Play(null))
+                        await { session.audio.getSnapshot().positionMs > 6500 }
+                        assertEquals(rate, session.audio.getSnapshot().requestedSampleRate)
+                        assertEquals("playing", session.audio.getSnapshot().state)
+                        session.command(CoreTypedCommand.Pause)
+                        session.command(CoreTypedCommand.Seek(6.25))
+                        report += "requested=$rate resumed=true pausedSeekMs=${session.audio.getSnapshot().positionMs}"
+                    } else {
+                        assertTrue(result.exceptionOrNull()?.message?.isNotBlank() == true)
+                        await { session.audio.getSnapshot().state != "playing" }
+                        assertNotEquals(rate, session.audio.getSnapshot().actualSampleRate)
+                        report += "requested=$rate rejected=${result.exceptionOrNull()?.message}"
+                    }
+                    // Reapply the previously accepted configuration, then resume at the same position.
+                    check(session.client.setEqConfig(config(48000)).isSuccess)
+                    session.command(CoreTypedCommand.Play(6.25))
+                    await { session.audio.getSnapshot().positionMs > 6500 }
+                    assertEquals(48000, session.audio.getSnapshot().requestedSampleRate)
+                    session.command(CoreTypedCommand.Pause)
+                    session.command(CoreTypedCommand.Seek(6.25))
+                }
+            }
+        } finally {
+            val reports = File(context.getExternalFilesDir(null), "p2-high-rate").apply { mkdirs() }
+            File(reports, "negotiation.txt").writeText(report.joinToString("\n"))
+            directory.deleteRecursively()
+        }
+    }
 }

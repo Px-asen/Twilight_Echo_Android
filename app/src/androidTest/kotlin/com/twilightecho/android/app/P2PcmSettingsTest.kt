@@ -14,6 +14,8 @@ import androidx.test.uiautomator.UiDevice
 import com.twilightecho.android.coreclient.*
 import com.twilightecho.android.feature.player.*
 import com.twilightecho.android.ui.theme.TwilightEchoTheme
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -46,6 +48,9 @@ class P2PcmSettingsTest {
         when {
             tag.startsWith("pcm-allowed-") -> rule.onNodeWithTag("pcm-allowed-row").performScrollTo()
             tag.startsWith("pcm-fixed-") -> rule.onNodeWithTag("pcm-fixed-row").performScrollTo()
+            tag.startsWith("resampler-quality-") -> rule.onNodeWithTag("resampler-quality-row").performScrollTo()
+            tag.startsWith("resampler-phase-") -> rule.onNodeWithTag("resampler-phase-row").performScrollTo()
+            tag.startsWith("resampler-rolloff-") -> rule.onNodeWithTag("resampler-rolloff-row").performScrollTo()
         }
         rule.onNodeWithTag(tag).performScrollTo().performClick()
         rule.waitForIdle()
@@ -128,4 +133,111 @@ class P2PcmSettingsTest {
         readable("pcm-rate-actual")
         shot("p2-pcm-large-font")
     }
+
+    @Test fun savedMinimumAndRolloffCanBeChangedIndependently() {
+        start()
+        rule.runOnUiThread {
+            ui.value = ui.value.copy(eqConfig = ui.value.eqConfig.copy(dsp = CoreDspConfig(
+                outputStage = CoreDspOutputStage(resamplerQuality = "high", resamplerPhase = "minimum-smooth"))))
+        }
+        readable("resampler-phase-help")
+        assertEquals("minimum-smooth", ui.value.eqConfig.dsp.outputStage.resamplerPhase)
+        rule.onNodeWithTag("resampler-phase-minimum").performScrollTo().assertIsSelected()
+        rule.onNodeWithTag("resampler-status").performScrollTo().assertTextEquals("播放后显示实际重采样状态")
+        shot("p2-minimum-normal")
+        tap("resampler-rolloff-linear")
+        assertEquals("minimum", ui.value.eqConfig.dsp.outputStage.resamplerPhase)
+        tap("resampler-phase-linear")
+        assertEquals("linear", ui.value.eqConfig.dsp.outputStage.resamplerPhase)
+        tap("resampler-quality-native")
+        rule.onNodeWithTag("resampler-rolloff-row").assertDoesNotExist()
+        readable("resampler-native")
+        tap("resampler-phase-minimum")
+        assertEquals("minimum", ui.value.eqConfig.dsp.outputStage.resamplerPhase)
+    }
+
+    @Test fun highRateChoicesFollowDeclarationsAndKeepSavedRequestsAtLargeFont() {
+        start(1.5f)
+        rule.runOnUiThread { ui.value = ui.value.copy(activeOutputSampleRates = emptyList()) }
+        tap("pcm-policy-fixed")
+        rule.onNodeWithTag("pcm-fixed-705600").assertDoesNotExist()
+        rule.onNodeWithTag("pcm-fixed-768000").assertDoesNotExist()
+        rule.runOnUiThread { ui.value = ui.value.copy(activeOutputSampleRates = listOf(48000, 705600, 768000, 768001)) }
+        tap("pcm-fixed-705600")
+        assertEquals(705600, ui.value.eqConfig.dsp.outputStage.targetSampleRate)
+        rule.onNodeWithTag("pcm-fixed-768001").assertDoesNotExist()
+        tap("pcm-allowed-custom")
+        tap("pcm-allow-768000")
+        assertEquals(listOf(705600, 768000), ui.value.eqConfig.dsp.allowedSampleRates)
+        tap("pcm-fixed-768000")
+        assertEquals(768000, ui.value.eqConfig.dsp.outputStage.targetSampleRate)
+        rule.runOnUiThread {
+            ui.value = ui.value.copy(diagnostics = ui.value.diagnostics.copy(requestedSampleRateHz = 705600, actualSampleRateHz = 48000))
+        }
+        readable("pcm-device-rates")
+        readable("pcm-rate-request")
+        rule.onNodeWithTag("pcm-rate-request").assertTextEquals("引擎请求 705.6 kHz")
+        readable("pcm-rate-actual")
+        shot("p2-high-rate-declared-large-font")
+        // Losing the declaration must not erase a saved request or block custom-set editing.
+        rule.runOnUiThread {
+            ui.value = ui.value.copy(activeOutputSampleRates = emptyList(),
+                eqConfig = ui.value.eqConfig.copy(dsp = ui.value.eqConfig.dsp.copy(allowedSampleRates = emptyList())))
+        }
+        tap("pcm-fixed-768000")
+        tap("pcm-allowed-custom")
+        assertEquals(listOf(768000), ui.value.eqConfig.dsp.allowedSampleRates)
+        rule.onNodeWithTag("pcm-selection-error").assertDoesNotExist()
+        readable("pcm-device-rates")
+        shot("p2-high-rate-saved-large-font")
+    }
+
+    @Test fun actualResamplerAndRolloffRemainReadableAtLargeFont() {
+        start(1.5f)
+        tap("resampler-quality-ultra")
+        tap("resampler-rolloff-linear-smooth")
+        assertEquals("linear-smooth", ui.value.eqConfig.dsp.outputStage.resamplerPhase)
+        tap("resampler-phase-minimum")
+        assertEquals("minimum-smooth", ui.value.eqConfig.dsp.outputStage.resamplerPhase)
+        rule.runOnUiThread {
+            ui.value = ui.value.copy(dspStatus = CoreDspStatus(outputStage = Json.parseToJsonElement(
+                """{"effectiveResampler":"soxr","effectiveResamplerQuality":"ultra","effectiveResamplerPhase":"minimum-smooth","resampled":true}""").jsonObject))
+        }
+        readable("resampler-status")
+        rule.onNodeWithTag("resampler-status").assertTextEquals("实际：SoX 极高 · 最小相位 · 平滑滚降")
+        readable("resampler-phase-help")
+        shot("p2-minimum-large-font")
+        rule.runOnUiThread {
+            ui.value = ui.value.copy(dspStatus = CoreDspStatus(outputStage = Json.parseToJsonElement(
+                """{"effectiveResampler":"none","resampled":false}""").jsonObject))
+        }
+        rule.onNodeWithTag("resampler-status").assertTextEquals("本引擎未重采样")
+    }
+    private fun usbPcmSetting(fontScale: Float, name: String) {
+        start(fontScale)
+        val before = ui.value.eqConfig
+        assertFalse(before.dsp.usbPcmPassthrough)
+        readable("usb-pcm-safety")
+        val control = rule.onNode(isToggleable() and hasAnyAncestor(hasTestTag("usb-pcm-setting")))
+        control.performScrollTo().assertIsOff().performClick()
+        rule.waitForIdle()
+        assertEquals(before.copy(dsp = before.dsp.copy(usbPcmPassthrough = true)), ui.value.eqConfig)
+        readable("usb-pcm-status")
+        shot("p2-usb-pcm-$name")
+        // Presentation fixture only: native acceptance is exercised separately.
+        rule.runOnUiThread {
+            ui.value = ui.value.copy(diagnostics = ui.value.diagnostics.copy(
+                usbPcmPreferenceAccepted = true, usbPcmFormatMatched = true))
+        }
+        readable("usb-pcm-status")
+        rule.onNodeWithTag("usb-pcm-status").assertTextContains("系统偏好已接受", substring = true)
+        control.performScrollTo().performClick()
+        rule.waitForIdle()
+        assertEquals(before, ui.value.eqConfig)
+        rule.onNodeWithTag("usb-pcm-status").assertDoesNotExist()
+    }
+
+    @Test fun usbPcmRequestShowsHardwareVolumeConditionWithoutChangingOtherSettings() = usbPcmSetting(1f, "normal")
+    @Test fun usbPcmRequestAndFeedbackAreReadableAtLargeFont() = usbPcmSetting(1.5f, "large-font")
+
 }

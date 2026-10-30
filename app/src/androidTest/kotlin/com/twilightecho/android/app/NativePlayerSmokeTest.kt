@@ -14,6 +14,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.*
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import com.twilightecho.android.adapters.MusicFolders
 import com.twilightecho.android.coreclient.CoreTypedCommand
 import com.twilightecho.android.playbackhost.AndroidPlaybackHost
 import kotlinx.coroutines.runBlocking
@@ -23,6 +24,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.regex.Pattern
 
 /** Exercises the shipped activity, permissions, JS Core and native engine, not UI stand-ins. */
 @RunWith(AndroidJUnit4::class)
@@ -50,7 +52,9 @@ class NativePlayerSmokeTest {
             }
             val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)!!
             ownedFixtures += uri
-            if (firstTrackId.isEmpty()) firstTrackId = "mediastore-${ContentUris.parseId(uri)}"
+            if (firstTrackId.isEmpty()) {
+                firstTrackId = MusicFolders.folderTrackId("primary:Music/TwilightUiQA/$displayName")
+            }
             assets.open("music/$name").use { input -> resolver.openOutputStream(uri)!!.use { input.copyTo(it) } }
             resolver.update(uri, ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) }, null, null)
         }
@@ -84,13 +88,28 @@ class NativePlayerSmokeTest {
         device.executeShellCommand("cp ${File(dir, "$name.png").absolutePath} /sdcard/Pictures/TwilightUiQA/$name.png")
     }
 
+    private fun releaseQaFolder() {
+        host.musicFolders.value.filter { it.label == "Music/TwilightUiQA" }.forEach { host.removeMusicFolder(it.uri) }
+    }
+
+    private fun pickQaMusicFolder() {
+        rule.onNodeWithTag("addMusicFolder").performScrollTo().performClick()
+        val entry = device.wait(Until.findObject(By.text("TwilightUiQA")), 15000)
+        assertNotNull("The folder picker must open in Music and list TwilightUiQA", entry)
+        entry!!.click()
+        device.wait(Until.findObject(By.text(Pattern.compile("(?i)use this folder|使用此文件夹"))), 10000)!!.click()
+        device.wait(Until.findObject(By.text(Pattern.compile("(?i)allow|允许"))), 10000)!!.click()
+    }
+
     @After fun finishPlayback() {
         runBlocking { host.primaryCoreClient.executeCommand(CoreTypedCommand.Pause) }
+        releaseQaFolder()
         ownedFixtures.forEach { instrumentation.targetContext.contentResolver.delete(it, null, null) }
         device.unfreezeRotation()
     }
 
     @Test fun scanPlaySeekLyricsFavoriteBookmarkAndRotate() {
+        releaseQaFolder()
         val trackId = importTestMusic()
         rule.waitUntil(15000) { host.primaryCoreClient.snapshot.value != null }
         assertNull(host.primaryCoreClient.snapshot.value!!.track)
@@ -98,8 +117,7 @@ class NativePlayerSmokeTest {
         shot("16-native-empty")
         rule.onNodeWithTag("nav-SETTINGS").performClick()
         rule.onNodeWithText("本地音乐", substring = false).performClick()
-        rule.onNodeWithText("扫描本地音乐", substring = false).performClick()
-        device.wait(Until.findObject(By.res("com.android.permissioncontroller", "permission_allow_button")), 5000)?.click()
+        pickQaMusicFolder()
         rule.waitUntil(30000) { runBlocking { host.primaryCoreClient.searchTracks("Golden Hour").getOrNull()?.items?.any { it.id == trackId } == true } }
         rule.onNodeWithTag("nav-SEARCH").performClick()
         rule.onNodeWithTag("searchInput").performTextInput("Golden Hour")

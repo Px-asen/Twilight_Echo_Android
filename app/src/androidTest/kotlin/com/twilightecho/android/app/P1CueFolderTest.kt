@@ -170,10 +170,6 @@ class P1CueFolderTest {
         }
         releaseTestFolder()
         placeFixtures()
-        val withoutPermission = context.checkSelfPermission(Manifest.permission.READ_MEDIA_AUDIO) != PackageManager.PERMISSION_GRANTED
-        Log.i(TAG, "Music permission at start: ${if (withoutPermission) "refused" else "granted"}")
-        // An earlier refusal would keep Android from asking again.
-        if (withoutPermission) shell("pm clear-permission-flags ${context.packageName} ${Manifest.permission.READ_MEDIA_AUDIO} user-set user-fixed")
 
         rule.onNodeWithTag("nav-SETTINGS").performClick()
         rule.onNodeWithText("本地音乐", substring = false).performClick()
@@ -182,38 +178,9 @@ class P1CueFolderTest {
         pickCueFolder()
         rule.waitUntil(10000) { host.musicFolders.value.any { it.label == "Music/CueTest" } }
 
-        if (withoutPermission) {
-            // Refusing Android's music permission still syncs the picked folder, whose access Android granted apart.
-            val denyButton = By.res(Pattern.compile("com.android.permissioncontroller:id/permission_deny(_and_dont_ask_again)?_button"))
-            val deny = device.wait(Until.findObject(denyButton), 10000)
-            assertNotNull("Adding a folder asks for the music permission first", deny)
-            // A node can appear while the picker/permission window is still animating and blocks touches.
-            device.waitForIdle()
-            device.findObject(denyButton)!!.click()
-            assertTrue("The music permission dialog must close after refusal", device.wait(Until.gone(denyButton), 10000))
-            assertEquals("未获得音乐访问权限，只同步了音乐文件夹中的 4 首歌曲，其中 3 首来自 CUE 分轨，1 个 CUE 未分轨",
-                awaitStatus { it.startsWith("未获得音乐访问权限，只同步了") })
-            assertEquals(cueIds, album()!!.trackIds)
-            val solo = library("Solo").single { it.id == soloFolderId }
-            assertEquals(6.0, solo.duration, 0.0)
-            assertEquals("WAV", solo.format)
-            assertEquals(44100, solo.sampleRate)
-            assertTrue(solo.source!!.startsWith("content://com.android.externalstorage.documents/tree/"))
-            rule.onNodeWithText("Music/CueTest").performScrollTo().assertIsDisplayed()
-            shot("p1-cue-02-folder-only")
-            Log.i(TAG, "Phase without the music permission passed")
-            instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.READ_MEDIA_AUDIO)
-            rule.waitUntil(30000) { mediaStoreId("Album.wav") != null && mediaStoreId("Solo.wav") != null }
-            rule.onNodeWithText("扫描本地音乐", substring = false).performScrollTo().performClick()
-        } else {
-            rule.waitUntil(30000) { mediaStoreId("Album.wav") != null && mediaStoreId("Solo.wav") != null }
-        }
-
-        // With the permission, the sheet replaces MediaStore's whole-file song, and the songs keep their IDs.
-        val status = awaitStatus { it.startsWith("已同步") }
-        assertTrue(status, Regex("已同步 \\d+ 首歌曲，其中 3 首来自 CUE 分轨，1 个 CUE 未分轨").matches(status))
-        val albumRow = "mediastore-${mediaStoreId("Album.wav")}"
-        val soloRow = "mediastore-${mediaStoreId("Solo.wav")}"
+        // Picking a folder immediately imports its songs and CUE splits without asking for storage permissions.
+        val status = awaitStatus { it.startsWith("已从音乐文件夹同步") }
+        assertTrue(status, Regex("已从音乐文件夹同步 \\d+ 首歌曲，其中 3 首来自 CUE 分轨，1 个 CUE 未分轨").matches(status))
         val cueAlbum = album()!!
         assertEquals(cueIds, cueAlbum.trackIds)
         assertEquals(24.0, cueAlbum.totalDurationSec, 0.01)
@@ -231,9 +198,11 @@ class P1CueFolderTest {
             assertTrue(song.cover!!.endsWith("/document/primary%3AMusic%2FCueTest%2Fcover.jpg"))
         }
         assertEquals(songs[0].cueRange!!.endSeconds, songs[1].cueRange!!.startSeconds, 0.0)
-        assertTrue(library("Album").none { it.id == albumRow })
-        val solo = library("Solo").single { it.id == soloRow || it.id == soloFolderId }
-        assertEquals("MediaStore keeps the plain file it already lists", soloRow, solo.id)
+        val solo = library("Solo").single { it.id == soloFolderId }
+        assertEquals(6.0, solo.duration, 0.0)
+        assertEquals("WAV", solo.format)
+        assertEquals(44100, solo.sampleRate)
+        assertTrue(solo.source!!.startsWith("content://com.android.externalstorage.documents/tree/"))
         assertTrue(solo.cover!!.endsWith("/document/primary%3AMusic%2FCueTest%2Fcover.jpg"))
 
         rule.onNodeWithTag("scanDetailsToggle").performScrollTo().assertTextEquals("详情（1）").performClick()
@@ -295,17 +264,18 @@ class P1CueFolderTest {
         runBlocking { client.executeCommand(CoreTypedCommand.Pause) }
         rule.onNodeWithContentDescription("收起播放器").performClick()
 
-        // Removing the folder drops its songs at once and brings MediaStore's whole-file song back, without asking again.
+        // Removing the folder drops its songs at once without keeping any MediaStore fallback songs.
         rule.onNodeWithTag("nav-SETTINGS").performClick()
         rule.onNodeWithTag("musicFoldersCard").performScrollTo()
         rule.onNodeWithContentDescription("移除 Music/CueTest").performScrollTo().performClick()
-        val afterRemoval = awaitStatus { it.startsWith("已同步") && "CUE" !in it }
-        assertTrue(afterRemoval, Regex("已同步 \\d+ 首歌曲").matches(afterRemoval))
+        val afterRemoval = awaitStatus {
+            it == "尚未选择音乐文件夹" || (it.startsWith("已从音乐文件夹同步") && "CUE" !in it)
+        }
+        assertTrue(afterRemoval, afterRemoval == "尚未选择音乐文件夹" ||
+            Regex("已从音乐文件夹同步 \\d+ 首歌曲").matches(afterRemoval))
         assertTrue(host.musicFolders.value.none { it.label == "Music/CueTest" })
-        rule.onAllNodesWithTag("musicFolder").assertCountEquals(0)
         assertNull(album())
-        assertTrue(library("Album").any { it.id == albumRow })
-        assertNull(library("Solo").single { it.id == soloRow }.cover)
+        assertTrue(library("Solo").none { it.id == soloFolderId })
         shot("p1-cue-06-removed")
     }
 

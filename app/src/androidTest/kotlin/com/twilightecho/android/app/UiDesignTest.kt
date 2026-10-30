@@ -279,7 +279,7 @@ class UiDesignTest {
         rule.runOnIdle { assertFalse(ui.value.playlists.any { it.name == "夜行" }) }
         rule.onNodeWithTag("nav-SETTINGS").performClick()
         shot("09-settings")
-        rule.onNodeWithText("连接电脑", substring = false).performClick()
+        rule.onNodeWithText("连接电脑", substring = false).performScrollTo().performClick()
         rule.onNodeWithTag("manualDesktopConnection").performScrollTo().performClick()
         rule.onNodeWithTag("remoteHost").performScrollTo().performClick().performTextInput("192.168.1.20:18492")
         rule.runOnIdle { assertEquals("192.168.1.20:18492", ui.value.remoteHostInput) }
@@ -295,7 +295,7 @@ class UiDesignTest {
             albums = emptyList()) }
         rule.onNodeWithTag("nav-HOME").assertDoesNotExist()
         rule.onNodeWithTag("miniPlayer").assertDoesNotExist()
-        rule.onNodeWithText("扫描本地音乐").assertExists()
+        rule.onNodeWithText("选择音乐文件夹").assertExists()
         shot("11-empty")
         rule.runOnIdle {
             val sample = sampleState()
@@ -397,7 +397,7 @@ class UiDesignTest {
                 CatalogEntity("artist-3", "artist", "Moss Garden", sourceCount = 2))))) }
         shot("13-home-core-pill")
         rule.onNodeWithTag("nav-SETTINGS").performClick()
-        rule.onNodeWithText("连接电脑", substring = false).performClick()
+        rule.onNodeWithText("连接电脑", substring = false).performScrollTo().performClick()
         rule.onNodeWithTag("coreTopology").assertIsDisplayed()
         shot("14-core-topology")
         rule.onNodeWithTag("desktop-srv-2").performScrollTo()
