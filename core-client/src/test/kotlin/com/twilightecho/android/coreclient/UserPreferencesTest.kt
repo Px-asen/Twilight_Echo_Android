@@ -45,4 +45,13 @@ class UserPreferencesTest {
         assertEquals(44f, settings.lyrics.lineSpacingDp)
         assertEquals(17f, settings.lyrics.translationSizeSp)
     }
+
+    @Test fun excludedLocalTrackIdsDefaultEmptyAndRoundTrip() {
+        assertTrue(Json.decodeFromString<UserPreferences>("{}").excludedLocalTrackIds.isEmpty())
+        val prefs = UserPreferences(excludedLocalTrackIds = setOf("media:101", "folder:202:cue:1"))
+        val decoded = Json.decodeFromString<UserPreferences>(Json.encodeToString(prefs))
+        assertEquals(setOf("media:101", "folder:202:cue:1"), decoded.excludedLocalTrackIds)
+        val cleared = decoded.copy(excludedLocalTrackIds = emptySet())
+        assertTrue(cleared.excludedLocalTrackIds.isEmpty())
+    }
 }

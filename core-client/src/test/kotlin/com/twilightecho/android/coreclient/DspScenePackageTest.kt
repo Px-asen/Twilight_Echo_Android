@@ -65,13 +65,40 @@ class DspScenePackageTest {
 
     @Test fun `malformed PCM extension rejects only its scene and old graphs retain defaults`() {
         val valid = parse("""{"id":"old","graph":{"nodes":[]}}""").jsonObject
-        listOf("\"bad\"", "[48000,48000]", "[7999]", "[48000.5]", "null").forEach { bad ->
+        listOf("\"bad\"", "[48000,48000]", "[7999]", "[768001]", "[48000.5]", "null").forEach { bad ->
             val invalid = parse("""{"id":"bad","graph":{"nodes":[]},"android":{"allowedSampleRates":$bad}}""")
             val result = DspScenePackage.import(JsonArray(listOf(invalid, valid)), CoreEqConfigView())
             assertEquals(1, result.rejected.size)
             assertEquals("old", result.scenes.single().scene.id)
             assertFalse(saved(result.scenes.single().scene).dsp.sampleRateFamilySync)
             assertTrue(saved(result.scenes.single().scene).dsp.allowedSampleRates.isEmpty())
+        }
+    }
+
+    @Test fun `USB request round trips separately from route and mixer facts`() {
+        val config = CoreEqConfigView(dsp = CoreDspConfig(usbPcmPassthrough = true))
+        val exported = DspScenePackage.export(config.copy(scenes = listOf(scene("usb", "USB", config))), { null }).manifest
+        val imported = DspScenePackage.import(exported, CoreEqConfigView())
+        assertTrue(imported.rejected.isEmpty())
+        assertTrue(saved(imported.scenes.single().scene).dsp.usbPcmPassthrough)
+        assertFalse("usbPcmPreferenceAccepted" in exported.toString())
+        val bad = parse("""{"id":"bad","graph":{"nodes":[]},"android":{"usbPcmPassthrough":"true"}}""")
+        val old = parse("""{"id":"old","graph":{"nodes":[]}}""")
+        val result = DspScenePackage.import(JsonArray(listOf(bad, old)), CoreEqConfigView())
+        assertEquals(1, result.rejected.size)
+        assertFalse(saved(result.scenes.single().scene).dsp.usbPcmPassthrough)
+    }
+
+    @Test fun `high PCM targets and allowed sets round trip without truncation`() {
+        for (rate in listOf(705600, 768000)) {
+            val config = CoreEqConfigView(bitPerfect = true, dsp = CoreDspConfig(
+                allowedSampleRates = listOf(705600, 768000), outputStage = CoreDspOutputStage(targetSampleRate = rate)))
+            val exported = DspScenePackage.export(config.copy(scenes = listOf(scene("high", "高采样率", config))), { null }).manifest
+            val imported = DspScenePackage.import(exported, CoreEqConfigView())
+            assertTrue(imported.rejected.isEmpty())
+            val restored = saved(imported.scenes.single().scene)
+            assertEquals(rate, restored.dsp.outputStage.targetSampleRate)
+            assertEquals(config.dsp.allowedSampleRates, restored.dsp.allowedSampleRates)
         }
     }
 

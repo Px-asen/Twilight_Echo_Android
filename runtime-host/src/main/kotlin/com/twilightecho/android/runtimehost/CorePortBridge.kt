@@ -42,6 +42,12 @@ class CorePortBridge(
         "sessionStore" -> sessionStore(method, args)
         "resourceAccess" -> resourceAccess(method, args)
         "audioEngine" -> audioEngine(method, args)
+        "audioAnalysis" -> audioAnalysis(method, args)
+        "audioAnalysisControl" -> {
+            if (method != "cancel") unsupported(port, method)
+            ports.audioEngine.cancelAutoMixAnalysis(args.requireString("requestId"))
+            JsonPrimitive(true)
+        }
         "network" -> network(method, args)
         "audioDevice" -> audioDevice(method)
         else -> unsupported(port, method)
@@ -114,10 +120,23 @@ class CorePortBridge(
                 engine.setPlayMode(PlayMode.entries.firstOrNull { it.toWireValue() == mode } ?: invalid("Unknown play mode: $mode"))
             }
             "setDspConfig" -> engine.setDspConfig(args.requireString("configJson"))
+            "setAutoMixMode" -> return JsonPrimitive(engine.setAutoMixMode(args.requireString("mode")))
+            "selectAutoMix" -> return json.parseToJsonElement(engine.selectAutoMix(args.requireString("requestJson")))
+            "prepareAutoMix" -> return JsonPrimitive(engine.prepareAutoMix(args.requireString("requestJson")))
+            "submitAutoMix" -> return JsonPrimitive(engine.submitAutoMix(args.requireLong("planId")))
+            "cancelAutoMix" -> return JsonPrimitive(engine.cancelAutoMix())
             "getSnapshot" -> return json.encodeToJsonElement(AudioSnapshot.serializer(), engine.getSnapshot())
             else -> unsupported("audioEngine", method)
         }
         return JsonPrimitive(true)
+    }
+
+    private suspend fun audioAnalysis(method: String, args: JsonObject): JsonElement = when (method) {
+        "identify" -> json.parseToJsonElement(ports.audioEngine.identifyAutoMixSource(args.requireString("source"), args.requireString("requestId")))
+        "analyze" -> json.parseToJsonElement(ports.audioEngine.analyzeAutoMix(args.requireString("source"), args.requireString("optionsJson"), args.requireString("requestId")))
+        "readCache" -> ports.audioEngine.readAutoMixCache()?.let(::JsonPrimitive) ?: JsonNull
+        "writeCache" -> { ports.audioEngine.writeAutoMixCache(args.optString("text")); JsonPrimitive(true) }
+        else -> unsupported("audioAnalysis", method)
     }
 
     private suspend fun network(method: String, args: JsonObject): JsonElement {

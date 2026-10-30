@@ -63,7 +63,9 @@ data class UserPreferences(
     /** View order only; never rewrites playlist membership or the provider's stored order. */
     val collectionSorts: Map<String, CollectionSort> = emptyMap(),
     /** Phone outputs only; a connected computer keeps its own output settings. */
-    val outputPresets: OutputPresetPreferences = OutputPresetPreferences()
+    val outputPresets: OutputPresetPreferences = OutputPresetPreferences(),
+    /** Phone library track IDs explicitly deleted by the user so rescans keep them hidden until restored or reset. */
+    val excludedLocalTrackIds: Set<String> = emptySet()
 ) {
     fun normalized() = copy(appearance = appearance.normalized(), lyrics = lyrics.normalized(),
         outputPresets = outputPresets.normalized())

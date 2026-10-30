@@ -87,7 +87,11 @@ class DefaultCoreClient(
 ) : CoreClient {
 
     private val reconcileMutex = Mutex()
+    // Several clients share one runtime; identity can also be reused after client recreation.
+    private val requestPrefix = "req-${UUID.randomUUID()}"
     private val requestCounter = AtomicLong(1L)
+
+    private fun nextRequestId(): String = "$requestPrefix-${requestCounter.getAndIncrement()}"
 
     private var currentEpoch: CoreEpoch = "epoch-boot"
     private var lastAppliedSequence: Long = -1L
@@ -126,7 +130,7 @@ class DefaultCoreClient(
         val activeSnap = _snapshot.value
         val resolvedExpectedRevision = command.expectedRevision ?: activeSnap?.queue?.revision
             ?: if (transport.isRemote) 0L else null
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val commandId = "cmd-${UUID.randomUUID()}"
 
         val payload = withContext(processingDispatcher) { encodeCommandPayload(command, resolvedExpectedRevision) }
@@ -175,7 +179,7 @@ class DefaultCoreClient(
     override suspend fun querySnapshot(): CoreResult<CoreSnapshot> {
         resetChangedSource()
         val origin = transport.generation
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
             epoch = currentEpoch,
@@ -207,7 +211,7 @@ class DefaultCoreClient(
     override suspend fun queryQueueWindow(offset: Int, limit: Int): CoreResult<CoreQueueWindowView> {
         resetChangedSource()
         val origin = transport.generation
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val queueRef = _snapshot.value?.queue
         val payload = buildJsonObject {
             put("id", JsonPrimitive(queueRef?.id ?: "default"))
@@ -249,7 +253,7 @@ class DefaultCoreClient(
     }
 
     override suspend fun syncLocalTracks(tracks: List<CoreTrackView>, merge: Boolean): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val origin = transport.generation
         val payload = withContext(processingDispatcher) {
             buildJsonObject {
@@ -279,7 +283,7 @@ class DefaultCoreClient(
 
     private suspend fun searchTracksInternal(query: String, offset: Int?, limit: Int?): Result<CoreLibrarySearchPage> {
         resetChangedSource()
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("query", JsonPrimitive(query))
             offset?.let { put("offset", JsonPrimitive(it)) }
@@ -303,7 +307,7 @@ class DefaultCoreClient(
     }
 
     override suspend fun toggleFavorite(trackId: String): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("trackId", JsonPrimitive(trackId))
         }
@@ -323,7 +327,7 @@ class DefaultCoreClient(
         positionSec: Double,
         label: String
     ): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("trackId", JsonPrimitive(trackId))
             put("positionSec", JsonPrimitive(positionSec))
@@ -341,7 +345,7 @@ class DefaultCoreClient(
     }
 
     override suspend fun removeBookmark(bookmarkId: String): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("bookmarkId", JsonPrimitive(bookmarkId))
         }
@@ -357,7 +361,7 @@ class DefaultCoreClient(
     }
 
     override suspend fun queryCollections(): Result<CoreCollectionsView> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
             epoch = currentEpoch,
@@ -376,7 +380,7 @@ class DefaultCoreClient(
     }
 
     override suspend fun listPlaylists(): Result<List<CorePlaylistView>> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
             epoch = currentEpoch,
@@ -398,7 +402,7 @@ class DefaultCoreClient(
         name: String,
         trackIds: List<String>
     ): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("name", JsonPrimitive(name))
             put(
@@ -420,7 +424,7 @@ class DefaultCoreClient(
     }
 
     override suspend fun deletePlaylist(playlistId: String): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("playlistId", JsonPrimitive(playlistId))
         }
@@ -439,7 +443,7 @@ class DefaultCoreClient(
         playlistId: String,
         name: String
     ): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("playlistId", JsonPrimitive(playlistId))
             put("name", JsonPrimitive(name))
@@ -459,7 +463,7 @@ class DefaultCoreClient(
         playlistId: String,
         trackIds: List<String>
     ): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("playlistId", JsonPrimitive(playlistId))
             put(
@@ -484,7 +488,7 @@ class DefaultCoreClient(
         playlistId: String,
         trackId: String
     ): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("playlistId", JsonPrimitive(playlistId))
             put("trackId", JsonPrimitive(trackId))
@@ -501,7 +505,7 @@ class DefaultCoreClient(
     }
 
     override suspend fun setEqConfig(config: CoreEqConfigView): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("enabled", JsonPrimitive(config.enabled))
             put("preset", JsonPrimitive(config.preset))
@@ -529,7 +533,7 @@ class DefaultCoreClient(
     }
 
     override suspend fun getEqConfig(): Result<CoreEqConfigView> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val envelope = CoreRequestEnvelope(
             requestId = requestId,
             epoch = currentEpoch,
@@ -550,7 +554,7 @@ class DefaultCoreClient(
     override suspend fun getCurrentLyrics(trackId: String?): Result<CoreLyricsView> {
         resetChangedSource()
         val origin = transport.generation
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             trackId?.let { put("trackId", JsonPrimitive(it)) }
         }
@@ -578,7 +582,7 @@ class DefaultCoreClient(
         customUrl: String?
     ): Result<CoreLyricsView> {
         val origin = transport.generation
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             trackId?.let { put("trackId", JsonPrimitive(it)) }
             customUrl?.let { put("url", JsonPrimitive(it)) }
@@ -614,7 +618,7 @@ class DefaultCoreClient(
         lrcText: String,
         translation: String?
     ): Result<CoreResponseEnvelope> {
-        val requestId = "req-${requestCounter.getAndIncrement()}"
+        val requestId = nextRequestId()
         val payload = buildJsonObject {
             put("trackId", JsonPrimitive(trackId))
             put("lrcText", JsonPrimitive(lrcText))
@@ -783,6 +787,11 @@ class DefaultCoreClient(
                     } else json.encodeToJsonElement(track)) }
                 }
             )
+        }
+        is CoreTypedCommand.QueueEdit -> buildJsonObject {
+            put("id", JsonPrimitive(command.id))
+            put("revision", JsonPrimitive(resolvedRevision ?: command.revision))
+            put("edit", command.edit)
         }
         is CoreTypedCommand.SettingsEdit -> buildJsonObject {
             resolvedRevision?.let { put("expectedRevision", JsonPrimitive(it)) }

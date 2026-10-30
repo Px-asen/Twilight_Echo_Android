@@ -1,15 +1,16 @@
 {
   "upstream": "https://github.com/Px-asen/Twilight_Echo",
-  "commit": "c7e075a18d1a3539103f0ebadc1a079a26d0f0e7",
-  "sourceDirty": false,
-  "musicCoreVersion": "1.4.0-perview0",
+  "commit": "be318b6e25386b6e85a2d6a334f6bf194b9e9878",
+  "sourceDirty": true,
+  "sourceDiffSha256": "bd2c8b1a706137b5befe5260a8db0de0a9351db151991ed67fa9849d1e56a161",
+  "musicCoreVersion": "1.4.0-preview1",
   "audioCoreVersion": "0.1.0",
   "protocolVersion": 1,
   "hostApiVersion": "2.0.0",
   "nativeAbiVersion": "0.1.0",
   "bundleFile": "music-core.js",
-  "bundleSha256": "f410c32e8df0b215eb8fa2c13834bd6c39aee1f15d1bfe4f77e67f79b4cbb00f",
-  "bundleBytes": 1784819,
+  "bundleSha256": "098eb7ce21134dbb0ef1418c7c01a05404aee1f2e774c9f209d7791bab912960",
+  "bundleBytes": 1893445,
   "scenariosFile": "portable-core-scenarios.json",
   "scenariosSha256": "777628216314958dad269e9b0e718beb84bd851a4b5110668c875c1c726de635"
 }

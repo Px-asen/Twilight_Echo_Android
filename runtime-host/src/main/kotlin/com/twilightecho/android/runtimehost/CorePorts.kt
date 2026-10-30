@@ -154,6 +154,8 @@ data class AudioSnapshot(
     val actualChannels: Int? = null,
     val actualSampleFormat: String? = null,
     val requestedSampleRate: Int? = null,
+    val usbPcmPreferenceAccepted: Boolean = false,
+    val usbPcmFormatMatched: Boolean = false,
     val requestedSampleFormat: String? = null,
     val hardwareSampleRate: Int? = null,
     val hardwareBitDepth: Int? = null,
@@ -174,7 +176,17 @@ data class AudioSnapshot(
     val crossfadeMixActive: Boolean = false,
     val crossfadeEffectiveSeconds: Double = 0.0,
     val crossfadeCurve: String? = null,
-    val crossfadeBlockedReason: String? = null
+    val crossfadeBlockedReason: String? = null,
+    val upcomingQueueIndex: Int = -1,
+    val isDsd: Boolean = false,
+    val autoMixMode: String = "off",
+    val autoMixState: String = "off",
+    val autoMixReason: String = "",
+    val autoMixStrategy: String = "",
+    val autoMixPlanId: Long = 0,
+    val autoMixDurationSeconds: Double = 0.0,
+    val autoMixDecodeMs: Long = 0,
+    val autoMixPrepareMs: Long = 0
 )
 
 @Serializable
@@ -216,6 +228,18 @@ interface AudioEnginePort : Closeable {
     suspend fun next()
     suspend fun previous()
     suspend fun setDspConfig(configJson: String) {}
+    suspend fun setAutoMixMode(mode: String): Boolean = mode == "off"
+    suspend fun selectAutoMix(requestJson: String): String = """{"ok":false,"reason":"analysis_service_unavailable"}"""
+    suspend fun prepareAutoMix(requestJson: String): Boolean = false
+    suspend fun submitAutoMix(planId: Long): Boolean = false
+    suspend fun cancelAutoMix(): Boolean = true
+    suspend fun identifyAutoMixSource(source: String, requestId: String): String =
+        """{"ok":false,"reason":"actual_source_identity_unavailable"}"""
+    suspend fun analyzeAutoMix(source: String, optionsJson: String, requestId: String): String =
+        """{"ok":false,"reason":"analysis_service_unavailable"}"""
+    fun cancelAutoMixAnalysis(requestId: String) {}
+    suspend fun readAutoMixCache(): String? = null
+    suspend fun writeAutoMixCache(text: String?) {}
     suspend fun getSnapshot(): AudioSnapshot
     fun subscribe(listener: (AudioEvent) -> Unit): CancelHandle
 }

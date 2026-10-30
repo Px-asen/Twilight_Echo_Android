@@ -3,6 +3,13 @@ package com.twilightecho.android.coreclient
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
+/** PCM request bounds, not a claim about the active device or negotiated stream. */
+object PcmSampleRates {
+    const val MIN = 8000
+    const val MAX = 768000
+    val range = MIN..MAX
+}
+
 /** The node types and parameter names are the shared C++/desktop DSP graph contract. */
 @Serializable
 data class CoreDspNode(
@@ -49,6 +56,7 @@ data class CoreDspConfig(
     val bufferFrames: Int = 0,
     val continuitySampleRate: Int = 48000,
     val playbackRate: Double = 1.0,
+    val usbPcmPassthrough: Boolean = false,
     val sampleRateFamilySync: Boolean = false,
     /** Empty follows the existing request policy; nonempty constrains PCM requests, not system hardware. */
     val allowedSampleRates: List<Int> = emptyList()

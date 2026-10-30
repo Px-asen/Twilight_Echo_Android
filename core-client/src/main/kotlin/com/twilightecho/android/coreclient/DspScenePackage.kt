@@ -218,6 +218,7 @@ object DspScenePackage {
             put("exclusive", dsp.exclusive)
             put("bufferFrames", dsp.bufferFrames)
             put("continuitySampleRate", dsp.continuitySampleRate)
+            put("usbPcmPassthrough", dsp.usbPcmPassthrough)
             put("sampleRateFamilySync", dsp.sampleRateFamilySync)
             put("allowedSampleRates", JsonArray(dsp.allowedSampleRates.map(::JsonPrimitive)))
             put("playbackRate", dsp.playbackRate)
@@ -346,12 +347,16 @@ object DspScenePackage {
         }
         val graphic = eq?.graphic ?: savedGraphic ?: FLAT
         val defaults = base.dsp
+        if (phone != null && "usbPcmPassthrough" in phone && phone.bool("usbPcmPassthrough") == null) {
+            issues += "USB 原样 PCM 请求无效"
+            return null
+        }
         val familySync = phone?.bool("sampleRateFamilySync") ?: false
         val rawRates = phone?.get("allowedSampleRates")
         val allowedRates = (rawRates as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.intOrNull }.orEmpty()
         if ((phone != null && "sampleRateFamilySync" in phone && phone.bool("sampleRateFamilySync") == null) ||
             (rawRates != null && (rawRates !is JsonArray || allowedRates.size != rawRates.size)) ||
-            allowedRates.size > 32 || allowedRates.any { it !in 8000..384000 } || allowedRates.distinct().size != allowedRates.size) {
+            allowedRates.size > 32 || allowedRates.any { it !in PcmSampleRates.range } || allowedRates.distinct().size != allowedRates.size) {
             issues += "采样率策略或允许集合无效"
             return null
         }
@@ -390,6 +395,7 @@ object DspScenePackage {
                 continuitySampleRate = phone?.number("continuitySampleRate")?.takeIf { it in setOf(44100.0, 48000.0, 96000.0) }?.toInt()
                     ?: defaults.continuitySampleRate,
                 playbackRate = phone?.number("playbackRate")?.takeIf { it in 0.5..2.0 } ?: defaults.playbackRate,
+                usbPcmPassthrough = phone?.bool("usbPcmPassthrough") ?: false,
                 sampleRateFamilySync = familySync,
                 allowedSampleRates = allowedRates.sorted()
             )
@@ -483,7 +489,7 @@ object DspScenePackage {
             mode == "max-pcm" || mode == "power-of-2" -> 0.also { notes += "输出采样率规则在手机上改为跟随设备" }
             mode == "device" || rate == null || !rate.isFinite() -> 0
             // The desktop keeps a fixed rate within these bounds too.
-            else -> rate.toInt().coerceIn(8000, 768000)
+            else -> rate.toInt().coerceIn(PcmSampleRates.range)
         }
         val quality = when (val value = stage.string("resamplerQuality")) {
             "high", "ultra" -> value

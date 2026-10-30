@@ -38,6 +38,32 @@ data class CoreTrackView(
     val cueRange: CueRange? = null
 )
 
+/**
+ * Enriched metadata and audio header details probed on demand when inspecting a track's tags/info.
+ */
+@Serializable
+data class TrackInspectionDetails(
+    val title: String? = null,
+    val artist: String? = null,
+    val album: String? = null,
+    val albumArtist: String? = null,
+    val composer: String? = null,
+    val trackNumber: Int? = null,
+    val discNumber: Int? = null,
+    val releaseDate: String? = null,
+    val genre: String? = null,
+    val format: String? = null,
+    val mimeType: String? = null,
+    val durationSeconds: Double? = null,
+    val sampleRate: Int? = null,
+    val bitDepth: Int? = null,
+    val channels: Int? = null,
+    val bitrateKbps: Double? = null,
+    val fileSize: Long? = null,
+    val fileName: String? = null,
+    val displayPath: String? = null
+)
+
 @Serializable
 data class CoreUpcomingTrack(
     val id: String,
@@ -109,6 +135,8 @@ data class CorePlaybackView(
     val actualChannels: Int? = null,
     val actualSampleFormat: String? = null,
     val requestedSampleRate: Int? = null,
+    val usbPcmPreferenceAccepted: Boolean = false,
+    val usbPcmFormatMatched: Boolean = false,
     val requestedSampleFormat: String? = null,
     val hardwareSampleRate: Int? = null,
     val hardwareBitDepth: Int? = null,
@@ -130,6 +158,12 @@ data class CorePlaybackView(
     val crossfadeBlockedReason: String? = null,
     val autoMixMode: String = "off",
     val autoMixState: String = "idle",
+    val autoMixReason: String = "",
+    val autoMixStrategy: String = "",
+    val autoMixPlanId: Long = 0,
+    val autoMixDurationSeconds: Double = 0.0,
+    val autoMixDecodeMs: Long = 0,
+    val autoMixPrepareMs: Long = 0,
     val clipCount: Long = 0L,
     val upcomingTrack: CoreUpcomingTrack? = null
 )

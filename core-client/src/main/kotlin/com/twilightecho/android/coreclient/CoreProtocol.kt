@@ -3,7 +3,12 @@ package com.twilightecho.android.coreclient
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
 
 const val CORE_PROTOCOL_VERSION: Int = 1
 
@@ -269,6 +274,16 @@ sealed interface CoreTypedCommand {
     }
 
     @Serializable
+    data class QueueEdit(
+        val id: String,
+        val revision: Long,
+        val edit: JsonObject
+    ) : CoreTypedCommand {
+        override val name: String = "queue.edit"
+        override val expectedRevision: Long = revision
+    }
+
+    @Serializable
     data class SettingsEdit(
         val revision: Long? = null,
         val key: String,
@@ -410,4 +425,101 @@ sealed class CoreResult<out T> {
     val isSuccess: Boolean get() = this is Success
     fun getOrNull(): T? = (this as? Success)?.value
     fun errorOrNull(): CoreErrorView? = (this as? Failure)?.error
+}
+
+/**
+ * Builders for `queue.edit` mutation payloads matching Portable Core's wire validator.
+ */
+object CoreQueueEdits {
+    fun clear(): JsonObject = buildJsonObject {
+        put("kind", JsonPrimitive("clear"))
+    }
+
+    fun remove(entryIds: List<String>): JsonObject = buildJsonObject {
+        put("kind", JsonPrimitive("remove"))
+        put("entryIds", buildJsonArray { entryIds.forEach { add(JsonPrimitive(it)) } })
+    }
+
+    fun insertTrackIds(
+        trackIds: List<String>,
+        afterEntryId: String? = null,
+        beforeEntryId: String? = null
+    ): JsonObject = buildJsonObject {
+        require(afterEntryId == null || beforeEntryId == null) {
+            "queue.edit insert accepts at most one of afterEntryId or beforeEntryId"
+        }
+        put("kind", JsonPrimitive("insert"))
+        put("trackIds", buildJsonArray { trackIds.forEach { add(JsonPrimitive(it)) } })
+        afterEntryId?.takeIf { it.isNotBlank() }?.let { put("afterEntryId", JsonPrimitive(it)) }
+        beforeEntryId?.takeIf { it.isNotBlank() }?.let { put("beforeEntryId", JsonPrimitive(it)) }
+    }
+
+    fun insertTracks(
+        tracks: List<CoreTrackView>,
+        afterEntryId: String? = null,
+        beforeEntryId: String? = null
+    ): JsonObject = buildJsonObject {
+        require(afterEntryId == null || beforeEntryId == null) {
+            "queue.edit insert accepts at most one of afterEntryId or beforeEntryId"
+        }
+        put("kind", JsonPrimitive("insert"))
+        put("items", buildJsonArray {
+            tracks.forEach { track ->
+                add(buildJsonObject {
+                    put("id", JsonPrimitive(track.id))
+                    put("snapshot", trackToCoreRecordSnapshot(track))
+                })
+            }
+        })
+        afterEntryId?.takeIf { it.isNotBlank() }?.let { put("afterEntryId", JsonPrimitive(it)) }
+        beforeEntryId?.takeIf { it.isNotBlank() }?.let { put("beforeEntryId", JsonPrimitive(it)) }
+    }
+
+    private fun trackToCoreRecordSnapshot(track: CoreTrackView): JsonObject {
+        val filePath = track.source?.takeIf { it.isNotBlank() } ?: track.id
+        val rawTail = filePath.substringAfterLast('/').substringAfterLast('\\')
+        val fileName = runCatching { java.net.URLDecoder.decode(rawTail, "UTF-8") }
+            .getOrDefault(rawTail).ifBlank { track.id }
+        val artistNames = track.artists.filter { it.isNotBlank() }
+            .ifEmpty { listOfNotNull(track.artist.takeIf { it.isNotBlank() }) }
+        return buildJsonObject {
+            put("id", JsonPrimitive(track.id))
+            put("title", JsonPrimitive(track.title.ifBlank { fileName }))
+            put("artist", JsonPrimitive(track.artist))
+            put("album", JsonPrimitive(track.album))
+            put("filePath", JsonPrimitive(filePath))
+            put("fileName", JsonPrimitive(fileName))
+            put("duration", JsonPrimitive(track.duration.coerceAtLeast(0.0)))
+            put("size", JsonPrimitive((track.size ?: 0L).coerceAtLeast(0L)))
+            put("cover", track.cover?.takeIf { it.isNotBlank() }?.let(::JsonPrimitive) ?: JsonNull)
+            put("lyrics", JsonNull)
+            put("source", JsonPrimitive("local"))
+            put("artists", buildJsonArray {
+                artistNames.forEach { name -> add(buildJsonObject { put("name", JsonPrimitive(name)) }) }
+            })
+            track.ncmSongId?.toLongOrNull()?.let { put("ncmSongId", JsonPrimitive(it)) }
+            track.albumId?.takeIf { it.isNotBlank() }?.let { put("albumId", JsonPrimitive(it)) }
+            track.format?.takeIf { it.isNotBlank() }?.let { put("format", JsonPrimitive(it)) }
+            track.releaseDate?.takeIf { it.isNotBlank() }?.let { put("releaseDate", JsonPrimitive(it)) }
+            track.genre?.takeIf { it.isNotBlank() }?.let { put("genre", JsonPrimitive(it)) }
+            track.albumArtist?.takeIf { it.isNotBlank() }?.let { put("albumArtist", JsonPrimitive(it)) }
+            track.isrc?.takeIf { it.isNotBlank() }?.let { put("isrc", JsonPrimitive(it)) }
+            track.sampleRate?.takeIf { it > 0 }?.let { put("sampleRate", JsonPrimitive(it)) }
+            track.bitDepth?.takeIf { it > 0 }?.let { put("bitDepth", JsonPrimitive(it)) }
+            track.discNumber?.takeIf { it > 0 }?.let { put("discNumber", JsonPrimitive(it)) }
+            track.trackNumber?.takeIf { it > 0 }?.let { put("trackNumber", JsonPrimitive(it)) }
+            track.bitrate?.takeIf { it > 0.0 }?.let { put("bitrate", JsonPrimitive(it)) }
+            track.bpm?.takeIf { it > 0.0 }?.let { put("bpm", JsonPrimitive(it)) }
+            track.addedAt?.takeIf { it >= 0L }?.let { put("addedAt", JsonPrimitive(it)) }
+            track.cueRange?.let { cue ->
+                put("cueRange", buildJsonObject {
+                    put("startSeconds", JsonPrimitive(cue.startSeconds))
+                    put("endSeconds", JsonPrimitive(cue.endSeconds))
+                    put("virtualPregapSeconds", JsonPrimitive(cue.virtualPregapSeconds))
+                    put("sourcePregapSeconds", JsonPrimitive(cue.sourcePregapSeconds))
+                    put("pregapSeconds", JsonPrimitive(cue.pregapSeconds))
+                })
+            }
+        }
+    }
 }
