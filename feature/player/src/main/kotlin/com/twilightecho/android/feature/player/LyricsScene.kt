@@ -1,19 +1,19 @@
 package com.twilightecho.android.feature.player
 
-import android.database.ContentObserver
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -56,6 +56,9 @@ import com.twilightecho.android.coreclient.CoreOperatingMode
 import com.twilightecho.android.coreclient.LyricsPreferences
 import com.twilightecho.android.ui.components.EmptyState
 import com.twilightecho.android.ui.components.TwilightIcons
+import com.twilightecho.android.ui.components.TwilightMotion
+import com.twilightecho.android.ui.components.rememberMotionEnabled
+import com.twilightecho.android.ui.components.tactilePress
 import kotlinx.coroutines.flow.first
 import kotlin.math.abs
 import kotlin.math.cos
@@ -216,19 +219,7 @@ internal fun rememberLyricsViewportState(identity: LyricsSceneIdentity): LyricsV
 }
 
 @Composable
-internal fun rememberLyricsMotionEnabled(): Boolean {
-    val resolver = LocalContext.current.contentResolver
-    fun readMotionEnabled() = Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
-    var enabled by remember(resolver) { mutableStateOf(readMotionEnabled()) }
-    DisposableEffect(resolver) {
-        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
-            override fun onChange(selfChange: Boolean) { enabled = readMotionEnabled() }
-        }
-        resolver.registerContentObserver(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), false, observer)
-        onDispose { resolver.unregisterContentObserver(observer) }
-    }
-    return enabled
-}
+internal fun rememberLyricsMotionEnabled(): Boolean = rememberMotionEnabled()
 
 /** Engine-free rendering; playback time and active line remain supplied by the existing presenter. */
 @Composable
@@ -314,8 +305,16 @@ internal fun LyricsStage(lyrics: CoreLyricsView?, activeIndex: Int, viewport: Ly
                 }
             }
         }
-        if (synced && !follow.following) ResumeLyricsPill(follow::resume,
-            Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
+        AnimatedVisibility(
+            visible = synced && !follow.following,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+            enter = (if (motionEnabled) slideInVertically(tween(200, easing = TwilightMotion.EmphasizedDecelerate)) { it / 2 } else androidx.compose.animation.EnterTransition.None) +
+                TwilightMotion.pillPopEnter(motionEnabled),
+            exit = (if (motionEnabled) slideOutVertically(tween(140, easing = TwilightMotion.EmphasizedAccelerate)) { it / 2 } else androidx.compose.animation.ExitTransition.None) +
+                TwilightMotion.pillPopExit(motionEnabled)
+        ) {
+            ResumeLyricsPill(follow::resume)
+        }
     }
 }
 
@@ -323,9 +322,12 @@ internal fun LyricsStage(lyrics: CoreLyricsView?, activeIndex: Int, viewport: Ly
 @Composable
 private fun ResumeLyricsPill(onClick: () -> Unit, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
-    Row(modifier.heightIn(min = 48.dp).clip(CircleShape).background(colors.surfaceContainerHighest.copy(alpha = 0.9f))
+    val interaction = remember { MutableInteractionSource() }
+    Row(modifier.tactilePress(interaction, pressedScale = 0.94f)
+        .heightIn(min = 48.dp).clip(CircleShape).background(colors.surfaceContainerHighest.copy(alpha = 0.9f))
         .border(1.dp, colors.onSurface.copy(alpha = 0.10f), CircleShape)
-        .clickable(role = Role.Button, onClick = onClick).padding(start = 16.dp, end = 20.dp)
+        .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick)
+        .padding(start = 16.dp, end = 20.dp)
         .testTag("resumeLyrics"), verticalAlignment = Alignment.CenterVertically) {
         Icon(TwilightIcons.SignalWave, null, Modifier.size(18.dp), tint = colors.primary)
         Text("回到当前歌词", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, color = colors.onSurface)

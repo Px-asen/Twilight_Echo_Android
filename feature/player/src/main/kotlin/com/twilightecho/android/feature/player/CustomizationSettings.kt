@@ -1,7 +1,14 @@
 package com.twilightecho.android.feature.player
 
 import android.os.Build
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.selection.selectable
@@ -36,14 +43,21 @@ internal fun LazyListScope.appearanceSettings(state: PlayerUiState, actions: Pla
     fun edit(change: (AppearancePreferences) -> AppearancePreferences) =
         actions.editPreferences { it.copy(appearance = change(it.appearance)) }
     item {
+        val motionEnabled = rememberMotionEnabled()
         PreferenceGroup("配色") {
             PreferenceChoices(AccentSource.entries, settings.accentSource,
                 { if (it == AccentSource.COVER) "封面取色" else "自选颜色" }, { choice -> edit { it.copy(accentSource = choice) } }, "accent")
-            if (settings.accentSource == AccentSource.CUSTOM)
+            AnimatedVisibility(
+                visible = settings.accentSource == AccentSource.CUSTOM,
+                enter = TwilightMotion.sectionExpand(motionEnabled),
+                exit = TwilightMotion.sectionCollapse(motionEnabled)
+            ) {
                 ColorSetting("强调色", settings.accentArgb, "accentColor") { color -> edit { it.copy(accentArgb = color) } }
+            }
         }
     }
     item {
+        val motionEnabled = rememberMotionEnabled()
         PreferenceGroup("背景") {
             PreferenceChoices(BackgroundStyle.entries, settings.backgroundStyle,
                 { when (it) { BackgroundStyle.COVER -> "封面"; BackgroundStyle.IMAGE -> "图片"; BackgroundStyle.SOLID -> "纯色" } },
@@ -51,21 +65,34 @@ internal fun LazyListScope.appearanceSettings(state: PlayerUiState, actions: Pla
                     if (choice == BackgroundStyle.IMAGE && settings.backgroundImagePath == null) actions.pickBackground()
                     else edit { it.copy(backgroundStyle = choice) }
                 }, "background", enabled = !state.isImportingBackground)
-            when (settings.backgroundStyle) {
-                BackgroundStyle.COVER -> Unit
-                BackgroundStyle.SOLID -> ColorSetting("背景颜色", settings.backgroundArgb, "backgroundColor") { color ->
-                    edit { it.copy(backgroundArgb = color) }
-                }
-                BackgroundStyle.IMAGE -> {
-                    val image = rememberBackgroundImage(settings.backgroundImagePath)
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        image?.let { Image(it, null, Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop) }
-                        TextButton(actions.pickBackground, enabled = !state.isImportingBackground, modifier = Modifier.padding(start = 8.dp)
-                            .testTag("replaceBackground")) { Text("更换图片", style = MaterialTheme.typography.bodyLarge) }
+            AnimatedContent(
+                targetState = settings.backgroundStyle,
+                modifier = if (motionEnabled) Modifier.animateContentSize(spring(dampingRatio = 0.86f, stiffness = 400f)) else Modifier,
+                transitionSpec = { TwilightMotion.stateFadeTransition(motionEnabled) },
+                label = "backgroundStyleControls"
+            ) { targetStyle ->
+                when (targetStyle) {
+                    BackgroundStyle.COVER -> Spacer(Modifier.fillMaxWidth())
+                    BackgroundStyle.SOLID -> ColorSetting("背景颜色", settings.backgroundArgb, "backgroundColor") { color ->
+                        edit { it.copy(backgroundArgb = color) }
+                    }
+                    BackgroundStyle.IMAGE -> {
+                        val image = rememberBackgroundImage(settings.backgroundImagePath)
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            image?.let { Image(it, null, Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop) }
+                            TextButton(actions.pickBackground, enabled = !state.isImportingBackground, modifier = Modifier.padding(start = 8.dp)
+                                .testTag("replaceBackground")) { Text("更换图片", style = MaterialTheme.typography.bodyLarge) }
+                        }
                     }
                 }
             }
-            if (state.isImportingBackground) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp))
+            AnimatedVisibility(
+                visible = state.isImportingBackground,
+                enter = TwilightMotion.sectionExpand(motionEnabled),
+                exit = TwilightMotion.sectionCollapse(motionEnabled)
+            ) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp))
+            }
         }
     }
     item {
@@ -85,13 +112,24 @@ internal fun LazyListScope.lyricsSettings(state: PlayerUiState, actions: PlayerA
     val settings = state.preferences.lyrics
     fun edit(change: (LyricsPreferences) -> LyricsPreferences) = actions.editPreferences { it.copy(lyrics = change(it.lyrics)) }
     item {
+        val motionEnabled = rememberMotionEnabled()
         val line = state.currentLyrics?.lines?.getOrNull(LocalPlayerProgress.current.lyricIndex.value)
         GlassCard(Modifier.padding(horizontal = 20.dp, vertical = 8.dp).fillMaxWidth()) {
-            Column(Modifier.padding(22.dp).testTag("lyricsStylePreview")) {
+            Column(
+                Modifier.padding(22.dp)
+                    .then(if (motionEnabled) Modifier.animateContentSize(spring(dampingRatio = 0.85f, stiffness = 380f)) else Modifier)
+                    .testTag("lyricsStylePreview")
+            ) {
                 Text(line?.text ?: "让一首歌慢慢走远", fontSize = settings.fontSizeSp.sp,
                     lineHeight = (settings.fontSizeSp * 4 / 3).sp, fontWeight = FontWeight(settings.fontWeight))
-                if (settings.showTranslation) Text(line?.translation ?: "在这里，听见每一句", fontSize = settings.translationSizeSp.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                AnimatedVisibility(
+                    visible = settings.showTranslation,
+                    enter = TwilightMotion.sectionExpand(motionEnabled),
+                    exit = TwilightMotion.sectionCollapse(motionEnabled)
+                ) {
+                    Text(line?.translation ?: "在这里，听见每一句", fontSize = settings.translationSizeSp.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                }
                 Text("下一句歌词", fontSize = settings.fontSizeSp.sp, fontWeight = FontWeight(settings.fontWeight),
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f),
                     modifier = Modifier.padding(top = settings.lineSpacingDp.dp).blur((settings.blurDp * 0.225f).dp))
@@ -121,11 +159,18 @@ internal fun LazyListScope.lyricsSettings(state: PlayerUiState, actions: PlayerA
         }
     }
     item {
+        val motionEnabled = rememberMotionEnabled()
         PreferenceGroup("译文") {
             SettingsSwitch("显示译文", "", settings.showTranslation) { edit { it.copy(showTranslation = !it.showTranslation) } }
-            if (settings.showTranslation) PreferenceSlider("译文字号", settings.translationSizeSp, 14f..26f,
-                "${settings.translationSizeSp.roundToInt()}", "translationFontSize", steps = 11) { value ->
-                edit { it.copy(translationSizeSp = value.roundToInt().toFloat()) }
+            AnimatedVisibility(
+                visible = settings.showTranslation,
+                enter = TwilightMotion.sectionExpand(motionEnabled),
+                exit = TwilightMotion.sectionCollapse(motionEnabled)
+            ) {
+                PreferenceSlider("译文字号", settings.translationSizeSp, 14f..26f,
+                    "${settings.translationSizeSp.roundToInt()}", "translationFontSize", steps = 11) { value ->
+                    edit { it.copy(translationSizeSp = value.roundToInt().toFloat()) }
+                }
             }
         }
     }
@@ -169,14 +214,34 @@ private fun PreferenceGroup(title: String, content: @Composable ColumnScope.() -
 @Composable
 private fun <T> PreferenceChoices(options: List<T>, selected: T, label: (T) -> String, onSelect: (T) -> Unit,
     tag: String, enabled: Boolean = true) {
+    val motionEnabled = rememberMotionEnabled()
     Row(Modifier.fillMaxWidth().padding(8.dp).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         options.forEach { option ->
             val active = option == selected
-            Box(Modifier.weight(1f).heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp))
-                .background(if (active) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f) else Color.Transparent)
-                .selectable(active, enabled, Role.RadioButton) { onSelect(option) }.testTag("$tag-$option")
+            val interaction = remember { MutableInteractionSource() }
+            val bg by animateColorAsState(
+                if (active) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f) else Color.Transparent,
+                tween(if (motionEnabled) 180 else 0),
+                label = "prefChoiceBg"
+            )
+            val fg by animateColorAsState(
+                if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                tween(if (motionEnabled) 180 else 0),
+                label = "prefChoiceFg"
+            )
+            Box(Modifier.weight(1f).tactilePress(interaction, pressedScale = 0.95f, enabled = enabled)
+                .heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp))
+                .background(bg)
+                .selectable(
+                    selected = active,
+                    interactionSource = interaction,
+                    indication = LocalIndication.current,
+                    enabled = enabled,
+                    role = Role.RadioButton
+                ) { onSelect(option) }.testTag("$tag-$option")
                 .padding(horizontal = 2.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
-                Text(label(option), style = MaterialTheme.typography.bodyLarge, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
+                Text(label(option), style = MaterialTheme.typography.bodyLarge, color = fg,
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
             }
         }
     }
@@ -208,9 +273,11 @@ private fun ResetPreferences(label: String, tag: String, reset: () -> Unit) {
 @Composable
 private fun ColorSetting(title: String, argb: Int, tag: String, onSelect: (Int) -> Unit) {
     var open by rememberSaveable { mutableStateOf(false) }
+    val motionEnabled = rememberMotionEnabled()
+    val swatchColor by animateColorAsState(Color(argb), tween(if (motionEnabled) 180 else 0), label = "swatchColor")
     Row(Modifier.fillMaxWidth().clickable { open = true }.testTag(tag).padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-        Box(Modifier.size(36.dp).clip(CircleShape).background(Color(argb))
+        Box(Modifier.size(36.dp).clip(CircleShape).background(swatchColor)
             .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f), CircleShape))
     }
     if (open) ColorPickerDialog(title, argb, { open = false }) { onSelect(it); open = false }
@@ -220,6 +287,8 @@ private fun ColorSetting(title: String, argb: Int, tag: String, onSelect: (Int) 
 private fun ColorPickerDialog(title: String, initial: Int, dismiss: () -> Unit, apply: (Int) -> Unit) {
     var argb by rememberSaveable { mutableIntStateOf(initial) }
     var hex by rememberSaveable { mutableStateOf(colorHex(initial)) }
+    val motionEnabled = rememberMotionEnabled()
+    val previewColor by animateColorAsState(Color(argb), tween(if (motionEnabled) 140 else 0), label = "pickerPreviewColor")
     val hsv = remember(argb) { FloatArray(3).also { android.graphics.Color.colorToHSV(argb, it) } }
     fun choose(color: Int) { argb = color; hex = colorHex(color) }
     val presets = listOf("珊瑚红" to 0xFFFA2D48, "琥珀" to 0xFFF0AB4F, "竹绿" to 0xFF74C69D,
@@ -227,12 +296,21 @@ private fun ColorPickerDialog(title: String, initial: Int, dismiss: () -> Unit, 
     AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, modifier = Modifier.testTag("colorPicker"),
         text = {
             Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(12.dp)).background(Color(argb)))
+                Box(Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(12.dp)).background(previewColor))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     presets.forEach { (name, color) ->
-                        Box(Modifier.size(38.dp).clip(CircleShape).background(Color(color))
-                            .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f), CircleShape)
-                            .clickable { choose(color.toInt()) }.semantics { contentDescription = name })
+                        val interaction = remember { MutableInteractionSource() }
+                        val selected = (argb and 0xFFFFFF) == (color.toInt() and 0xFFFFFF)
+                        val borderColor by animateColorAsState(
+                            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f),
+                            tween(if (motionEnabled) 160 else 0),
+                            label = "presetBorder"
+                        )
+                        Box(Modifier.tactilePress(interaction, pressedScale = 0.88f)
+                            .size(38.dp).clip(CircleShape).background(Color(color))
+                            .border(if (selected) 2.dp else 1.dp, borderColor, CircleShape)
+                            .clickable(interactionSource = interaction, indication = LocalIndication.current) { choose(color.toInt()) }
+                            .semantics { contentDescription = name })
                     }
                 }
                 OutlinedTextField(hex, { input ->

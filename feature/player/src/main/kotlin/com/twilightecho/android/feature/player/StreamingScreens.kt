@@ -1,6 +1,13 @@
 package com.twilightecho.android.feature.player
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.CircleShape
@@ -54,9 +61,12 @@ private fun StreamingAccountButton(state: StreamingUiState, actions: StreamingAc
     val colors = MaterialTheme.colorScheme
     val onClick = if (state.access == StreamingAccess.ERROR) actions.refresh else actions.account
     val enabled = state.access != StreamingAccess.LOADING
+    val interaction = remember { MutableInteractionSource() }
     if (state.access == StreamingAccess.READY) {
-        Box(Modifier.size(48.dp).clip(CircleShape)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick).testTag("streaming-account")
+        Box(Modifier.tactilePress(interaction, pressedScale = 0.90f, enabled = enabled)
+            .size(48.dp).clip(CircleShape)
+            .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled, role = Role.Button, onClick = onClick)
+            .testTag("streaming-account")
             .semantics { contentDescription = "网易云账号" }, contentAlignment = Alignment.Center) {
             NcmAvatar(state.nickname, state.profile?.avatarUrl, Modifier.fillMaxSize())
         }
@@ -66,8 +76,10 @@ private fun StreamingAccountButton(state: StreamingUiState, actions: StreamingAc
         StreamingAccess.DISABLED -> "启用网易云"
         StreamingAccess.LOADING -> "连接中"
         else -> "登录网易云"
-    }, Modifier.clip(RoundedCornerShape(50)).background(colors.surfaceContainer)
-        .clickable(enabled = enabled, role = Role.Button, onClick = onClick).testTag("streaming-account")
+    }, Modifier.tactilePress(interaction, pressedScale = 0.94f, enabled = enabled)
+        .clip(RoundedCornerShape(50)).background(colors.surfaceContainer)
+        .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled, role = Role.Button, onClick = onClick)
+        .testTag("streaming-account")
         .padding(horizontal = 14.dp, vertical = 8.dp),
         style = MaterialTheme.typography.labelLarge,
         color = if (enabled) colors.primary else colors.onSurfaceVariant)
@@ -82,25 +94,53 @@ private fun RecommendationCard(kind: StreamingRecommendation, section: Streaming
     onPlay: (() -> Unit)?) {
     val covers = section?.tracks.orEmpty().take(6)
     val shape = RoundedCornerShape(16.dp)
-    val ink = if (covers.isEmpty()) MaterialTheme.colorScheme.onSurface else Color.White
-    Box(Modifier.width(264.dp).height(168.dp).clip(shape).background(MaterialTheme.colorScheme.surfaceContainer)
-        .clickable(role = Role.Button, onClick = onOpen).testTag("streaming-rec-${kind.name}")) {
-        if (covers.isNotEmpty()) {
-            Column(Modifier.matchParentSize()) {
-                repeat(2) { row ->
-                    Row(Modifier.weight(1f).fillMaxWidth()) {
-                        repeat(3) { column ->
-                            TrackArt(covers[(row * 3 + column) % covers.size], Modifier.weight(1f).fillMaxHeight(), ContentScale.Crop)
+    val motionEnabled = rememberMotionEnabled()
+    val cardInteraction = remember { MutableInteractionSource() }
+    val ink by animateColorAsState(
+        if (covers.isEmpty()) MaterialTheme.colorScheme.onSurface else Color.White,
+        tween(if (motionEnabled) 220 else 0),
+        label = "recCardInk"
+    )
+    Box(Modifier.tactilePress(cardInteraction, pressedScale = 0.97f)
+        .width(264.dp).height(168.dp).clip(shape).background(MaterialTheme.colorScheme.surfaceContainer)
+        .clickable(interactionSource = cardInteraction, indication = LocalIndication.current, role = Role.Button, onClick = onOpen)
+        .testTag("streaming-rec-${kind.name}")) {
+        AnimatedVisibility(
+            visible = covers.isNotEmpty(),
+            modifier = Modifier.matchParentSize(),
+            enter = fadeIn(tween(if (motionEnabled) 260 else 0)),
+            exit = fadeOut(tween(if (motionEnabled) 160 else 0))
+        ) {
+            Box(Modifier.fillMaxSize()) {
+                if (covers.isNotEmpty()) {
+                    Column(Modifier.matchParentSize()) {
+                        repeat(2) { row ->
+                            Row(Modifier.weight(1f).fillMaxWidth()) {
+                                repeat(3) { column ->
+                                    TrackArt(covers[(row * 3 + column) % covers.size], Modifier.weight(1f).fillMaxHeight(), ContentScale.Crop)
+                                }
+                            }
                         }
                     }
+                    Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.5f)))
                 }
             }
-            Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.5f)))
         }
         Icon(recommendationIcon(kind), null, Modifier.align(Alignment.TopStart).padding(18.dp).size(26.dp), tint = ink)
-        if (onPlay != null) Box(Modifier.align(Alignment.TopEnd).padding(14.dp).size(40.dp).clip(CircleShape)
-            .background(Color.White).clickable(role = Role.Button, onClick = onPlay), contentAlignment = Alignment.Center) {
-            Icon(TwilightIcons.Play, "播放${kind.title}", Modifier.size(20.dp), tint = Color.Black)
+        AnimatedVisibility(
+            visible = onPlay != null,
+            modifier = Modifier.align(Alignment.TopEnd).padding(14.dp),
+            enter = TwilightMotion.pillPopEnter(motionEnabled),
+            exit = TwilightMotion.pillPopExit(motionEnabled)
+        ) {
+            val playInteraction = remember { MutableInteractionSource() }
+            Box(Modifier.tactilePress(playInteraction, pressedScale = 0.88f)
+                .size(40.dp).clip(CircleShape)
+                .background(Color.White)
+                .clickable(interactionSource = playInteraction, indication = LocalIndication.current, role = Role.Button, onClick = { onPlay?.invoke() }),
+                contentAlignment = Alignment.Center) {
+                Icon(TwilightIcons.Play, "播放${kind.title}", Modifier.size(20.dp), tint = Color.Black)
+            }
         }
         Column(Modifier.align(Alignment.BottomStart).padding(18.dp)) {
             Text(kind.title, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = ink)
@@ -139,14 +179,24 @@ internal fun StreamingLibraryScreen(state: StreamingUiState, actions: StreamingA
                 TextButton(onClick = actions.account) { Text("账号") }
                 TextButton(onClick = actions.refresh, enabled = !state.libraryLoading) { Text("刷新") }
             }
-            if (state.libraryLoading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp))
+            val motionEnabled = rememberMotionEnabled()
+            AnimatedVisibility(
+                visible = state.libraryLoading,
+                enter = TwilightMotion.sectionExpand(motionEnabled),
+                exit = TwilightMotion.sectionCollapse(motionEnabled)
+            ) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp))
+            }
             state.libraryError?.let {
                 EmptyState("音乐库未载入", it, actionLabel = "重试", onAction = actions.refresh)
             }
             val shape = RoundedCornerShape(14.dp)
-            Row(Modifier.padding(horizontal = 20.dp, vertical = 16.dp).fillMaxWidth().clip(shape)
+            val likedInteraction = remember { MutableInteractionSource() }
+            Row(Modifier.padding(horizontal = 20.dp, vertical = 16.dp).fillMaxWidth()
+                .tactilePress(likedInteraction, pressedScale = 0.97f)
+                .clip(shape)
                 .background(MaterialTheme.colorScheme.surfaceContainer)
-                .clickable(role = Role.Button) { actions.group(StreamingLibraryGroup.LIKED) }
+                .clickable(interactionSource = likedInteraction, indication = LocalIndication.current, role = Role.Button) { actions.group(StreamingLibraryGroup.LIKED) }
                 .testTag("streaming-group-LIKED").padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(52.dp).clip(RoundedCornerShape(10.dp)).background(TwilightTokens.FavoriteRose.copy(alpha = 0.16f)),
                     contentAlignment = Alignment.Center) {
@@ -353,7 +403,21 @@ private fun StreamingTrackRow(number: Int, track: CoreTrackView, current: Boolea
     addToPlaylist: () -> Unit, removeFromPlaylist: (() -> Unit)?, onClick: () -> Unit) {
     val alpha = if (track.unavailableReason == null) 1f else 0.45f
     var menu by remember { mutableStateOf(false) }
-    Row(modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick)
+    val openSongMenu = LocalSongMenuOpener.current
+    Row(modifier.fillMaxWidth()
+        .songRowClickable(
+            track = track,
+            enabled = enabled,
+            onClick = onClick,
+            onLongClick = {
+                openSongMenu(
+                    SongMenuRequest(
+                        track = track,
+                        onRemoveFromStreamingPlaylist = removeFromPlaylist
+                    )
+                )
+            }
+        )
         .then(if (current) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)) else Modifier)
         .padding(start = 20.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.width(32.dp)) {
@@ -405,42 +469,78 @@ internal fun StreamingPlaylistNameDialog(onDismiss: () -> Unit, onCreate: (Strin
 internal fun StreamingPlaylistPicker(state: StreamingUiState, tracks: List<CoreTrackView>, actions: StreamingActions,
     onDismiss: () -> Unit) {
     var naming by rememberSaveable { mutableStateOf(false) }
-    if (naming) {
-        StreamingPlaylistNameDialog(onDismiss) { name -> onDismiss(); actions.createPlaylist(name, tracks) }
-        return
-    }
+    var draftName by rememberSaveable { mutableStateOf("") }
+    val motionEnabled = rememberMotionEnabled()
     val own = state.playlists.filter { it.owned == true }
-    AlertDialog(onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(28.dp),
-        modifier = Modifier.testTag("streamingPlaylistPicker"),
-        title = { Text("加入歌单") },
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(28.dp),
+        modifier = if (naming) Modifier else Modifier.testTag("streamingPlaylistPicker"),
+        title = {
+            AnimatedContent(
+                targetState = naming,
+                transitionSpec = { TwilightMotion.stateFadeTransition(motionEnabled) },
+                label = "streamingPickerTitle"
+            ) { isNaming ->
+                Text(if (isNaming) "新建歌单" else "加入歌单")
+            }
+        },
         text = {
-            LazyColumn(Modifier.heightIn(max = 380.dp)) {
-                item {
-                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button) { naming = true }
-                        .padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(48.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest),
-                            contentAlignment = Alignment.Center) {
-                            Icon(TwilightIcons.Plus, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary)
+            AnimatedContent(
+                targetState = naming,
+                transitionSpec = { TwilightMotion.hierarchicalTransition(forward = targetState, motionEnabled = motionEnabled) },
+                label = "streamingPickerBody"
+            ) { isNaming ->
+                if (isNaming) {
+                    OutlinedTextField(
+                        value = draftName,
+                        onValueChange = { draftName = it.take(40) },
+                        label = { Text("歌单名称") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("streamingPlaylistName")
+                    )
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                        item {
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button) { naming = true }
+                                .padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(48.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                                    contentAlignment = Alignment.Center) {
+                                    Icon(TwilightIcons.Plus, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary)
+                                }
+                                Text("新建歌单", Modifier.padding(start = 14.dp), style = MaterialTheme.typography.titleMedium)
+                            }
                         }
-                        Text("新建歌单", Modifier.padding(start = 14.dp), style = MaterialTheme.typography.titleMedium)
-                    }
-                }
-                if (own.isEmpty() && state.libraryLoading) item { LoadingContent("正在载入歌单") }
-                items(own, key = { it.id }) { playlist ->
-                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                        .clickable(role = Role.Button) { onDismiss(); actions.addToPlaylist(playlist, tracks) }
-                        .padding(vertical = 8.dp).testTag("pick-playlist-${playlist.id}"), verticalAlignment = Alignment.CenterVertically) {
-                        StreamingArtwork(playlist, Modifier.size(48.dp).clip(RoundedCornerShape(10.dp)))
-                        Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                            Text(playlist.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            SupportingText("${playlist.count} 首", maxLines = 1)
+                        if (own.isEmpty() && state.libraryLoading) item { LoadingContent("正在载入歌单") }
+                        items(own, key = { it.id }) { playlist ->
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                                .clickable(role = Role.Button) { onDismiss(); actions.addToPlaylist(playlist, tracks) }
+                                .padding(vertical = 8.dp).testTag("pick-playlist-${playlist.id}"), verticalAlignment = Alignment.CenterVertically) {
+                                StreamingArtwork(playlist, Modifier.size(48.dp).clip(RoundedCornerShape(10.dp)))
+                                Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                                    Text(playlist.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    SupportingText("${playlist.count} 首", maxLines = 1)
+                                }
+                            }
                         }
                     }
                 }
             }
         },
-        confirmButton = {}, dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
+        confirmButton = {
+            if (naming) {
+                TextButton(
+                    onClick = { onDismiss(); actions.createPlaylist(draftName.trim(), tracks) },
+                    enabled = draftName.isNotBlank()
+                ) { Text("创建") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
 
 @Composable

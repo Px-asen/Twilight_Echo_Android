@@ -2,6 +2,17 @@
 package com.twilightecho.android.feature.player
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -27,12 +38,21 @@ import com.twilightecho.android.ui.components.*
 import com.twilightecho.android.ui.theme.TwilightTokens
 import kotlinx.coroutines.launch
 
+private data class PluginSubpage(val pluginId: String?, val loginOpen: Boolean) {
+    val depth: Int get() = when {
+        pluginId == null -> 0
+        loginOpen -> 2
+        else -> 1
+    }
+}
+
 @Composable
 internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
     onPlay: (List<CoreTrackView>, CoreTrackView) -> Unit, modifier: Modifier = Modifier,
-    accountOnly: Boolean = false) {
+    accountOnly: Boolean = false, backEnabled: Boolean = true) {
     val repository by presenter.repository.state.collectAsStateWithLifecycle()
     val provider by presenter.state.collectAsStateWithLifecycle()
+    val motionEnabled = rememberMotionEnabled()
     val scope = rememberCoroutineScope()
     var install by remember { mutableStateOf<PluginEntry?>(null) }
     var remove by remember { mutableStateOf<PluginEntry?>(null) }
@@ -45,14 +65,25 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
     }
     LaunchedEffect(Unit) { if (!accountOnly) presenter.revalidate() }
     fun back() { if (accountOnly) onBack() else if (loginOpen) loginOpen = false else if (provider.plugin != null) presenter.close() else onBack() }
-    BackHandler { back() }
+    BackHandler(enabled = backEnabled) { back() }
+    var lastProviderState by remember { mutableStateOf(provider) }
+    if (provider.plugin != null) lastProviderState = provider
+    val subpage = PluginSubpage(provider.plugin?.id, provider.plugin != null && loginOpen)
     AmbientBackground(modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             GlassIconButton(TwilightIcons.ArrowBack, "返回", ::back)
-            Text(if (provider.plugin == null) "插件与音源" else provider.plugin!!.name,
-                style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(start = 4.dp))
+            AnimatedContent(
+                targetState = if (provider.plugin == null) "插件与音源" else provider.plugin!!.name,
+                modifier = Modifier.weight(1f).padding(start = 4.dp),
+                transitionSpec = {
+                    if (!motionEnabled) EnterTransition.None togetherWith ExitTransition.None
+                    else (fadeIn(tween(180)) togetherWith fadeOut(tween(120))) using SizeTransform(clip = false)
+                },
+                label = "pluginHeaderTitle"
+            ) { title ->
+                Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             if (provider.plugin == null) TextButton(enabled = !repository.busy, onClick = { scope.launch { runCatching { presenter.repository.refresh() } } }) {
                 Icon(TwilightIcons.RadarScan, null, Modifier.padding(end = 6.dp).size(16.dp)); Text("刷新仓库")
             }
@@ -60,9 +91,28 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                 if (accountOnly) onBack() else loginOpen = !loginOpen
             }
         }
-        if (repository.busy || provider.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp).clip(RoundedCornerShape(50)),
-            color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-        if (provider.plugin == null) {
+        AnimatedVisibility(
+            visible = repository.busy || provider.busy,
+            enter = TwilightMotion.sectionExpand(motionEnabled),
+            exit = TwilightMotion.sectionCollapse(motionEnabled)
+        ) {
+            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp).clip(RoundedCornerShape(50)),
+                color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+        }
+        AnimatedContent(
+            targetState = subpage,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            transitionSpec = {
+                TwilightMotion.hierarchicalTransition(
+                    forward = targetState.depth >= initialState.depth,
+                    motionEnabled = motionEnabled,
+                    targetZIndex = targetState.depth.toFloat()
+                )
+            },
+            label = "pluginSubpage"
+        ) { page ->
+        val pageProvider = if (provider.plugin != null) provider else lastProviderState
+        if (page.pluginId == null) {
             LazyColumn(Modifier.fillMaxSize().testTag("pluginRepository"), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item {
@@ -128,39 +178,39 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                 }
             }
         } else {
-            if (loginOpen) { if (provider.generic) ProviderAccountPanel(provider, presenter) else ProviderLoginPanel(provider, presenter) }
-            else {
+            if (page.loginOpen) { if (pageProvider.generic) ProviderAccountPanel(pageProvider, presenter) else ProviderLoginPanel(pageProvider, presenter) }
+            else Column(Modifier.fillMaxSize()) {
                 // Plugins-repository providers show search only when they declare it, as on Desktop.
-                if (!provider.generic || provider.provider?.searchable() == true)
-                OutlinedTextField(provider.query, presenter::query, placeholder = { Text("歌曲、歌手、专辑") },
-                    label = { Text(if (provider.generic) "搜索${provider.plugin?.name.orEmpty()}" else "搜索网易云音乐") },
+                if (!pageProvider.generic || pageProvider.provider?.searchable() == true)
+                OutlinedTextField(pageProvider.query, presenter::query, placeholder = { Text("歌曲、歌手、专辑") },
+                    label = { Text(if (pageProvider.generic) "搜索${pageProvider.plugin?.name.orEmpty()}" else "搜索网易云音乐") },
                     singleLine = true, shape = RoundedCornerShape(50), colors = twilightFieldColors(),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).testTag("providerSearch"),
                     leadingIcon = { Icon(TwilightIcons.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { presenter.search() }),
-                    trailingIcon = { IconButton(enabled = !provider.busy, onClick = { presenter.search() }) { Icon(TwilightIcons.ArrowRight, "搜索音源") } })
-                val sections = if (provider.generic) provider.tabs
+                    trailingIcon = { IconButton(enabled = !pageProvider.busy, onClick = { presenter.search() }) { Icon(TwilightIcons.ArrowRight, "搜索音源") } })
+                val sections = if (pageProvider.generic) pageProvider.tabs
                     else listOf("discovery" to "发现歌单", "daily" to "每日推荐", "liked" to "我喜欢", "library" to "我的歌单")
-                if (sections.isNotEmpty()) PillTabs(sections.map { it.first }, provider.pageKind, { kind -> sections.first { it.first == kind }.second },
-                    { if (!provider.busy) presenter.section(it) }, Modifier.padding(vertical = 8.dp))
-                provider.notice?.let { ProviderNotice(it, Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) }
-                provider.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
+                if (sections.isNotEmpty()) PillTabs(sections.map { it.first }, pageProvider.pageKind, { kind -> sections.first { it.first == kind }.second },
+                    { if (!pageProvider.busy) presenter.section(it) }, Modifier.padding(vertical = 8.dp))
+                pageProvider.notice?.let { ProviderNotice(it, Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) }
+                pageProvider.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) }
                 LazyColumn(Modifier.weight(1f).testTag("providerResults"), contentPadding = PaddingValues(bottom = 24.dp)) {
                     item {
-                        SectionHeading(provider.title, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
-                        if (provider.tracks.isNotEmpty()) SupportingText("点击歌曲，在此手机播放", Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp))
+                        SectionHeading(pageProvider.title, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+                        if (pageProvider.tracks.isNotEmpty()) SupportingText("点击歌曲，在此手机播放", Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp))
                     }
-                    items(provider.playlists, key = { it.id }) { playlist ->
+                    items(pageProvider.playlists, key = { it.id }) { playlist ->
                         ListItem(headlineContent = { Text(playlist.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                             supportingContent = { Text("${playlist.count} 首歌曲") },
                             leadingContent = { IconTile(TwilightIcons.Queue, size = 48.dp) },
                             trailingContent = { Icon(TwilightIcons.ArrowRight, null, Modifier.size(18.dp)) },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent, supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                 trailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant),
-                            modifier = Modifier.padding(horizontal = 4.dp).clip(RoundedCornerShape(18.dp)).clickable(enabled = !provider.busy) { presenter.playlist(playlist) })
+                            modifier = Modifier.padding(horizontal = 4.dp).clip(RoundedCornerShape(18.dp)).clickable(enabled = !pageProvider.busy) { presenter.playlist(playlist) })
                     }
-                    itemsIndexed(provider.tracks, key = { i, track -> "$i-${track.id}" }) { _, track ->
+                    itemsIndexed(pageProvider.tracks, key = { i, track -> "$i-${track.id}" }) { _, track ->
                         val available = track.unavailableReason == null
                         ListItem(headlineContent = { Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             supportingContent = { Text(track.unavailableReason ?: "${track.artist} · ${track.album}", maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -171,47 +221,48 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent,
                                 headlineColor = if (available) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)),
                             modifier = Modifier.padding(horizontal = 4.dp).clip(RoundedCornerShape(18.dp))
-                                .clickable(enabled = !provider.busy && available) {
+                                .clickable(enabled = !pageProvider.busy && available) {
                                     // NCM asks for an account first; other sources report their own sign-in needs when played.
-                                    if (!provider.generic && provider.nickname.isNullOrBlank()) loginOpen = true else onPlay(provider.tracks, track)
+                                    if (!pageProvider.generic && pageProvider.nickname.isNullOrBlank()) loginOpen = true else onPlay(pageProvider.tracks, track)
                                 })
                     }
-                    if (!provider.generic && provider.total > maxOf(provider.tracks.size, provider.playlists.size) && provider.pageKind in listOf("search", "playlist", "liked", "discovery")) item {
+                    if (!pageProvider.generic && pageProvider.total > maxOf(pageProvider.tracks.size, pageProvider.playlists.size) && pageProvider.pageKind in listOf("search", "playlist", "liked", "discovery")) item {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            val size = if (provider.pageKind in listOf("playlist", "liked")) 100 else 30
-                            val count = maxOf(provider.tracks.size, provider.playlists.size)
-                            PillButton("上一页", { presenter.nextPage((provider.offset - size).coerceAtLeast(0)) },
-                                enabled = provider.offset > 0 && !provider.busy, tonal = true)
-                            Text("${provider.offset + 1}–${provider.offset + count} / ${provider.total}", modifier = Modifier.weight(1f),
+                            val size = if (pageProvider.pageKind in listOf("playlist", "liked")) 100 else 30
+                            val count = maxOf(pageProvider.tracks.size, pageProvider.playlists.size)
+                            PillButton("上一页", { presenter.nextPage((pageProvider.offset - size).coerceAtLeast(0)) },
+                                enabled = pageProvider.offset > 0 && !pageProvider.busy, tonal = true)
+                            Text("${pageProvider.offset + 1}–${pageProvider.offset + count} / ${pageProvider.total}", modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                            PillButton("下一页", { presenter.nextPage(provider.offset + count) },
-                                enabled = provider.offset + count < provider.total && !provider.busy, tonal = true)
+                            PillButton("下一页", { presenter.nextPage(pageProvider.offset + count) },
+                                enabled = pageProvider.offset + count < pageProvider.total && !pageProvider.busy, tonal = true)
                         }
                     }
                     // A provider's own paging: where the next page starts, and the first page's size to step back.
-                    if (provider.generic && provider.pageKind in listOf("search", "playlist") && (provider.offset > 0 || provider.nextOffset != null)) item {
+                    if (pageProvider.generic && pageProvider.pageKind in listOf("search", "playlist") && (pageProvider.offset > 0 || pageProvider.nextOffset != null)) item {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            PillButton("上一页", { presenter.nextPage((provider.offset - provider.pageSize.coerceAtLeast(1)).coerceAtLeast(0)) },
-                                enabled = provider.offset > 0 && !provider.busy, tonal = true)
-                            Text("${provider.offset + 1}–${provider.offset + provider.tracks.size}" +
-                                if (provider.pageKind == "playlist" && provider.total >= provider.offset + provider.tracks.size) " / ${provider.total}" else "",
+                            PillButton("上一页", { presenter.nextPage((pageProvider.offset - pageProvider.pageSize.coerceAtLeast(1)).coerceAtLeast(0)) },
+                                enabled = pageProvider.offset > 0 && !pageProvider.busy, tonal = true)
+                            Text("${pageProvider.offset + 1}–${pageProvider.offset + pageProvider.tracks.size}" +
+                                if (pageProvider.pageKind == "playlist" && pageProvider.total >= pageProvider.offset + pageProvider.tracks.size) " / ${pageProvider.total}" else "",
                                 modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                            PillButton("下一页", { provider.nextOffset?.let { presenter.nextPage(it) } },
-                                enabled = provider.nextOffset != null && !provider.busy, tonal = true)
+                            PillButton("下一页", { pageProvider.nextOffset?.let { presenter.nextPage(it) } },
+                                enabled = pageProvider.nextOffset != null && !pageProvider.busy, tonal = true)
                         }
                     }
-                    if (!provider.busy && provider.tracks.isEmpty() && provider.playlists.isEmpty()) item {
+                    if (!pageProvider.busy && pageProvider.tracks.isEmpty() && pageProvider.playlists.isEmpty()) item {
                         EmptyState("从一首歌开始", when {
-                            provider.query.isNotBlank() -> "没有找到结果。试试其他关键词，或查看上方的错误提示。"
-                            !provider.generic -> "搜索喜欢的音乐，或探索歌单。登录后可读取你的收藏和推荐。"
-                            provider.profile == null -> "登录后可读取你的歌单和推荐；点右上角的“登录”。"
+                            pageProvider.query.isNotBlank() -> "没有找到结果。试试其他关键词，或查看上方的错误提示。"
+                            !pageProvider.generic -> "搜索喜欢的音乐，或探索歌单。登录后可读取你的收藏和推荐。"
+                            pageProvider.profile == null -> "登录后可读取你的歌单和推荐；点右上角的“登录”。"
                             else -> "从上方选择推荐或歌单。"
                         }, TwilightIcons.Search)
                     }
                 }
             }
+        }
         }
     }
     }
@@ -263,11 +314,17 @@ private fun HeaderAccountButton(label: String, quiet: Boolean, onClick: () -> Un
 @Composable
 private fun ProviderLoginPanel(state: ProviderPageState, presenter: PluginPresenter) {
     var mode by rememberSaveable { mutableStateOf("qr") }
+    val motionEnabled = rememberMotionEnabled()
     // Credentials deliberately stay in memory, never rememberSaveable or logs.
     var phone by remember { mutableStateOf("") }; var secret by remember { mutableStateOf("") }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp).testTag("providerLogin"), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         GlassCard(Modifier.fillMaxWidth(), RoundedCornerShape(28.dp)) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(
+                Modifier
+                    .padding(20.dp)
+                    .then(if (motionEnabled) Modifier.animateContentSize(spring(stiffness = 400f)) else Modifier),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
                 if (state.profile != null) {
                     NcmProfileCard(state.profile)
                     PillButton("退出登录", { presenter.logout() }, enabled = !state.busy, tonal = true)
@@ -279,21 +336,46 @@ private fun ProviderLoginPanel(state: ProviderPageState, presenter: PluginPresen
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         modes.forEach { (key, label) -> ChoicePill(label, mode == key, Modifier) { mode = key; secret = "" } }
                     }
-                    if (mode == "qr") {
-                        val qr = rememberQrBitmap(state.qrImage)
-                        qr?.let { LoginQrCode(it, "网易云登录二维码", Modifier.align(Alignment.CenterHorizontally)) }
-                        PillButton(if (qr == null) "获取二维码" else "刷新二维码", { presenter.qr() }, Modifier.fillMaxWidth(), enabled = !state.busy,
-                            tonal = qr != null)
-                        if (state.qrKey != null) PillButton("我已扫码，检查登录", { presenter.checkQr() }, Modifier.fillMaxWidth(), enabled = !state.busy)
-                    } else {
-                        OutlinedTextField(phone, { phone = it }, label = { Text(if (mode == "email") "邮箱" else "手机号") }, singleLine = true,
-                            shape = RoundedCornerShape(16.dp), colors = twilightFieldColors(), modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(secret, { secret = it }, label = { Text(if (mode == "sms") "验证码" else "密码") }, singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(16.dp), colors = twilightFieldColors(),
-                            modifier = Modifier.fillMaxWidth())
-                        if (mode == "sms") TextButton(enabled = !state.busy && phone.isNotBlank(), onClick = { presenter.sendCaptcha(phone) }) { Text("发送验证码") }
-                        PillButton("登录", { presenter.login(phone, secret, mode); secret = "" }, Modifier.fillMaxWidth(),
-                            enabled = !state.busy && phone.isNotBlank() && secret.isNotBlank())
+                    AnimatedContent(
+                        targetState = mode,
+                        transitionSpec = {
+                            val fromIdx = modes.indexOfFirst { it.first == initialState }
+                            val toIdx = modes.indexOfFirst { it.first == targetState }
+                            TwilightMotion.directionalTabTransition(toIdx.compareTo(fromIdx), motionEnabled, driftFraction = 0.08f)
+                        },
+                        label = "loginAuthMode"
+                    ) { activeMode ->
+                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            if (activeMode == "qr") {
+                                val qr = rememberQrBitmap(state.qrImage)
+                                AnimatedVisibility(
+                                    visible = qr != null,
+                                    enter = TwilightMotion.pillPopEnter(motionEnabled) + TwilightMotion.sectionExpand(motionEnabled),
+                                    exit = TwilightMotion.sectionCollapse(motionEnabled),
+                                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                                ) {
+                                    qr?.let { LoginQrCode(it, "网易云登录二维码") }
+                                }
+                                PillButton(if (qr == null) "获取二维码" else "刷新二维码", { presenter.qr() }, Modifier.fillMaxWidth(), enabled = !state.busy,
+                                    tonal = qr != null)
+                                AnimatedVisibility(
+                                    visible = state.qrKey != null,
+                                    enter = TwilightMotion.sectionExpand(motionEnabled),
+                                    exit = TwilightMotion.sectionCollapse(motionEnabled)
+                                ) {
+                                    PillButton("我已扫码，检查登录", { presenter.checkQr() }, Modifier.fillMaxWidth(), enabled = !state.busy)
+                                }
+                            } else {
+                                OutlinedTextField(phone, { phone = it }, label = { Text(if (activeMode == "email") "邮箱" else "手机号") }, singleLine = true,
+                                    shape = RoundedCornerShape(16.dp), colors = twilightFieldColors(), modifier = Modifier.fillMaxWidth())
+                                OutlinedTextField(secret, { secret = it }, label = { Text(if (activeMode == "sms") "验证码" else "密码") }, singleLine = true,
+                                    visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(16.dp), colors = twilightFieldColors(),
+                                    modifier = Modifier.fillMaxWidth())
+                                if (activeMode == "sms") TextButton(enabled = !state.busy && phone.isNotBlank(), onClick = { presenter.sendCaptcha(phone) }) { Text("发送验证码") }
+                                PillButton("登录", { presenter.login(phone, secret, activeMode); secret = "" }, Modifier.fillMaxWidth(),
+                                    enabled = !state.busy && phone.isNotBlank() && secret.isNotBlank())
+                            }
+                        }
                     }
                 }
             }

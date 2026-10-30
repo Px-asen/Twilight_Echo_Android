@@ -1,11 +1,17 @@
 package com.twilightecho.android.feature.player
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -51,7 +57,9 @@ import kotlin.math.roundToInt
 internal fun AudioSettingsPanel(state: PlayerUiState, actions: PlayerActions) {
     var page by rememberSaveable { mutableStateOf("playback") }
     val pages = listOf("playback" to "播放与输出", "eq" to "均衡器", "rack" to "DSP 处理链", "scenes" to "场景")
+    val pageKeys = remember { pages.map { it.first } }
     val processing = state.eqConfig.dsp.enabled
+    val motionEnabled = rememberMotionEnabled()
     Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
         // Bypass sits above the pages so an A/B comparison is one tap from anywhere in audio settings.
         GlassCard(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp).fillMaxWidth().testTag("dsp-bypass")) {
@@ -59,13 +67,25 @@ internal fun AudioSettingsPanel(state: PlayerUiState, actions: PlayerActions) {
                 actions.editDsp { it.copy(enabled = !it.enabled) }
             }
         }
-        PillTabs(pages.map { it.first }, page, { key -> pages.first { it.first == key }.second }, { page = it },
+        PillTabs(pageKeys, page, { key -> pages.first { it.first == key }.second }, { page = it },
             tag = { "audio-page-$it" })
-        when (page) {
-            "playback" -> PlaybackSettings(state, actions)
-            "eq" -> EqualizerSettings(state, actions)
-            "rack" -> DspRackSettings(state, actions)
-            "scenes" -> DspScenes(state, actions)
+        AnimatedContent(
+            targetState = page,
+            modifier = Modifier.fillMaxWidth(),
+            transitionSpec = {
+                val dir = pageKeys.indexOf(targetState).compareTo(pageKeys.indexOf(initialState))
+                TwilightMotion.directionalTabTransition(dir, motionEnabled)
+            },
+            label = "audioSettingsSubpage"
+        ) { targetPage ->
+            Column(Modifier.fillMaxWidth()) {
+                when (targetPage) {
+                    "playback" -> PlaybackSettings(state, actions)
+                    "eq" -> EqualizerSettings(state, actions)
+                    "rack" -> DspRackSettings(state, actions)
+                    "scenes" -> DspScenes(state, actions)
+                }
+            }
         }
     }
 }
@@ -91,22 +111,29 @@ internal fun CardDivider() = HorizontalDivider(Modifier.padding(horizontal = 18.
 private fun PlaybackSettings(state: PlayerUiState, actions: PlayerActions) {
     val config = state.eqConfig
     val dsp = config.dsp
+    val motionEnabled = rememberMotionEnabled()
     AudioCard("连续聆听") {
         SettingsSwitch("无缝播放", if (state.diagnostics.preloadReady) "下一首已预加载" else "解码器提前准备下一首。", config.gapless, actions.toggleGapless)
         CardDivider()
         AudioNumber("交叉淡化", dsp.crossfadeSeconds, 0.0, 12.0, "s", tag = "crossfade") {
             actions.editDsp { current -> current.copy(crossfadeSeconds = it) }
         }
-        if (dsp.crossfadeSeconds > 0) {
-            AudioChoice("淡化曲线", dsp.crossfadeCurve, listOf("equal-power" to "等功率", "linear" to "线性")) {
-                actions.editDsp { current -> current.copy(crossfadeCurve = it) }
+        AnimatedVisibility(
+            visible = dsp.crossfadeSeconds > 0,
+            enter = TwilightMotion.sectionExpand(motionEnabled),
+            exit = TwilightMotion.sectionCollapse(motionEnabled)
+        ) {
+            Column {
+                AudioChoice("淡化曲线", dsp.crossfadeCurve, listOf("equal-power" to "等功率", "linear" to "线性")) {
+                    actions.editDsp { current -> current.copy(crossfadeCurve = it) }
+                }
+                AudioChoice("曲目策略", dsp.crossfadeContent, listOf("conservative" to "保守", "all" to "全部", "live" to "现场")) {
+                    actions.editDsp { current -> current.copy(crossfadeContent = it) }
+                }
+                SupportingText(if (state.diagnostics.crossfadeMixActive) "正在混合过渡" else
+                    state.diagnostics.crossfadeBlockedReason?.takeIf { it.isNotBlank() } ?: "在曲尾且下一首准备就绪时过渡。",
+                    Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
             }
-            AudioChoice("曲目策略", dsp.crossfadeContent, listOf("conservative" to "保守", "all" to "全部", "live" to "现场")) {
-                actions.editDsp { current -> current.copy(crossfadeContent = it) }
-            }
-            SupportingText(if (state.diagnostics.crossfadeMixActive) "正在混合过渡" else
-                state.diagnostics.crossfadeBlockedReason?.takeIf { it.isNotBlank() } ?: "在曲尾且下一首准备就绪时过渡。",
-                Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
         }
         CardDivider()
         AudioNumber("播放速度", dsp.playbackRate, 0.5, 2.0, "×", tag = "playback-rate") {
@@ -114,11 +141,40 @@ private fun PlaybackSettings(state: PlayerUiState, actions: PlayerActions) {
         }
         MiniAction("恢复原速", Modifier.padding(start = 18.dp, bottom = 8.dp)) { actions.editDsp { it.copy(playbackRate = 1.0) } }
     }
+    AudioCard("AutoMix（实验）", "分析曲尾与下一首的节拍、人声和能量，选择合适的衔接。") {
+        AudioChoice("模式", state.diagnostics.autoMixMode,
+            listOf("off" to "关闭", "natural" to "自然", "dj" to "DJ"), tag = "automix-mode", onSelect = actions.autoMixMode)
+        SupportingText(autoMixStatus(state.diagnostics, state.isPlaying),
+            Modifier.padding(horizontal = 18.dp, vertical = 8.dp).testTag("automix-status"))
+        if (state.diagnostics.autoMixMode != "off") SupportingText(
+            if (state.diagnostics.autoMixMode == "dj") "DJ 会扩大边界搜索并尝试节拍对齐。仅分析当前所需片段；不支持稳定文件身份的串流继续普通播放。"
+            else "自然模式优先保留乐句与尾音；连续专辑分轨保持无缝。支持可定位的本地／SAF 文件，需原速 PCM。",
+            Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("automix-help"))
+    }
     AudioCard("输出方式") {
         val devices = listOf("auto" to "跟随系统") + state.audioDevices.map { it.id to it.name }
         AudioChoice("输出设备", dsp.outputDeviceId, devices) { selected -> actions.editDsp { it.copy(outputDeviceId = selected) } }
         if (dsp.outputDeviceId != "auto" && devices.none { it.first == dsp.outputDeviceId }) {
             SupportingText("所选设备当前未连接，可改为跟随系统。", Modifier.padding(horizontal = 18.dp))
+        }
+        CardDivider()
+        Column(Modifier.testTag("usb-pcm-setting")) {
+            SettingsSwitch("USB 原样 PCM（实验）", "Android 14+ · DAC 须声明 Bit-Perfect", dsp.usbPcmPassthrough) {
+                actions.editDsp { it.copy(usbPcmPassthrough = !it.usbPcmPassthrough) }
+            }
+            SupportingText("先调低 DAC 硬件音量。需应用音量 100%、原速、跟随音源且无 DSP；不会自动调整现有设置。支持单／双声道 PCM。",
+                Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("usb-pcm-safety"))
+            AnimatedVisibility(
+                visible = dsp.usbPcmPassthrough,
+                enter = TwilightMotion.sectionExpand(motionEnabled),
+                exit = TwilightMotion.sectionCollapse(motionEnabled)
+            ) {
+                SupportingText(
+                    if (state.diagnostics.usbPcmPreferenceAccepted && state.diagnostics.usbPcmFormatMatched)
+                        "设备已声明 · 系统偏好已接受 · 活动格式匹配。系统未提供逐轨逐位证明。"
+                    else "尚未建立原样通路。暂停时释放偏好；失效后可关闭此模式恢复普通输出。",
+                    Modifier.padding(horizontal = 18.dp, vertical = 8.dp).testTag("usb-pcm-status"))
+            }
         }
         CardDivider()
         SettingsSwitch("请求 AAudio 独占", "连续播放策略不请求独占。系统可能改用共享模式；实际模式显示在音频链路。", dsp.exclusive) {
@@ -131,18 +187,48 @@ private fun PlaybackSettings(state: PlayerUiState, actions: PlayerActions) {
     val stage = dsp.outputStage
     PcmRateSettings(state, actions)
     AudioCard("重采样与输出余量") {
-        AudioChoice("重采样质量", stage.resamplerQuality, listOf("native" to "默认", "high" to "高", "ultra" to "极高")) { selected ->
+        AudioChoice("重采样质量", stage.resamplerQuality, listOf("native" to "默认", "high" to "高", "ultra" to "极高"), tag = "resampler-quality") { selected ->
             actions.editDsp { it.copy(outputStage = it.outputStage.copy(resamplerQuality = selected)) }
         }
-        AudioChoice("相位", stage.resamplerPhase, listOf("linear" to "线性", "minimum" to "最小", "linear-smooth" to "平滑线性", "minimum-smooth" to "平滑最小")) { selected ->
-            actions.editDsp { it.copy(outputStage = it.outputStage.copy(resamplerPhase = selected)) }
+        AudioChoice("相位响应", resamplerPhaseChoice(stage.resamplerPhase),
+            listOf("linear" to "线性相位", "minimum" to "最小相位"), tag = "resampler-phase") { selected ->
+            actions.editDsp { it.copy(outputStage = it.outputStage.copy(
+                resamplerPhase = resamplerWithPhase(it.outputStage.resamplerPhase, selected))) }
         }
+        AnimatedVisibility(
+            visible = stage.resamplerQuality in setOf("high", "ultra"),
+            enter = TwilightMotion.sectionExpand(motionEnabled),
+            exit = TwilightMotion.sectionCollapse(motionEnabled)
+        ) {
+            AudioChoice("滤波滚降", resamplerRolloff(stage.resamplerPhase),
+                listOf("linear" to "标准滚降", "linear-smooth" to "平滑滚降"), tag = "resampler-rolloff") { selected ->
+                actions.editDsp { it.copy(outputStage = it.outputStage.copy(
+                    resamplerPhase = resamplerWithRolloff(it.outputStage.resamplerPhase, selected))) }
+            }
+        }
+        AnimatedVisibility(
+            visible = stage.resamplerQuality == "native",
+            enter = TwilightMotion.sectionExpand(motionEnabled),
+            exit = TwilightMotion.sectionCollapse(motionEnabled)
+        ) {
+            SupportingText("默认档使用固定滚降。", Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("resampler-native"))
+        }
+        SupportingText("最小相位使用 SoX，减少主峰前振铃；线性相位保留对称响应。仅在本引擎转换采样率时生效。",
+            Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("resampler-phase-help"))
+        SupportingText(resamplerStatusText(state.dspStatus.outputStage),
+            Modifier.padding(horizontal = 18.dp, vertical = 8.dp).testTag("resampler-status"))
         CardDivider()
         SettingsSwitch("前置余量", "在处理链前衰减信号，给 EQ 和其他处理留出空间。", stage.headroomEnabled) {
             actions.editDsp { it.copy(outputStage = it.outputStage.copy(headroomEnabled = !it.outputStage.headroomEnabled)) }
         }
-        if (stage.headroomEnabled) AudioNumber("余量增益", stage.headroomGainDb, -30.0, 0.0, "dB") { selected ->
-            actions.editDsp { it.copy(outputStage = it.outputStage.copy(headroomGainDb = selected)) }
+        AnimatedVisibility(
+            visible = stage.headroomEnabled,
+            enter = TwilightMotion.sectionExpand(motionEnabled),
+            exit = TwilightMotion.sectionCollapse(motionEnabled)
+        ) {
+            AudioNumber("余量增益", stage.headroomGainDb, -30.0, 0.0, "dB") { selected ->
+                actions.editDsp { it.copy(outputStage = it.outputStage.copy(headroomGainDb = selected)) }
+            }
         }
         AudioChoice("抖动", stage.dither, listOf("off" to "关闭", "tpdf" to "TPDF", "highpassTpdf" to "高通 TPDF", "noiseShaped" to "噪声整形")) { selected ->
             actions.editDsp { it.copy(outputStage = it.outputStage.copy(dither = selected)) }
@@ -170,9 +256,9 @@ private fun PcmRateSettings(state: PlayerUiState, actions: PlayerActions) {
     }
     val declared = if (dsp.outputDeviceId == "auto") state.activeOutputSampleRates
         else state.audioDevices.firstOrNull { it.id == dsp.outputDeviceId }?.sampleRates.orEmpty()
-    val rates = declared.filter { it in 8000..384000 }.distinct().sorted()
+    val rates = declared.filter { it in PcmSampleRates.range }.distinct().sorted()
     val allowed = dsp.allowedSampleRates
-    val choices = if (rates.isEmpty()) (PcmRateChoices + allowed).distinct().sorted() else rates
+    val choices = if (rates.isEmpty()) (PcmRateChoices + allowed + listOf(dsp.outputStage.targetSampleRate).filter { it in PcmSampleRates.range }).distinct().sorted() else rates
     val fixedChoices = choices.filter { allowed.isEmpty() || it in allowed }
     var selectionError by remember(mode, allowed, rates, dsp.outputStage.targetSampleRate) { mutableStateOf<String?>(null) }
     AudioCard("PCM 采样率", modifier = Modifier.testTag("pcmRateSettings")) {
@@ -249,6 +335,7 @@ private fun PcmRateSettings(state: PlayerUiState, actions: PlayerActions) {
 private fun EqualizerSettings(state: PlayerUiState, actions: PlayerActions) {
     val config = state.eqConfig
     val graphic = config.dsp.eqMode == "graphic"
+    val motionEnabled = rememberMotionEnabled()
     AudioCard {
         SettingsSwitch("均衡器", if (config.dsp.enabled) "共享 C++ 滤波器" else "声音处理已旁路，均衡器暂不生效。", config.enabled, actions.toggleEq)
         AudioChoice("均衡器模式", config.dsp.eqMode, listOf("graphic" to "十段均衡器", "parametric" to "参数均衡器"), tag = "eq-mode") { selected ->
@@ -258,7 +345,11 @@ private fun EqualizerSettings(state: PlayerUiState, actions: PlayerActions) {
     AudioCard("频率响应") {
         EqResponseCurve(config, Modifier.padding(horizontal = 18.dp, vertical = 10.dp))
         EqHeadroomSummary(config, state.dspStatus.meter, config.dsp.nodes.any { it.type == "meter" && it.enabled }, actions)
-        if (graphic) {
+        AnimatedVisibility(
+            visible = graphic,
+            enter = TwilightMotion.sectionExpand(motionEnabled),
+            exit = TwilightMotion.sectionCollapse(motionEnabled)
+        ) {
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CoreEqConfigView.PRESETS.keys.forEach { preset ->
@@ -269,38 +360,51 @@ private fun EqualizerSettings(state: PlayerUiState, actions: PlayerActions) {
     }
     AudioCard(if (graphic) "增益" else "参数频段") {
         EqSlider("前级增益", config.preampDb, actions.preamp, "preamp")
-        if (graphic) {
-            CardDivider()
-            CoreEqConfigView.BAND_FREQUENCIES_HZ.forEachIndexed { i, label -> EqSlider(label, config.bandsDb.getOrElse(i) { 0.0 }, { actions.band(i, it) }, "eqBand-$i") }
-            MiniAction("重置为平直", Modifier.padding(start = 18.dp, top = 4.dp, bottom = 8.dp)) { actions.preset("Flat") }
-        } else {
-            var selectedBand by rememberSaveable { mutableIntStateOf(0) }
-            val bands = config.dsp.parametricBands
-            AudioChoice("频段", selectedBand.toString(), bands.indices.map { it.toString() to "${it + 1}" }, tag = "peq-band") {
-                selectedBand = it.toInt()
-            }
-            val index = selectedBand.coerceIn(0, (bands.size - 1).coerceAtLeast(0))
-            bands.getOrNull(index)?.let { band ->
-                val params = DefaultCoreClient.DefaultJson.encodeToJsonElement(band).jsonObject
-                DspControls(eqBandControls, params) { key, value ->
-                    actions.editDsp { current -> current.copy(parametricBands = current.parametricBands.mapIndexed { i, existing ->
-                        if (i != index) existing else DefaultCoreClient.DefaultJson.decodeFromJsonElement<CoreParametricEqBand>(
-                            JsonObject(DefaultCoreClient.DefaultJson.encodeToJsonElement(existing).jsonObject + (key to value)))
-                    }) }
-                }
-                AudioChoice("作用声道", band.channelMask.toString(), listOf("4294967295" to "全部", "1" to "左", "2" to "右")) { mask ->
-                    actions.editDsp { it.copy(parametricBands = it.parametricBands.mapIndexed { i, b -> if (i == index) b.copy(channelMask = mask.toLong()) else b }) }
-                }
-            }
-            Row(Modifier.padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                PillButton("添加频段", {
-                    selectedBand = bands.size
-                    actions.editDsp { it.copy(parametricBands = it.parametricBands + CoreParametricEqBand()) }
-                }, Modifier.testTag("peq-add"), TwilightIcons.Plus, enabled = bands.size < 32, tonal = true)
-                MiniAction("删除频段", enabled = bands.isNotEmpty()) {
-                    actions.editDsp { it.copy(parametricBands = it.parametricBands.filterIndexed { i, _ -> i != index }) }
-                    selectedBand = (index - 1).coerceAtLeast(0)
+        AnimatedContent(
+            targetState = graphic,
+            transitionSpec = {
+                TwilightMotion.directionalTabTransition(
+                    direction = if (targetState) -1 else 1,
+                    motionEnabled = motionEnabled
+                )
+            },
+            label = "eqModeControls"
+        ) { isGraphic ->
+            Column(Modifier.fillMaxWidth()) {
+                if (isGraphic) {
+                    CardDivider()
+                    CoreEqConfigView.BAND_FREQUENCIES_HZ.forEachIndexed { i, label -> EqSlider(label, config.bandsDb.getOrElse(i) { 0.0 }, { actions.band(i, it) }, "eqBand-$i") }
+                    MiniAction("重置为平直", Modifier.padding(start = 18.dp, top = 4.dp, bottom = 8.dp)) { actions.preset("Flat") }
+                } else {
+                    var selectedBand by rememberSaveable { mutableIntStateOf(0) }
+                    val bands = config.dsp.parametricBands
+                    AudioChoice("频段", selectedBand.toString(), bands.indices.map { it.toString() to "${it + 1}" }, tag = "peq-band") {
+                        selectedBand = it.toInt()
+                    }
+                    val index = selectedBand.coerceIn(0, (bands.size - 1).coerceAtLeast(0))
+                    bands.getOrNull(index)?.let { band ->
+                        val params = DefaultCoreClient.DefaultJson.encodeToJsonElement(band).jsonObject
+                        DspControls(eqBandControls, params) { key, value ->
+                            actions.editDsp { current -> current.copy(parametricBands = current.parametricBands.mapIndexed { i, existing ->
+                                if (i != index) existing else DefaultCoreClient.DefaultJson.decodeFromJsonElement<CoreParametricEqBand>(
+                                    JsonObject(DefaultCoreClient.DefaultJson.encodeToJsonElement(existing).jsonObject + (key to value)))
+                            }) }
+                        }
+                        AudioChoice("作用声道", band.channelMask.toString(), listOf("4294967295" to "全部", "1" to "左", "2" to "右")) { mask ->
+                            actions.editDsp { it.copy(parametricBands = it.parametricBands.mapIndexed { i, b -> if (i == index) b.copy(channelMask = mask.toLong()) else b }) }
+                        }
+                    }
+                    Row(Modifier.padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        PillButton("添加频段", {
+                            selectedBand = bands.size
+                            actions.editDsp { it.copy(parametricBands = it.parametricBands + CoreParametricEqBand()) }
+                        }, Modifier.testTag("peq-add"), TwilightIcons.Plus, enabled = bands.size < 32, tonal = true)
+                        MiniAction("删除频段", enabled = bands.isNotEmpty()) {
+                            actions.editDsp { it.copy(parametricBands = it.parametricBands.filterIndexed { i, _ -> i != index }) }
+                            selectedBand = (index - 1).coerceAtLeast(0)
+                        }
+                    }
                 }
             }
         }
@@ -312,13 +416,50 @@ private fun EqualizerSettings(state: PlayerUiState, actions: PlayerActions) {
 @Composable
 private fun EqResponseCurve(config: CoreEqConfigView, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
+    val motionEnabled = rememberMotionEnabled()
     val active = config.enabled && config.dsp.enabled
-    val line by animateColorAsState(if (active) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.5f), label = "eqLine")
+    val line by animateColorAsState(
+        if (active) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.5f),
+        tween(if (motionEnabled) 200 else 0),
+        label = "eqLine"
+    )
     val grid = colors.onSurface.copy(alpha = 0.08f)
-    val (curve, centers) = remember(config.dsp.eqMode, config.bandsDb, config.dsp.parametricBands) {
+    val (targetCurve, centers) = remember(config.dsp.eqMode, config.bandsDb, config.dsp.parametricBands) {
         EqResponse.curve(config, 160) to config.effectiveEqBands()
             .filter { it.enabled && it.frequency in EqResponse.MIN_HZ..EqResponse.MAX_HZ }
             .map { EqResponse.pointAt(config, it.frequency) }
+    }
+    val morph = remember { Animatable(1f) }
+    var fromCurve by remember { mutableStateOf(targetCurve) }
+    var currentTarget by remember { mutableStateOf(targetCurve) }
+    LaunchedEffect(targetCurve, motionEnabled) {
+        if (targetCurve !== currentTarget) {
+            if (motionEnabled && fromCurve.size == targetCurve.size) {
+                val t = morph.value.toDouble()
+                fromCurve = if (t < 1.0 && currentTarget.size == fromCurve.size) {
+                    fromCurve.indices.map { i ->
+                        val a = fromCurve[i]
+                        val b = currentTarget[i]
+                        EqResponsePoint(b.frequencyHz, a.leftDb + (b.leftDb - a.leftDb) * t, a.rightDb + (b.rightDb - a.rightDb) * t)
+                    }
+                } else currentTarget
+                currentTarget = targetCurve
+                morph.snapTo(0f)
+                morph.animateTo(1f, tween(220, easing = TwilightMotion.EmphasizedDecelerate))
+            } else {
+                fromCurve = targetCurve
+                currentTarget = targetCurve
+                morph.snapTo(1f)
+            }
+        }
+    }
+    val progress = morph.value.toDouble()
+    val curve = if (progress >= 0.999 || fromCurve.size != targetCurve.size) targetCurve else {
+        targetCurve.indices.map { i ->
+            val a = fromCurve[i]
+            val b = targetCurve[i]
+            EqResponsePoint(b.frequencyHz, a.leftDb + (b.leftDb - a.leftDb) * progress, a.rightDb + (b.rightDb - a.rightDb) * progress)
+        }
     }
     val split = curve.any { abs(it.leftDb - it.rightDb) > 0.05 }
     val range = if ((curve + centers).any { abs(it.leftDb) > 12.5 || abs(it.rightDb) > 12.5 }) 24.0 else 12.0
@@ -393,6 +534,7 @@ private fun frequencyLabel(hz: Double): String =
 @Composable
 private fun DspRackSettings(state: PlayerUiState, actions: PlayerActions) {
     val dsp = state.eqConfig.dsp
+    val motionEnabled = rememberMotionEnabled()
     AudioCard("实时监看") { AudioMonitor(state) }
     var expanded by rememberSaveable { mutableStateOf<String?>(null) }
     var adding by remember { mutableStateOf(false) }
@@ -407,14 +549,24 @@ private fun DspRackSettings(state: PlayerUiState, actions: PlayerActions) {
             config.copy(nodes = config.nodes.map { if (it.id == node.id) transform(it) else it })
         }
         val running = dsp.enabled && node.enabled && status?.active == true
+        val badgeBg by animateColorAsState(
+            if (running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+            tween(if (motionEnabled) 200 else 0),
+            label = "dspBadgeBg"
+        )
+        val badgeFg by animateColorAsState(
+            if (running) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+            tween(if (motionEnabled) 200 else 0),
+            label = "dspBadgeFg"
+        )
         GlassCard(Modifier.padding(horizontal = 20.dp, vertical = 6.dp).fillMaxWidth().testTag("dsp-${node.type}")) {
             Column(Modifier.padding(vertical = 14.dp)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(36.dp).clip(CircleShape)
-                        .background(if (running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
+                        .background(badgeBg),
                         contentAlignment = Alignment.Center) {
                         Text("${index + 1}", style = MaterialTheme.typography.labelLarge,
-                            color = if (running) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            color = badgeFg)
                     }
                     Column(Modifier.weight(1f).padding(horizontal = 12.dp).clickable { expanded = if (expanded == node.id) null else node.id }) {
                         Text(spec.title, style = MaterialTheme.typography.titleMedium)
@@ -437,10 +589,16 @@ private fun DspRackSettings(state: PlayerUiState, actions: PlayerActions) {
                     MiniAction("下移", enabled = index < dsp.nodes.lastIndex) { actions.editDsp { it.copy(nodes = moveDspNode(it.nodes, index, 1)) } }
                     MiniAction("移除") { actions.editDsp { it.copy(nodes = it.nodes.filterNot { it.id == node.id }) } }
                 }
-                if (expanded == node.id) {
-                    CardDivider()
-                    SupportingText(spec.subtitle, Modifier.padding(horizontal = 18.dp, vertical = 8.dp))
-                    DspNodeEditor(node, spec, actions.importImpulse) { key, value -> updateNode { it.copy(params = JsonObject(it.params + (key to value))) } }
+                AnimatedVisibility(
+                    visible = expanded == node.id,
+                    enter = TwilightMotion.sectionExpand(motionEnabled),
+                    exit = TwilightMotion.sectionCollapse(motionEnabled)
+                ) {
+                    Column {
+                        CardDivider()
+                        SupportingText(spec.subtitle, Modifier.padding(horizontal = 18.dp, vertical = 8.dp))
+                        DspNodeEditor(node, spec, actions.importImpulse) { key, value -> updateNode { it.copy(params = JsonObject(it.params + (key to value))) } }
+                    }
                 }
             }
         }
@@ -592,26 +750,57 @@ private fun DspScenes(state: PlayerUiState, actions: PlayerActions) {
 @Composable
 internal fun MiniAction(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, highlighted: Boolean = false, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val content = when {
-        !enabled -> colors.onSurface.copy(alpha = 0.3f)
-        highlighted -> colors.primary
-        else -> colors.onSurface.copy(alpha = 0.85f)
-    }
-    Text(label, modifier.clip(RoundedCornerShape(50))
-        .background(if (highlighted && enabled) colors.primary.copy(alpha = 0.16f) else colors.onSurface.copy(alpha = 0.06f))
-        .clickable(enabled = enabled, role = Role.Button, onClick = onClick).heightIn(min = 36.dp)
+    val motionEnabled = rememberMotionEnabled()
+    val interaction = remember { MutableInteractionSource() }
+    val bg by animateColorAsState(
+        if (highlighted && enabled) colors.primary.copy(alpha = 0.16f) else colors.onSurface.copy(alpha = 0.06f),
+        tween(if (motionEnabled) 180 else 0),
+        label = "miniActionBg"
+    )
+    val content by animateColorAsState(
+        when {
+            !enabled -> colors.onSurface.copy(alpha = 0.3f)
+            highlighted -> colors.primary
+            else -> colors.onSurface.copy(alpha = 0.85f)
+        },
+        tween(if (motionEnabled) 180 else 0),
+        label = "miniActionFg"
+    )
+    Text(label, modifier.tactilePress(interaction, pressedScale = 0.94f, enabled = enabled)
+        .clip(RoundedCornerShape(50))
+        .background(bg)
+        .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled, role = Role.Button, onClick = onClick)
+        .heightIn(min = 36.dp)
         .padding(horizontal = 14.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge, color = content, maxLines = 1)
 }
 
 @Composable
 internal fun ChoicePill(text: String, selected: Boolean, modifier: Modifier, multiSelect: Boolean = false, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val bg by animateColorAsState(if (selected) colors.primary else colors.onSurface.copy(alpha = 0.06f), label = "choiceBg")
-    val fg by animateColorAsState(if (selected) colors.onPrimary else colors.onSurface.copy(alpha = 0.85f), label = "choiceFg")
-    Box(modifier.heightIn(min = 40.dp).clip(RoundedCornerShape(50)).background(bg)
-        .border(1.dp, if (selected) Color.Transparent else colors.onSurface.copy(alpha = 0.08f), RoundedCornerShape(50))
-        .then(if (multiSelect) Modifier.toggleable(selected, role = Role.Checkbox) { onClick() }
-            else Modifier.selectable(selected, role = Role.RadioButton, onClick = onClick)).padding(horizontal = 16.dp),
+    val motionEnabled = rememberMotionEnabled()
+    val interaction = remember { MutableInteractionSource() }
+    val bg by animateColorAsState(
+        if (selected) colors.primary else colors.onSurface.copy(alpha = 0.06f),
+        tween(if (motionEnabled) 180 else 0),
+        label = "choiceBg"
+    )
+    val fg by animateColorAsState(
+        if (selected) colors.onPrimary else colors.onSurface.copy(alpha = 0.85f),
+        tween(if (motionEnabled) 180 else 0),
+        label = "choiceFg"
+    )
+    val borderColor by animateColorAsState(
+        if (selected) Color.Transparent else colors.onSurface.copy(alpha = 0.08f),
+        tween(if (motionEnabled) 180 else 0),
+        label = "choiceBorder"
+    )
+    Box(modifier.tactilePress(interaction, pressedScale = 0.94f)
+        .heightIn(min = 40.dp).clip(RoundedCornerShape(50)).background(bg)
+        .border(1.dp, borderColor, RoundedCornerShape(50))
+        .then(
+            if (multiSelect) Modifier.toggleable(selected, interactionSource = interaction, indication = LocalIndication.current, role = Role.Checkbox) { onClick() }
+            else Modifier.selectable(selected, interactionSource = interaction, indication = LocalIndication.current, role = Role.RadioButton, onClick = onClick)
+        ).padding(horizontal = 16.dp),
         contentAlignment = Alignment.Center) {
         Text(text, style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
     }

@@ -1,7 +1,17 @@
 package com.twilightecho.android.feature.player
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -72,10 +82,19 @@ internal fun PlaylistBrowseControls(query: String, onQuery: (String) -> Unit, so
     val keyboard = LocalSoftwareKeyboardController.current
     var menu by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
+    val motionEnabled = rememberMotionEnabled()
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).testTag("playlistBrowseControls")) {
         TextField(query, onQuery, Modifier.fillMaxWidth().testTag("playlistSearch"), singleLine = true,
             placeholder = { Text("搜索歌单内的歌曲") }, leadingIcon = { Icon(TwilightIcons.Search, null) },
-            trailingIcon = { if (query.isNotEmpty()) QuietIconButton(TwilightIcons.Close, "清除歌单搜索", { onQuery("") }) },
+            trailingIcon = {
+                AnimatedVisibility(
+                    visible = query.isNotEmpty(),
+                    enter = TwilightMotion.pillPopEnter(motionEnabled),
+                    exit = TwilightMotion.pillPopExit(motionEnabled)
+                ) {
+                    QuietIconButton(TwilightIcons.Close, "清除歌单搜索", { onQuery("") })
+                }
+            },
             shape = RoundedCornerShape(16.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
             colors = TextFieldDefaults.colors(focusedContainerColor = colors.surfaceContainerHigh,
@@ -125,18 +144,31 @@ private fun sortLabel(sort: CollectionSort): String = if (sort.field == Collecti
 internal fun ImmersiveArtistHero(name: String, subtitle: String, artwork: TrackArtworkVisual?, onBack: () -> Unit,
     backLabel: String, imageTag: String = "artistPortrait", trailing: @Composable RowScope.() -> Unit = {}) {
     val base = MaterialTheme.colorScheme.background
+    val motionEnabled = rememberMotionEnabled()
+    val backInteraction = remember { MutableInteractionSource() }
     BoxWithConstraints(Modifier.fillMaxWidth().testTag("immersiveArtistHero")) {
         Box(Modifier.fillMaxWidth().height((maxWidth * 1.02f).coerceIn(300.dp, 440.dp))) {
-            if (artwork?.isRealEmbeddedArt == true) Image(artwork.imageBitmap, name,
-                Modifier.fillMaxSize().testTag(imageTag), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
-            else Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
-                Icon(TwilightIcons.ArtistMic, null, Modifier.size(100.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f))
+            Crossfade(
+                targetState = artwork?.takeIf { it.isRealEmbeddedArt },
+                animationSpec = tween(if (motionEnabled) 260 else 0),
+                label = "artistHeroPortrait"
+            ) { portrait ->
+                if (portrait != null) Image(portrait.imageBitmap, name,
+                    Modifier.fillMaxSize().testTag(imageTag), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
+                else Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
+                    Icon(TwilightIcons.ArtistMic, null, Modifier.size(100.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f))
+                }
             }
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
                 0f to Color.Black.copy(alpha = 0.25f), 0.42f to Color.Transparent,
                 0.7f to base.copy(alpha = 0.45f), 1f to base)))
             Row(Modifier.fillMaxWidth().align(Alignment.TopStart).padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack, Modifier.size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.35f))) {
+                IconButton(
+                    onClick = onBack,
+                    interactionSource = backInteraction,
+                    modifier = Modifier.tactilePress(backInteraction, pressedScale = 0.90f)
+                        .size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.35f))
+                ) {
                     Icon(TwilightIcons.ArrowBack, backLabel, tint = Color.White)
                 }
                 Spacer(Modifier.weight(1f))
@@ -156,7 +188,12 @@ internal fun ImmersiveArtistHero(name: String, subtitle: String, artwork: TrackA
 internal fun ArtistBiography(text: String, attribution: String? = null, tag: String = "artistBiography") {
     var expanded by rememberSaveable(text) { mutableStateOf(false) }
     var overflows by remember(text) { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).testTag(tag)) {
+    val motionEnabled = rememberMotionEnabled()
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 24.dp)
+            .then(if (motionEnabled) Modifier.animateContentSize(spring(dampingRatio = 0.86f, stiffness = 380f)) else Modifier)
+            .testTag(tag)
+    ) {
         Text(text, style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 27.sp),
             maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
             onTextLayout = { if (!expanded) overflows = it.hasVisualOverflow })
@@ -172,17 +209,46 @@ internal fun ArtistBiography(text: String, attribution: String? = null, tag: Str
 
 @Composable
 internal fun ArtistContentTabs(albums: Boolean, select: (Boolean) -> Unit) {
+    val motionEnabled = rememberMotionEnabled()
     Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(24.dp)) {
         listOf(false, true).forEach { tab ->
-            Column(Modifier.selectable(selected = tab == albums, role = Role.Tab, onClick = { select(tab) })
-                .semantics { stateDescription = if (tab == albums) "已选中" else "未选中" }
-                .testTag(if (tab) "artistAlbumsTab" else "artistSongsTab").padding(top = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            val selected = tab == albums
+            val interaction = remember { MutableInteractionSource() }
+            val ink by animateColorAsState(
+                if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                tween(if (motionEnabled) 180 else 0),
+                label = "artistTabInk"
+            )
+            val barWidth by animateDpAsState(
+                if (selected) 24.dp else 0.dp,
+                if (motionEnabled) spring(dampingRatio = 0.72f, stiffness = 480f) else snap(),
+                label = "artistTabBar"
+            )
+            val barColor by animateColorAsState(
+                if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                tween(if (motionEnabled) 160 else 0),
+                label = "artistTabBarColor"
+            )
+            Column(
+                Modifier.tactilePress(interaction, pressedScale = 0.94f)
+                    .selectable(
+                        selected = selected,
+                        interactionSource = interaction,
+                        indication = LocalIndication.current,
+                        role = Role.Tab,
+                        onClick = { select(tab) }
+                    )
+                    .semantics { stateDescription = if (selected) "已选中" else "未选中" }
+                    .testTag(if (tab) "artistAlbumsTab" else "artistSongsTab")
+                    .padding(top = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 Text(if (tab) "专辑" else "歌曲", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = if (tab == albums) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+                    color = ink)
                 Spacer(Modifier.height(10.dp))
-                Box(Modifier.width(24.dp).height(3.dp).clip(RoundedCornerShape(50))
-                    .background(if (tab == albums) MaterialTheme.colorScheme.primary else Color.Transparent))
+                Box(Modifier.width(barWidth).height(3.dp).clip(RoundedCornerShape(50))
+                    .background(barColor))
             }
         }
     }

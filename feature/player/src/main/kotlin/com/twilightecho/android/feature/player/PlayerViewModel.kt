@@ -20,12 +20,14 @@ import com.twilightecho.android.coreclient.CoreOperatingMode
 import com.twilightecho.android.coreclient.LibrarySource
 import com.twilightecho.android.coreclient.CatalogTrackReferences
 import com.twilightecho.android.coreclient.CorePlaylistView
+import com.twilightecho.android.coreclient.CoreQueueEdits
 import com.twilightecho.android.coreclient.CoreQueueEntryView
 import com.twilightecho.android.coreclient.CoreQueueWindowView
 import com.twilightecho.android.coreclient.CoreSnapshot
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.CoreTypedCommand
 import com.twilightecho.android.coreclient.CoreResult
+import com.twilightecho.android.coreclient.TrackInspectionDetails
 import com.twilightecho.android.coreclient.CatalogEntity
 import com.twilightecho.android.coreclient.CatalogSource
 import com.twilightecho.android.coreclient.RemoteConnectionPhase
@@ -38,6 +40,8 @@ import com.twilightecho.android.coreclient.withScene
 import com.twilightecho.android.coreclient.TrackArtworkPage
 import com.twilightecho.android.coreclient.TrackArtworkPreview
 import com.twilightecho.android.playbackhost.AndroidPlaybackHost
+import com.twilightecho.android.playbackhost.NcmFallbackUri
+import com.twilightecho.android.playbackhost.offlineNcmFallbackTrack
 import com.twilightecho.android.ui.components.formatDurationSeconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -86,8 +90,15 @@ data class AudioDiagnosticsUiModel(
     val preloadReady: Boolean = false,
     val crossfadeMixActive: Boolean = false,
     val crossfadeBlockedReason: String? = null,
+    val autoMixMode: String = "off",
+    val autoMixState: String = "off",
+    val autoMixReason: String = "",
+    val autoMixStrategy: String = "",
+    val autoMixDurationSeconds: Double = 0.0,
     val actualSampleFormat: String? = null,
     val requestedSampleRateHz: Int = 0,
+    val usbPcmPreferenceAccepted: Boolean = false,
+    val usbPcmFormatMatched: Boolean = false,
     val requestedSampleFormat: String? = null,
     val hardwareSampleRateHz: Int = 0,
     val hardwareBitDepth: Int = 0,
@@ -209,6 +220,10 @@ data class PlayerUiState(
     val allTracks: List<CoreTrackView> = emptyList(),
     /** Songs stored on this phone, whichever device the library shows. */
     val phoneTrackCount: Int = 0,
+    /** IDs of songs in this phone's local music library. */
+    val phoneTrackIds: Set<String> = emptySet(),
+    /** Active track metadata / tags inspection state for the info bottom sheet. */
+    val inspectedTrack: TrackInspectionUiState? = null,
     val disconnectPrompt: DisconnectPrompt? = null,
     /** Home is the streaming page, so it only exists while a streaming provider is enabled; null until known. */
     val homeAvailable: Boolean? = true,
@@ -229,17 +244,34 @@ data class PlayerUiState(
 data class DisconnectPrompt(
     val track: CoreTrackView, val serverId: String, val hostLabel: String,
     val streamingFallback: Boolean = false, val searching: Boolean = false,
-    val match: CoreTrackView? = null, val reconnecting: Boolean = false
+    val match: CoreTrackView? = null, val reconnecting: Boolean = false,
+    val listCount: Int = 1
+)
+
+/** State of the on-demand track metadata & audio header inspector sheet. */
+data class TrackInspectionUiState(
+    val track: CoreTrackView,
+    val sourceLabel: String,
+    val details: TrackInspectionDetails? = null,
+    val loading: Boolean = false
 )
 
 private data class LibraryInputs(val phone: LibraryContent, val desktops: List<DesktopShelf>, val device: String)
 
-/** What the user tried to play when the song's computer was offline, replayed after reconnecting. */
-private class PendingPlay(val tracks: List<CoreTrackView>, val startId: String, val owners: Map<String, String>)
+/** What the user tried to play when the song's computer was offline, replayed after reconnecting or confirming NCM fallback. */
+private class PendingPlay(
+    val tracks: List<CoreTrackView>,
+    val startId: String,
+    val owners: Map<String, String>,
+    val playNextOnly: Boolean = false
+)
 
 /** The desktop accepts at most this many songs in one queue replacement. */
 private const val DESKTOP_QUEUE_LIMIT = 200
 private const val RECONNECT_WAIT_MS = 5_000L
+private const val FALLBACK_PREWARM_LIMIT = 24
+private const val FALLBACK_PREWARM_SPACING_MS = 350L
+private val NCM_DIGITS_REGEX = Regex("^[0-9]+$")
 
 /**
  * Unidirectional Data Flow (UDF) ViewModel for the Player screen (Section 11.1, 13.5 + Phase 2).
@@ -284,7 +316,12 @@ class PlayerViewModel(
     private var promptJob: Job? = null
     private var queueJob: Job? = null
     private var playTracksJob: Job? = null
+    private var offlineFallbackJob: Job? = null
+    private var fallbackPrewarmJob: Job? = null
+    private var playTracksRequest = 0L
     private var desktopConnectJob: Job? = null
+    private val confirmedOfflineFallbackDesktops: MutableSet<String> =
+        java.util.Collections.synchronizedSet(HashSet())
     private var sourceGeneration = 0L
     private var loadedSource: String? = null
     private var lastPresentationRevision: Long? = null
@@ -324,7 +361,17 @@ class PlayerViewModel(
             }.distinctUntilChanged().collect { (installed, enabled) ->
                 streamingPresenter.availability(installed, enabled)
                 ncmSearch.availability(enabled)
-                if (enabled) playbackHost.adoptDesktopProviderSessions()
+                if (enabled) {
+                    playbackHost.adoptDesktopProviderSessions()
+                } else {
+                    confirmedOfflineFallbackDesktops.clear()
+                    fallbackPrewarmJob?.cancel()
+                }
+            }
+        }
+        viewModelScope.launch {
+            playbackHost.playbackNotices.collect { notice ->
+                _uiState.update { it.copy(errorBanner = notice) }
             }
         }
         // Home only shows streaming music, so it is hidden until a streaming provider is installed and enabled.
@@ -346,8 +393,9 @@ class PlayerViewModel(
         }
         viewModelScope.launch { streamingPresenter.state.collect { streaming -> _uiState.update { current ->
             val cloud = current.currentTrack?.source?.startsWith("provider://ncm/") == true
+            val currentNcmId = resolvedNcmSongId(current.currentTrack)
             current.copy(streaming = streaming, isCurrentTrackFavorite = if (cloud)
-                streaming.favoriteTrackId == current.currentTrack?.source?.substringAfterLast('/') && streaming.favoriteLiked == true
+                currentNcmId != null && streaming.favoriteTrackId == currentNcmId && streaming.favoriteLiked == true
                 else current.isCurrentTrackFavorite,
                 isFavoriteBusy = cloud && streaming.favoriteBusy)
         } } }
@@ -358,9 +406,21 @@ class PlayerViewModel(
             if (error != null) { _uiState.update { it.copy(errorBanner = error) }; streamingPresenter.clearFavoriteError() }
         } }
         viewModelScope.launch {
-            uiState.map { it.currentTrack }.distinctUntilChangedBy { it?.id }.collect { track ->
-                streamingPresenter.observeTrack(track)
-            }
+            uiState.map { it.currentTrack }
+                .distinctUntilChangedBy { "${it?.id}\u0000${it?.source}" }
+                .collectLatest { track ->
+                    val directId = resolvedNcmSongId(track)
+                    if (track != null && directId == null && NcmFallbackUri.isFallbackMatchSource(track.source)) {
+                        streamingPresenter.observeTrack(null)
+                        val matched = playbackHost.resolveNcmFallbackMatch(track)
+                        val matchedId = matched?.ncmSongId?.takeIf { it.matches(NCM_DIGITS_REGEX) }
+                        if (uiState.value.currentTrack?.id == track.id) {
+                            streamingPresenter.observeTrack(matchedId?.let { track.copy(ncmSongId = it) })
+                        }
+                    } else {
+                        streamingPresenter.observeTrack(directId?.let { track?.copy(ncmSongId = it) } ?: track)
+                    }
+                }
         }
         viewModelScope.launch {
             combine(
@@ -460,6 +520,7 @@ class PlayerViewModel(
                 if (_uiState.value.artists != view.artists || _uiState.value.libraryDevices != devices) libraryArtist.reset()
                 _uiState.update { it.copy(libraryDevice = device, libraryDevices = devices, allTracks = all.tracks,
                     phoneTrackCount = input.phone.tracks.size,
+                    phoneTrackIds = input.phone.tracks.mapTo(HashSet()) { t -> t.id },
                     libraryTracks = view.tracks, libraryTrackCount = view.tracks.size, albums = view.albums, artists = view.artists,
                     isLoadingLibrary = input.phone.loading && view.tracks.isEmpty(),
                     libraryError = input.phone.error?.takeIf { view.tracks.isEmpty() }) }
@@ -472,8 +533,18 @@ class PlayerViewModel(
                 _uiState.update { if (it.searchQuery != query) it else it.copy(searchResults = results, isSearching = false, searchError = null) }
             }
         }
-        // A computer that comes back can serve the covers that failed while it was away.
-        viewModelScope.launch { playbackHost.connectedDesktops.drop(1).collect { desktopLibrary.refreshArtwork() } }
+        // A computer that comes back can serve the covers that failed while it was away, and resumes direct desktop streaming.
+        viewModelScope.launch {
+            var previousOnline = playbackHost.connectedDesktops.value
+            playbackHost.connectedDesktops.drop(1).collect { online ->
+                val newlyConnected = online - previousOnline
+                previousOnline = online
+                if (newlyConnected.isNotEmpty()) {
+                    confirmedOfflineFallbackDesktops.removeAll(newlyConnected)
+                    desktopLibrary.refreshArtwork()
+                }
+            }
+        }
 
         viewModelScope.launch {
             coreClient.reconcileState()
@@ -667,7 +738,12 @@ class PlayerViewModel(
 
     fun onShufflePlayAll() {
         val library = _uiState.value.libraryTracks
-        val pool = (if (library.isEmpty()) _uiState.value.queueItems.mapNotNull { it.track } else library.filter(::reachable)).shuffled()
+        val pool = if (library.isEmpty()) {
+            _uiState.value.queueItems.mapNotNull { it.track }.shuffled()
+        } else {
+            val reachablePool = library.filter(::reachableOrConfirmedFallback).shuffled()
+            if (reachablePool.isNotEmpty() || !ncmEnabled()) reachablePool else library.shuffled()
+        }
         if (pool.isEmpty()) {
             if (library.isNotEmpty()) _uiState.update { it.copy(errorBanner = "电脑未连接，暂时没有能播放的歌曲") }
             return
@@ -894,20 +970,29 @@ class PlayerViewModel(
         else -> Unit
     }
 
-    /** Covers come from the computer each song lives on; an offline computer's songs show placeholders. */
+    /** Covers come from the local desktop artwork cache first, then from the computer when online. */
     private suspend fun desktopArtwork(ids: List<String>): Result<TrackArtworkPage> {
         val owners = trackOwners
-        val online = playbackHost.connectedDesktops.value
-        val (remembered, browsed) = ids.partition { it in owners }
+        fun serverOf(id: String): String? = owners[id] ?: DesktopMediaReference.parse(id)?.serverId
+        val (remembered, browsed) = ids.partition { serverOf(it) != null }
         val items = ArrayList<TrackArtworkPreview>()
         var failure: Throwable? = null
-        remembered.groupBy { owners.getValue(it) }.forEach { (serverId, group) ->
-            if (serverId !in online) group.mapTo(items) { TrackArtworkPreview(it) }
-            else playbackHost.desktopArtwork(serverId, group).fold({ items += it.items }, { failure = it })
+        remembered.groupBy { serverOf(it)!! }.forEach { (serverId, group) ->
+            playbackHost.desktopArtwork(serverId, group).fold({ items += it.items }, { failure = it })
         }
-        if (browsed.isNotEmpty()) playbackHost.desktopLibrary.artwork(browsed).fold({ items += it.items }, { failure = it })
+        if (browsed.isNotEmpty()) {
+            val activeDesktop = (playbackHost.librarySource.value as? LibrarySource.Desktop)?.serverId
+            val result = if (activeDesktop != null) {
+                playbackHost.desktopArtwork(activeDesktop, browsed)
+            } else {
+                playbackHost.desktopLibrary.artwork(browsed)
+            }
+            result.fold({ items += it.items }, { failure = it })
+        }
         return if (items.isEmpty() && failure != null) Result.failure(failure!!) else Result.success(TrackArtworkPage(0, items))
     }
+
+    fun cachedDesktopArtwork(id: String): String? = playbackHost.cachedDesktopArtworkMemory(id)
 
     fun onCatalogPage(offset: Int) = desktopLibrary.browse(offset = offset)
     fun onOpenEntity(entity: CatalogEntity) = desktopLibrary.open(entity)
@@ -935,6 +1020,7 @@ class PlayerViewModel(
 
     /** Deletes the computer's token and pin on this phone; connecting again needs a new approval there. */
     fun onForgetDesktop(device: DesktopCoreDevice) {
+        confirmedOfflineFallbackDesktops.remove(device.id)
         viewModelScope.launch {
             playbackHost.forgetDesktop(device.id).fold(
                 { _uiState.update { it.copy(remoteStatusMessage = "已忘记 ${device.name}") } },
@@ -994,6 +1080,56 @@ class PlayerViewModel(
         }
     }
 
+    fun onAddTrackToLocalPlaylist(playlistId: String, playlistName: String, track: CoreTrackView) {
+        viewModelScope.launch {
+            playbackHost.phoneLibraryClient.addTracksToPlaylist(playlistId, listOf(track.id)).fold(
+                onSuccess = { banner("已加入「$playlistName」") },
+                onFailure = { err -> banner(err.message ?: "加入歌单失败") }
+            )
+        }
+    }
+
+    fun onCreateLocalPlaylistWithTracks(name: String, tracks: List<CoreTrackView>) {
+        val trimmed = name.trim().ifEmpty { "未命名歌单 ${_uiState.value.playlists.size + 1}" }
+        viewModelScope.launch {
+            playbackHost.phoneLibraryClient.createPlaylist(trimmed, tracks.map { it.id }).fold(
+                onSuccess = {
+                    banner(if (tracks.isEmpty()) "已创建歌单「$trimmed」" else "已创建歌单「$trimmed」并加入歌曲")
+                },
+                onFailure = { err -> banner(err.message ?: "创建歌单失败") }
+            )
+        }
+    }
+
+    fun onRemoveTrackFromLocalPlaylist(playlistId: String, track: CoreTrackView) {
+        viewModelScope.launch {
+            playbackHost.phoneLibraryClient.removeTrackFromPlaylist(playlistId, track.id).fold(
+                onSuccess = { banner("已从歌单移除「${track.title}」") },
+                onFailure = { err -> banner(err.message ?: "移除失败，请重试") }
+            )
+        }
+    }
+
+    fun onRemoveQueueEntry(entry: CoreQueueEntryView) {
+        val state = _uiState.value
+        if (state.queueTotal <= 0) return
+        launchForCurrentSource {
+            if (state.queueTotal <= 1) {
+                coreClient.executeCommand(CoreTypedCommand.Stop)
+                val latest = coreClient.snapshot.value?.queue
+                if (latest != null) {
+                    report(coreClient.executeCommand(
+                        CoreTypedCommand.QueueEdit(latest.id, latest.revision, CoreQueueEdits.clear())
+                    ))
+                }
+            } else {
+                report(coreClient.executeCommand(
+                    CoreTypedCommand.QueueEdit(state.queueId, state.queueRevision, CoreQueueEdits.remove(listOf(entry.occurrenceId)))
+                ))
+            }
+        }
+    }
+
     fun onPlayTrackIdsCollection(trackIds: List<String>) {
         if (trackIds.isEmpty()) return
         val tracks = collectionTracks(trackIds, _uiState.value.libraryTracks + _uiState.value.allTracks)
@@ -1029,6 +1165,15 @@ class PlayerViewModel(
 
     fun onToggleGapless() {
         editAudio { it.copy(gapless = !it.gapless, dsp = it.dsp.copy(crossfadeSeconds = if (it.gapless) 0.0 else it.dsp.crossfadeSeconds)) }
+    }
+
+    fun onSetAutoMixMode(mode: String) {
+        if (!requireLocal() || mode !in setOf("off", "natural", "dj")) return
+        viewModelScope.launch {
+            audioSettingsMutex.withLock {
+                report(coreClient.executeCommand(CoreTypedCommand.SettingsEdit(key = "autoMixMode", valueJson = JsonPrimitive(mode).toString())))
+            }
+        }
     }
 
     private suspend fun applyAudioEdit(edit: (CoreEqConfigView) -> CoreEqConfigView): Boolean = audioSettingsMutex.withLock {
@@ -1118,14 +1263,36 @@ class PlayerViewModel(
         }
     }
 
+    private fun resolvedNcmSongId(track: CoreTrackView?): String? {
+        if (track?.source?.startsWith("provider://ncm/") != true) return null
+        return NcmFallbackUri.directSongId(track.source)
+            ?: track.ncmSongId?.takeIf { it.matches(NCM_DIGITS_REGEX) }
+            ?: NcmFallbackUri.parse(track.source)?.let { playbackHost.cachedNcmFallbackMatch(it)?.ncmSongId }
+                ?.takeIf { it.matches(NCM_DIGITS_REGEX) }
+    }
+
     fun onToggleFavoriteCurrentTrack() {
         if (!requireLocal()) return
-        if (_uiState.value.currentTrack?.source?.startsWith("provider://ncm/") == true) {
-            streamingPresenter.toggleFavorite(); return
+        val track = _uiState.value.currentTrack ?: return
+        if (track.source?.startsWith("provider://ncm/") == true) {
+            if (streamingPresenter.state.value.favoriteTrackId != null) {
+                streamingPresenter.toggleFavorite()
+            } else if (NcmFallbackUri.isFallbackMatchSource(track.source)) {
+                viewModelScope.launch {
+                    val matched = playbackHost.resolveNcmFallbackMatch(track)
+                    val ncmId = matched?.ncmSongId?.takeIf { it.matches(NCM_DIGITS_REGEX) }
+                    if (ncmId == null) {
+                        banner("网易云上没有找到「${track.title}」")
+                    } else if (_uiState.value.currentTrack?.id == track.id) {
+                        streamingPresenter.observeTrack(track.copy(ncmSongId = ncmId))
+                        streamingPresenter.toggleFavorite()
+                    }
+                }
+            }
+            return
         }
-        val trackId = _uiState.value.currentTrack?.id ?: return
         launchForCurrentSource {
-            reportResult(coreClient.toggleFavorite(trackId))
+            reportResult(coreClient.toggleFavorite(track.id))
         }
     }
 
@@ -1206,20 +1373,23 @@ class PlayerViewModel(
         _uiState.update {
             it.copy(
                 isScanningLocalMusic = true,
-                scanStatusMessage = "正在扫描本地音乐…"
+                scanStatusMessage = "正在读取音乐文件夹…"
             )
         }
         viewModelScope.launch {
             val result = playbackHost.scanAndSyncDeviceMusic()
             result.fold(
                 onSuccess = { summary ->
-                    val message = buildList {
-                        add(if (summary.withDeviceMusic) "已同步 ${summary.songs} 首歌曲"
-                            else "未获得音乐访问权限，只同步了音乐文件夹中的 ${summary.songs} 首歌曲")
-                        if (summary.cueSongs > 0) add("其中 ${summary.cueSongs} 首来自 CUE 分轨")
-                        if (summary.unreadableFolders.isNotEmpty()) add("${summary.unreadableFolders.size} 个文件夹无法读取")
-                        if (summary.skipped.isNotEmpty()) add("${summary.skipped.size} 个 CUE 未分轨")
-                    }.joinToString("，")
+                    val message = if (summary.folderCount == 0 && summary.unreadableFolders.isEmpty()) {
+                        "尚未选择音乐文件夹"
+                    } else {
+                        buildList {
+                            add("已从音乐文件夹同步 ${summary.songs} 首歌曲")
+                            if (summary.cueSongs > 0) add("其中 ${summary.cueSongs} 首来自 CUE 分轨")
+                            if (summary.unreadableFolders.isNotEmpty()) add("${summary.unreadableFolders.size} 个文件夹无法读取")
+                            if (summary.skipped.isNotEmpty()) add("${summary.skipped.size} 个 CUE 未分轨")
+                        }.joinToString("，")
+                    }
                     _uiState.update {
                         it.copy(
                             isScanningLocalMusic = false,
@@ -1234,7 +1404,7 @@ class PlayerViewModel(
                     _uiState.update {
                         it.copy(
                             isScanningLocalMusic = false,
-                            scanStatusMessage = "扫描失败: ${err.message}",
+                            scanStatusMessage = "读取文件夹失败: ${err.message}",
                             scanDetails = emptyList()
                         )
                     }
@@ -1249,17 +1419,277 @@ class PlayerViewModel(
         onFailure = { _uiState.update { it.copy(scanStatusMessage = "无法保存这个文件夹的访问权限，请重新选择") }; false }
     )
 
-    /** Drops the folder's songs at once; the rescan does not ask for the music permission again. */
+    /** Drops the folder's songs at once by re-reading the remaining selected folders. */
     fun onRemoveMusicFolder(uri: String) {
         playbackHost.removeMusicFolder(uri)
         onScanDeviceMusic()
     }
 
-    fun onScanPermissionDenied() {
-        // Picked folders carry their own access, so their songs still sync.
-        if (_uiState.value.musicFolders.isNotEmpty()) return onScanDeviceMusic()
-        _uiState.update { it.copy(isScanningLocalMusic = false,
-            scanStatusMessage = "未获得音乐访问权限，请授权后重试") }
+    fun onDeleteLocalTrack(track: CoreTrackView) {
+        viewModelScope.launch {
+            playbackHost.deleteLocalTrack(track.id).fold(
+                onSuccess = {
+                    libraryLoader.refresh()
+                    banner("已从音乐库移除「${track.title}」")
+                },
+                onFailure = { err -> banner(err.message ?: "移除失败，请重试") }
+            )
+        }
+    }
+
+    fun onRestoreExcludedLocalTracks() {
+        if (_uiState.value.isScanningLocalMusic) return
+        _uiState.update {
+            it.copy(
+                isScanningLocalMusic = true,
+                scanStatusMessage = "正在恢复已移除的歌曲并重新读取文件夹…"
+            )
+        }
+        viewModelScope.launch {
+            playbackHost.restoreExcludedLocalTracks().fold(
+                onSuccess = { summary ->
+                    val message = buildList {
+                        add("已恢复并同步 ${summary.songs} 首歌曲")
+                        if (summary.cueSongs > 0) add("其中 ${summary.cueSongs} 首来自 CUE 分轨")
+                    }.joinToString("，")
+                    _uiState.update {
+                        it.copy(
+                            isScanningLocalMusic = false,
+                            scanStatusMessage = message,
+                            scanDetails = summary.unreadableFolders.map { folder -> "${folder.label}：无法读取，请移除后重新添加" } +
+                                summary.skipped.map { skip -> "${skip.sheetName}：${skip.reason}" }
+                        )
+                    }
+                    libraryLoader.refresh()
+                    banner("已恢复移除记录并更新音乐库")
+                },
+                onFailure = { err ->
+                    _uiState.update {
+                        it.copy(
+                            isScanningLocalMusic = false,
+                            scanStatusMessage = "恢复失败: ${err.message}",
+                            scanDetails = emptyList()
+                        )
+                    }
+                    banner(err.message ?: "恢复失败，请重试")
+                }
+            )
+        }
+    }
+
+    fun onResetLocalMusicLibrary(clearMusicFolders: Boolean = false) {
+        if (_uiState.value.isScanningLocalMusic) return
+        viewModelScope.launch {
+            playbackHost.resetLocalMusicLibrary(clearMusicFolders).fold(
+                onSuccess = {
+                    val statusMsg = if (clearMusicFolders) {
+                        "已重置本机音乐库并移除所有音乐文件夹"
+                    } else {
+                        "已重置本机音乐库"
+                    }
+                    _uiState.update {
+                        it.copy(
+                            scanStatusMessage = statusMsg,
+                            scanDetails = emptyList()
+                        )
+                    }
+                    libraryLoader.refresh()
+                    banner("音乐库已重置")
+                },
+                onFailure = { err -> banner(err.message ?: "重置音乐库失败，请重试") }
+            )
+        }
+    }
+
+    fun onInspectTrack(track: CoreTrackView) {
+        val owner = ownerOf(track)
+        val desktopLabel = owner?.let { id ->
+            playbackHost.desktopLibraries.value.find { it.serverId == id }?.hostLabel ?: "已配对电脑"
+        }
+        val sourceLabel = describeTrackOrigin(track, desktopLabel)
+        _uiState.update {
+            it.copy(
+                inspectedTrack = TrackInspectionUiState(
+                    track = track,
+                    sourceLabel = sourceLabel,
+                    details = null,
+                    loading = true
+                )
+            )
+        }
+        viewModelScope.launch {
+            val probed = runCatching { playbackHost.inspectTrackMetadata(track) }.getOrNull()
+            _uiState.update { current ->
+                val active = current.inspectedTrack
+                if (active == null || active.track.id != track.id) current
+                else current.copy(inspectedTrack = active.copy(details = probed, loading = false))
+            }
+        }
+    }
+
+    fun onDismissTrackInspection() {
+        _uiState.update { it.copy(inspectedTrack = null) }
+    }
+
+    fun onPlayNext(track: CoreTrackView) {
+        if (track.unavailableReason != null) {
+            banner("无法播放：${track.unavailableReason}")
+            return
+        }
+        val owner = ownerOf(track)
+        val isPhoneTrack = track.id in _uiState.value.phoneTrackIds
+        val isStreamingProvider = track.source?.startsWith("provider://") == true ||
+            (track.ncmSongId != null && !isPhoneTrack && owner == null)
+
+        if (isStreamingProvider) {
+            val isNcm = track.source?.startsWith("provider://ncm/") == true || track.ncmSongId != null
+            if (isNcm && _uiState.value.streaming.access != StreamingAccess.READY) {
+                banner("请先登录网易云音乐账号")
+                return
+            }
+            val playable = if (!track.source.isNullOrBlank()) track
+            else track.ncmSongId?.takeIf { it.isNotBlank() }?.let { track.copy(source = "provider://ncm/$it") } ?: track
+            viewModelScope.launch {
+                val snapshot = playbackHost.selectPlaybackTarget(phone = true).getOrElse { err ->
+                    banner(err.message ?: "无法切换播放目标")
+                    return@launch
+                }
+                insertNextOrStartOnClient(coreClient, snapshot, playable, localAudioFocus = true)
+            }
+            return
+        }
+
+        val online = playbackHost.connectedDesktops.value
+        if (_uiState.value.operatingMode is CoreOperatingMode.RemoteDesktopCore) {
+            val target = playbackHost.playbackDesktopServerId()
+            when {
+                owner == null -> banner("手机里的歌曲不能在电脑上播放，请把播放设备切换到此手机")
+                target == null -> banner("电脑未连接，请把播放设备切换到此手机")
+                owner != target -> banner("这首歌在另一台电脑上，请把播放设备切换到此手机")
+                owner !in online -> {
+                    if (owner in confirmedOfflineFallbackDesktops && ncmEnabled()) {
+                        playNextOfflineFallback(track)
+                    } else {
+                        openDisconnectPrompt(listOf(track), track, owner, ::ownerOf, playNextOnly = true)
+                    }
+                }
+                else -> {
+                    val snap = coreClient.snapshot.value
+                    val queue = snap?.queue
+                    if (queue != null && queue.total > 0) {
+                        val afterId = resolveInsertAfterOccurrenceId(snap, coreClient.queueWindow.value.items)
+                        val beforeId = if (afterId == null && queue.index < 0) {
+                            coreClient.queueWindow.value.items.minByOrNull { it.index }?.occurrenceId
+                        } else null
+                        val edit = CoreQueueEdits.insertTrackIds(
+                            trackIds = listOf(track.id),
+                            afterEntryId = afterId,
+                            beforeEntryId = beforeId
+                        )
+                        launchForCurrentSource {
+                            val result = coreClient.executeCommand(CoreTypedCommand.QueueEdit(queue.id, queue.revision, edit))
+                            if (report(result)) {
+                                banner("已设为下一首播放「${track.title}」")
+                            }
+                        }
+                    } else {
+                        playOnDesktop(target, listOf(track), track, ::ownerOf)
+                    }
+                }
+            }
+            return
+        }
+
+        if (owner != null && owner !in online) {
+            if (owner in confirmedOfflineFallbackDesktops && ncmEnabled()) {
+                playNextOfflineFallback(track)
+            } else {
+                openDisconnectPrompt(listOf(track), track, owner, ::ownerOf, playNextOnly = true)
+            }
+            return
+        }
+        if (owner != null && track.catalog == null) {
+            banner("这首歌缺少电脑端的音源信息，请刷新音乐库")
+            return
+        }
+
+        viewModelScope.launch {
+            val playable = try {
+                if (owner == null) track
+                else playbackHost.desktopStreamTracks(owner, listOf(track)).single().also {
+                    desktopLibrary.aliasArtwork(it.id, track.id)
+                }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                banner(error.message ?: "无法载入歌曲，请重试")
+                return@launch
+            }
+            insertNextOrStartOnClient(coreClient, coreClient.snapshot.value, playable, localAudioFocus = true)
+        }
+    }
+
+    private fun playNextOfflineFallback(track: CoreTrackView, knownMatch: CoreTrackView? = null) {
+        viewModelScope.launch {
+            val match = knownMatch
+                ?: playbackHost.cachedNcmFallbackMatch(track)
+                ?: playbackHost.resolveNcmFallbackMatch(track)
+            if (match == null && NcmFallbackUri.directSongId(track.source) == null &&
+                track.ncmSongId?.matches(NCM_DIGITS_REGEX) != true
+            ) {
+                banner("网易云上没有找到「${track.title}」")
+                return@launch
+            }
+            val snapshot = playbackHost.selectPlaybackTarget(phone = true).getOrElse { err ->
+                banner(err.message ?: "无法切换播放目标")
+                return@launch
+            }
+            insertNextOrStartOnClient(
+                coreClient,
+                snapshot,
+                offlineNcmFallbackTrack(track, match),
+                localAudioFocus = true
+            )
+        }
+    }
+
+    private suspend fun insertNextOrStartOnClient(
+        client: CoreClient,
+        snapshot: CoreSnapshot?,
+        playable: CoreTrackView,
+        localAudioFocus: Boolean
+    ) {
+        val queue = snapshot?.queue
+        if (queue != null && queue.total > 0) {
+            val afterId = resolveInsertAfterOccurrenceId(snapshot, client.queueWindow.value.items)
+            val beforeId = if (afterId == null && queue.index < 0) {
+                client.queueWindow.value.items.minByOrNull { it.index }?.occurrenceId
+            } else null
+            val edit = CoreQueueEdits.insertTracks(
+                tracks = listOf(playable),
+                afterEntryId = afterId,
+                beforeEntryId = beforeId
+            )
+            val result = client.executeCommand(CoreTypedCommand.QueueEdit(queue.id, queue.revision, edit))
+            if (report(result)) {
+                banner("已设为下一首播放「${playable.title}」")
+            }
+        } else {
+            val origin = playbackHost.switchableTransport.generation
+            val result = client.executeCommand(
+                CoreTypedCommand.ReplaceQueue(
+                    revision = queue?.revision,
+                    tracks = listOf(playable),
+                    startIndex = 0,
+                    play = !localAudioFocus
+                )
+            )
+            if (report(result) && localAudioFocus && origin == playbackHost.switchableTransport.generation) {
+                if (report(playbackHost.requestFocusAndPlay(0.0))) {
+                    banner("正在播放「${playable.title}」")
+                }
+            }
+        }
     }
 
     fun onPlayTrackFromLibrary(track: CoreTrackView) {
@@ -1271,7 +1701,9 @@ class PlayerViewModel(
 
     /** The computer a listed song lives on, or null for the phone's own songs. */
     private fun ownerOf(track: CoreTrackView): String? = trackOwners[track.id]
-        ?: (playbackHost.librarySource.value as? LibrarySource.Desktop)?.serverId?.takeIf { track.id.startsWith("remote-track:") }
+        ?: (playbackHost.librarySource.value as? LibrarySource.Desktop)?.serverId?.takeIf {
+            track.id.startsWith("remote-track:") || (track.catalog != null && track.id !in _uiState.value.phoneTrackIds)
+        }
 
     /** Whether the device that plays right now can reach this song. */
     private fun reachable(track: CoreTrackView): Boolean {
@@ -1280,6 +1712,13 @@ class PlayerViewModel(
         return if (_uiState.value.operatingMode is CoreOperatingMode.RemoteDesktopCore)
             owner != null && owner == playbackHost.playbackDesktopServerId() && owner in online
         else owner == null || owner in online && track.catalog != null
+    }
+
+    private fun reachableOrConfirmedFallback(track: CoreTrackView): Boolean {
+        if (reachable(track)) return true
+        if (_uiState.value.operatingMode !is CoreOperatingMode.StandaloneLocal || !ncmEnabled()) return false
+        val owner = ownerOf(track)
+        return owner != null && owner in confirmedOfflineFallbackDesktops
     }
 
     private fun playTracks(tracks: List<CoreTrackView>, startTrackId: String, ownerOf: (CoreTrackView) -> String?) {
@@ -1292,36 +1731,207 @@ class PlayerViewModel(
                 startOwner == null -> banner("手机里的歌曲不能在电脑上播放，请把播放设备切换到此手机")
                 target == null -> banner("电脑未连接，请把播放设备切换到此手机")
                 startOwner != target -> banner("这首歌在另一台电脑上，请把播放设备切换到此手机")
-                startOwner !in online -> openDisconnectPrompt(tracks, start, startOwner, ownerOf)
+                startOwner !in online -> {
+                    if (startOwner in confirmedOfflineFallbackDesktops && ncmEnabled()) {
+                        playTracksWithOfflineFallback(tracks, startTrackId, ownerOf, initialMatch = null)
+                    } else {
+                        openDisconnectPrompt(tracks, start, startOwner, ownerOf)
+                    }
+                }
                 else -> playOnDesktop(target, tracks, start, ownerOf)
             }
             return
         }
-        if (startOwner != null && startOwner !in online) { openDisconnectPrompt(tracks, start, startOwner, ownerOf); return }
+        if (startOwner != null && startOwner !in online) {
+            if (startOwner in confirmedOfflineFallbackDesktops && ncmEnabled()) {
+                playTracksWithOfflineFallback(tracks, startTrackId, ownerOf, initialMatch = null)
+            } else {
+                openDisconnectPrompt(tracks, start, startOwner, ownerOf)
+            }
+            return
+        }
         if (startOwner != null && start.catalog == null) { banner("这首歌缺少电脑端的音源信息，请刷新音乐库"); return }
-        // The phone streams computer songs by their lasting reference; songs of offline computers are left out.
-        val playable = tracks.filter { track -> ownerOf(track).let { it == null || it in online && track.catalog != null } }
+        val allowConfirmedFallback = ncmEnabled()
+        // The phone streams online computer songs directly, and plays confirmed offline computers via NetEase Cloud Music.
+        val playable = tracks.filter { track ->
+            val owner = ownerOf(track)
+            owner == null || (owner in online && track.catalog != null) ||
+                (allowConfirmedFallback && owner in confirmedOfflineFallbackDesktops)
+        }
         val skipped = tracks.size - playable.size
         val startIndex = playable.indexOfFirst { it.id == startTrackId }
+        if (startIndex < 0) return
         val expectedRev = _uiState.value.queueRevision
         val origin = playbackHost.switchableTransport.generation
+        val request = ++playTracksRequest
         playTracksJob?.cancel()
+        offlineFallbackJob?.cancel()
+        fallbackPrewarmJob?.cancel()
         playTracksJob = viewModelScope.launch {
-            if (origin != playbackHost.switchableTransport.generation) return@launch
+            if (request != playTracksRequest || origin != playbackHost.switchableTransport.generation) return@launch
+            var hasOfflineFallback = false
             val queue = try {
                 playable.map { track ->
                     val serverId = ownerOf(track) ?: return@map track
-                    playbackHost.desktopStreamTracks(serverId, listOf(track)).single().also { desktopLibrary.aliasArtwork(it.id, track.id) }
+                    if (serverId in playbackHost.connectedDesktops.value && track.catalog != null) {
+                        playbackHost.desktopStreamTracks(serverId, listOf(track)).single().also { desktopLibrary.aliasArtwork(it.id, track.id) }
+                    } else {
+                        hasOfflineFallback = true
+                        offlineNcmFallbackTrack(track, playbackHost.cachedNcmFallbackMatch(track))
+                    }
                 }
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (error: Exception) { banner(error.message ?: "播放失败，请重试"); return@launch }
+            if (request != playTracksRequest || origin != playbackHost.switchableTransport.generation) return@launch
             val result = coreClient.executeCommand(CoreTypedCommand.ReplaceQueue(revision = expectedRev, tracks = queue,
                 startIndex = startIndex, play = false))
-            if (!report(result) || origin != playbackHost.switchableTransport.generation) return@launch
+            if (!report(result) || request != playTracksRequest || origin != playbackHost.switchableTransport.generation) return@launch
             report(playbackHost.requestFocusAndPlay(0.0))
             _uiState.update { it.copy(isLibrarySheetOpen = false,
                 errorBanner = if (skipped > 0) "已跳过 $skipped 首电脑上的歌曲：电脑未连接" else it.errorBanner) }
+            if (hasOfflineFallback) {
+                startFallbackPrewarm(playable, startIndex, ownerOf, origin)
+            }
+        }
+    }
+
+    private fun playTracksWithOfflineFallback(
+        tracks: List<CoreTrackView>,
+        startTrackId: String,
+        ownerOf: (CoreTrackView) -> String?,
+        initialMatch: CoreTrackView?
+    ) {
+        val onlineSnapshot = playbackHost.connectedDesktops.value
+        val playable = tracks.filter { track ->
+            val owner = ownerOf(track)
+            owner == null || (owner in onlineSnapshot && track.catalog != null) || (owner !in onlineSnapshot && ncmEnabled())
+        }
+        val initialStartIndex = playable.indexOfFirst { it.id == startTrackId }
+        if (initialStartIndex < 0) return
+        val start = playable[initialStartIndex]
+        val request = ++playTracksRequest
+        playTracksJob?.cancel()
+        offlineFallbackJob?.cancel()
+        fallbackPrewarmJob?.cancel()
+        offlineFallbackJob = viewModelScope.launch {
+            val snapshot = playbackHost.selectPlaybackTarget(phone = true).getOrElse { err ->
+                banner(err.message ?: "无法切换播放目标")
+                return@launch
+            }
+            val origin = playbackHost.switchableTransport.generation
+            if (request != playTracksRequest) return@launch
+
+            var activeIndex = initialStartIndex
+            var activeMatch = initialMatch
+            var skippedTitle: String? = null
+            if (activeMatch == null) {
+                val probeLimit = minOf(playable.size, 6)
+                var foundPlayable = false
+                for (step in 0 until probeLimit) {
+                    val idx = (initialStartIndex + step) % playable.size
+                    val candidate = playable[idx]
+                    val owner = ownerOf(candidate)
+                    val isOnlineOrLocal = owner == null ||
+                        (owner in playbackHost.connectedDesktops.value && candidate.catalog != null)
+                    val hasDirectNcm = NcmFallbackUri.directSongId(candidate.source) != null ||
+                        candidate.ncmSongId?.matches(NCM_DIGITS_REGEX) == true
+                    if (isOnlineOrLocal || hasDirectNcm) {
+                        activeIndex = idx
+                        foundPlayable = true
+                        break
+                    }
+                    val matched = playbackHost.cachedNcmFallbackMatch(candidate)
+                        ?: playbackHost.resolveNcmFallbackMatch(candidate)
+                    if (request != playTracksRequest || origin != playbackHost.switchableTransport.generation) return@launch
+                    if (matched != null) {
+                        activeIndex = idx
+                        activeMatch = matched
+                        foundPlayable = true
+                        break
+                    } else if (skippedTitle == null) {
+                        skippedTitle = candidate.title
+                    }
+                }
+                if (!foundPlayable) {
+                    if (playable.size <= probeLimit) {
+                        banner(if (playable.size == 1) "网易云上没有找到「${start.title}」" else "网易云上没有找到可播放的歌曲")
+                        return@launch
+                    }
+                    activeIndex = (initialStartIndex + probeLimit) % playable.size
+                }
+            }
+
+            val currentOnline = playbackHost.connectedDesktops.value
+            val queue = try {
+                playable.mapIndexed { idx, track ->
+                    val serverId = ownerOf(track) ?: return@mapIndexed track
+                    if (serverId in currentOnline && track.catalog != null) {
+                        playbackHost.desktopStreamTracks(serverId, listOf(track)).single().also {
+                            desktopLibrary.aliasArtwork(it.id, track.id)
+                        }
+                    } else {
+                        val known = if (idx == activeIndex) {
+                            activeMatch ?: playbackHost.cachedNcmFallbackMatch(track)
+                        } else {
+                            playbackHost.cachedNcmFallbackMatch(track)
+                        }
+                        offlineNcmFallbackTrack(track, known)
+                    }
+                }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                banner(error.message ?: "播放失败，请重试")
+                return@launch
+            }
+            if (request != playTracksRequest || origin != playbackHost.switchableTransport.generation) return@launch
+            val revision = coreClient.snapshot.value?.queue?.revision ?: snapshot.queue?.revision
+            val result = coreClient.executeCommand(
+                CoreTypedCommand.ReplaceQueue(
+                    revision = revision,
+                    tracks = queue,
+                    startIndex = activeIndex,
+                    play = false
+                )
+            )
+            if (!report(result) || request != playTracksRequest || origin != playbackHost.switchableTransport.generation) return@launch
+            report(playbackHost.requestFocusAndPlay(0.0))
+            _uiState.update {
+                it.copy(
+                    isLibrarySheetOpen = false,
+                    errorBanner = if (skippedTitle != null) "网易云未找到「$skippedTitle」，已自动跳到下一首" else it.errorBanner
+                )
+            }
+            startFallbackPrewarm(playable, activeIndex, ownerOf, origin)
+        }
+    }
+
+    /** Gently pre-resolves upcoming offline tracks in the background for instant transitions & gapless preloading. */
+    private fun startFallbackPrewarm(
+        tracks: List<CoreTrackView>,
+        startIndex: Int,
+        ownerOf: (CoreTrackView) -> String?,
+        expectedGeneration: Long
+    ) {
+        fallbackPrewarmJob?.cancel()
+        if (tracks.size <= 1) return
+        fallbackPrewarmJob = viewModelScope.launch {
+            var prewarmed = 0
+            for (step in 1 until tracks.size) {
+                if (prewarmed >= FALLBACK_PREWARM_LIMIT) break
+                if (expectedGeneration != playbackHost.switchableTransport.generation || !ncmEnabled()) break
+                val candidate = tracks[(startIndex + step) % tracks.size]
+                val owner = ownerOf(candidate) ?: continue
+                if (owner in playbackHost.connectedDesktops.value) continue
+                if (NcmFallbackUri.directSongId(candidate.source) != null ||
+                    candidate.ncmSongId?.matches(NCM_DIGITS_REGEX) == true
+                ) continue
+                if (playbackHost.cachedNcmFallbackMatch(candidate) != null) continue
+                playbackHost.resolveNcmFallbackMatch(candidate)
+                prewarmed++
+                delay(FALLBACK_PREWARM_SPACING_MS)
+            }
         }
     }
 
@@ -1344,28 +1954,69 @@ class PlayerViewModel(
         }
     }
 
-    private fun openDisconnectPrompt(tracks: List<CoreTrackView>, track: CoreTrackView, serverId: String,
-        ownerOf: (CoreTrackView) -> String?) {
+    private fun openDisconnectPrompt(
+        tracks: List<CoreTrackView>,
+        track: CoreTrackView,
+        serverId: String,
+        ownerOf: (CoreTrackView) -> String?,
+        playNextOnly: Boolean = false
+    ) {
         val label = playbackHost.desktopLibraries.value.find { it.serverId == serverId }?.hostLabel ?: "电脑"
-        pendingPlay = PendingPlay(tracks, track.id, buildMap { tracks.forEach { t -> ownerOf(t)?.let { put(t.id, it) } } })
+        val ownersMap = buildMap { tracks.forEach { t -> ownerOf(t)?.let { put(t.id, it) } } }
+        val online = playbackHost.connectedDesktops.value
+        val offlineCount = if (playNextOnly) 1 else tracks.count { t -> ownersMap[t.id]?.let { it !in online } == true }.coerceAtLeast(1)
+        pendingPlay = PendingPlay(tracks, track.id, ownersMap, playNextOnly = playNextOnly)
         val fallback = ncmEnabled()
         promptJob?.cancel()
-        _uiState.update { it.copy(disconnectPrompt = DisconnectPrompt(track, serverId, label, streamingFallback = fallback, searching = fallback)) }
+        _uiState.update {
+            it.copy(
+                disconnectPrompt = DisconnectPrompt(
+                    track = track,
+                    serverId = serverId,
+                    hostLabel = label,
+                    streamingFallback = fallback,
+                    searching = fallback,
+                    listCount = offlineCount
+                )
+            )
+        }
         if (!fallback) return
         promptJob = viewModelScope.launch {
-            val match = try { streamingPresenter.findMatch(track) }
-                catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
-                catch (error: Exception) { null }
+            val match = try {
+                playbackHost.cachedNcmFallbackMatch(track)
+                    ?: streamingPresenter.findMatch(track)?.also { playbackHost.rememberNcmFallbackMatch(track, it) }
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                null
+            }
             _uiState.update { state -> state.copy(disconnectPrompt = state.disconnectPrompt?.let { prompt ->
                 if (prompt.track.id == track.id) prompt.copy(searching = false, match = match) else prompt }) }
         }
     }
 
-    /** Plays the same song from NetEase Cloud Music on the phone. */
+    /** Plays the chosen song and its entire list from NetEase Cloud Music on the phone. */
     fun onDisconnectPlayStreaming() {
-        val match = _uiState.value.disconnectPrompt?.match ?: return
+        val prompt = _uiState.value.disconnectPrompt ?: return
+        val match = prompt.match ?: return
+        val pending = pendingPlay
+        playbackHost.rememberNcmFallbackMatch(prompt.track, match)
+        val online = playbackHost.connectedDesktops.value
+        confirmedOfflineFallbackDesktops.add(prompt.serverId)
+        pending?.owners?.values?.forEach { serverId ->
+            if (serverId !in online) confirmedOfflineFallbackDesktops.add(serverId)
+        }
         onDismissDisconnectPrompt()
-        onPlayProviderTracks(listOf(match), match)
+        when {
+            pending == null -> onPlayProviderTracks(listOf(match), match)
+            pending.playNextOnly -> playNextOfflineFallback(prompt.track, knownMatch = match)
+            else -> playTracksWithOfflineFallback(
+                tracks = pending.tracks,
+                startTrackId = pending.startId,
+                ownerOf = { pending.owners[it.id] },
+                initialMatch = match
+            )
+        }
     }
 
     /** Reconnects the song's computer, then plays what the user picked. */
@@ -1388,7 +2039,13 @@ class PlayerViewModel(
                 if (_uiState.value.disconnectPrompt?.track?.id != prompt.track.id) return@launch
                 val pending = pendingPlay
                 onDismissDisconnectPrompt()
-                if (pending != null) playTracks(pending.tracks, pending.startId) { pending.owners[it.id] }
+                if (pending != null) {
+                    if (pending.playNextOnly) {
+                        pending.tracks.firstOrNull { it.id == pending.startId }?.let(::onPlayNext)
+                    } else {
+                        playTracks(pending.tracks, pending.startId) { pending.owners[it.id] }
+                    }
+                }
             }
         }
     }
@@ -1469,8 +2126,10 @@ class PlayerViewModel(
         val trackSource = track.source
         when {
             trackSource?.startsWith("provider://ncm/") == true -> {
-                val ncmId = track.ncmSongId?.takeIf { it.isNotBlank() }
-                    ?: trackSource.substringAfterLast('/').takeIf { it.isNotBlank() }
+                val ncmId = NcmFallbackUri.directSongId(trackSource)
+                    ?: track.ncmSongId?.takeIf { it.matches(NCM_DIGITS_REGEX) }
+                    ?: NcmFallbackUri.parse(trackSource)?.let { playbackHost.resolveNcmFallbackMatch(it)?.ncmSongId }
+                        ?.takeIf { it.matches(NCM_DIGITS_REGEX) }
                 if (ncmId != null && importNcmLyricsById(track.id, ncmId)) return
                 fetchOnlineLyricsSilently(track.id)
             }
@@ -1541,12 +2200,13 @@ class PlayerViewModel(
     private suspend fun fetchBestEffortOnlineLyrics(track: CoreTrackView) {
         if (!isStillActiveLocalTrack(track.id)) return
         if (ncmEnabled() && track.title.isNotBlank()) {
-            val directNcmId = track.ncmSongId?.takeIf { it.isNotBlank() }
+            val directNcmId = NcmFallbackUri.directSongId(track.source)
+                ?: track.ncmSongId?.takeIf { it.matches(NCM_DIGITS_REGEX) }
             if (directNcmId != null && importNcmLyricsById(track.id, directNcmId)) return
             val matchedId = try {
-                val matched = streamingPresenter.findMatch(track)
-                matched?.ncmSongId?.takeIf { it.isNotBlank() }
-                    ?: matched?.source?.takeIf { it.startsWith("provider://ncm/") }?.substringAfterLast('/')
+                val matched = playbackHost.resolveNcmFallbackMatch(track)
+                matched?.ncmSongId?.takeIf { it.matches(NCM_DIGITS_REGEX) }
+                    ?: NcmFallbackUri.directSongId(matched?.source)
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (_: Exception) {
@@ -1639,9 +2299,10 @@ class PlayerViewModel(
                 queueError = if (current.queueRevision != queueRevision) null else current.queueError,
                 currentQueueIndex = snapshot.queue?.index ?: playback?.queueIndex ?: 0,
                 favoriteTrackIds = snapshot.favoriteTrackIds,
-                isCurrentTrackFavorite = if (snapshot.track?.source?.startsWith("provider://ncm/") == true)
-                    current.streaming.favoriteTrackId == snapshot.track?.source?.substringAfterLast('/') && current.streaming.favoriteLiked == true
-                    else currentTrackId != null && currentTrackId in snapshot.favoriteTrackIds,
+                isCurrentTrackFavorite = if (snapshot.track?.source?.startsWith("provider://ncm/") == true) {
+                    val currentNcmId = resolvedNcmSongId(snapshot.track)
+                    currentNcmId != null && current.streaming.favoriteTrackId == currentNcmId && current.streaming.favoriteLiked == true
+                } else currentTrackId != null && currentTrackId in snapshot.favoriteTrackIds,
                 isFavoriteBusy = snapshot.track?.source?.startsWith("provider://ncm/") == true && current.streaming.favoriteBusy,
                 currentTrackBookmarks = trackBookmarks,
                 eqConfig = snapshot.eqConfig,
@@ -1821,4 +2482,50 @@ private fun formatLrcTimestamp(ms: Long): String {
     val seconds = (ms / 1_000L) % 60L
     val millis = ms % 1_000L
     return String.format(java.util.Locale.US, "[%02d:%02d.%03d]", minutes, seconds, millis)
+}
+
+internal fun resolveInsertAfterOccurrenceId(
+    snapshot: CoreSnapshot?,
+    queueItems: List<CoreQueueEntryView>
+): String? {
+    val queue = snapshot?.queue ?: return null
+    if (queue.total <= 0) return null
+    queue.occurrenceId?.takeIf { it.isNotBlank() }?.let { return it }
+    val activeIndex = queue.index.takeIf { it >= 0 }
+        ?: snapshot.playback?.queueIndex?.takeIf { it >= 0 }
+    if (activeIndex != null) {
+        queueItems.firstOrNull { it.index == activeIndex }
+            ?.occurrenceId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+    }
+    return snapshot.track?.queueEntryId?.takeIf { it.isNotBlank() }
+}
+
+internal fun describeTrackOrigin(track: CoreTrackView, desktopLabel: String?): String {
+    val src = track.source.orEmpty()
+    val ncmFallback = src.startsWith("provider://ncm/")
+    if (!desktopLabel.isNullOrBlank()) {
+        return if (ncmFallback) "电脑曲库 · $desktopLabel（网易云播放）" else "电脑曲库 · $desktopLabel"
+    }
+    if (track.id.startsWith(DesktopMediaReference.PREFIX) || track.id.startsWith("remote-track:")) {
+        return if (ncmFallback) "电脑曲库（网易云播放）" else "电脑曲库"
+    }
+    if (src.startsWith("provider://ncm/") ||
+        (!track.ncmSongId.isNullOrBlank() && !src.startsWith("content://") && !src.startsWith("file://") && !src.startsWith("/"))
+    ) {
+        return "网易云音乐"
+    }
+    if (src.startsWith("provider://")) {
+        val provider = src.removePrefix("provider://").substringBefore('/').ifBlank { "插件" }
+        return "流媒体音源 ($provider)"
+    }
+    val fromPickedFolder = track.id.startsWith("folder:") || (src.startsWith("content://") && "/tree/" in src)
+    if (track.cueRange != null) {
+        return if (fromPickedFolder) "CUE 分轨 · 本机音乐文件夹" else "CUE 分轨 · 本机存储"
+    }
+    if (fromPickedFolder) return "本机音乐文件夹"
+    if (src.startsWith("content://media/") || track.id.startsWith("media:")) return "本机媒体库"
+    if (src.startsWith("content://") || src.startsWith("file://") || src.startsWith("/")) return "本机存储"
+    return "本机音乐库"
 }

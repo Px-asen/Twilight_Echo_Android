@@ -2,6 +2,8 @@ package com.twilightecho.android.feature.player
 
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.CollectionSort
+import com.twilightecho.android.playbackhost.NcmFallbackUri
+import com.twilightecho.android.playbackhost.bestNcmStreamingMatch
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
@@ -467,7 +469,8 @@ internal class StreamingPresenter(private val scope: CoroutineScope,
     }
 
     fun observeTrack(track: CoreTrackView?) {
-        val song = track?.source?.takeIf { it.startsWith("provider://ncm/") }?.substringAfterLast('/')
+        val song = NcmFallbackUri.directSongId(track?.source)
+            ?: track?.ncmSongId?.takeIf { track.source?.startsWith("provider://ncm/") == true && it.matches(Regex("[0-9]+")) }
         if (song == currentSong) return
         currentSong = song; readFavorite()
     }
@@ -520,27 +523,8 @@ internal class StreamingPresenter(private val scope: CoroutineScope,
  * Picks the search hit that is the same recording: the title must agree, and when an artist is
  * known it must agree too unless the lengths match within a few seconds. Null when nothing fits.
  */
-internal fun bestStreamingMatch(track: CoreTrackView, candidates: List<CoreTrackView>): CoreTrackView? {
-    val title = matchKey(track.title)
-    if (title.isEmpty()) return null
-    val artists = artistKeys(track.artist)
-    return candidates.mapNotNull { candidate ->
-        val other = matchKey(candidate.title)
-        val titleScore = when {
-            other == title -> 3
-            other.isNotEmpty() && (title in other || other in title) -> 1
-            else -> return@mapNotNull null
-        }
-        val artistMatch = artists.isNotEmpty() && artistKeys(candidate.artist).any { it in artists }
-        val lengthMatch = track.duration > 0 && candidate.duration > 0 && kotlin.math.abs(track.duration - candidate.duration) <= 3
-        if (artists.isNotEmpty() && !artistMatch && !lengthMatch) return@mapNotNull null
-        candidate to titleScore + (if (artistMatch) 2 else 0) + (if (lengthMatch) 1 else 0)
-    }.maxByOrNull { it.second }?.first
-}
-
-private fun matchKey(value: String) = value.lowercase().filter { it.isLetterOrDigit() }
-private fun artistKeys(value: String) =
-    value.split('/', '、', ',', '，', '&', ';', '；').map(::matchKey).filter { it.isNotEmpty() }.toSet()
+internal fun bestStreamingMatch(track: CoreTrackView, candidates: List<CoreTrackView>): CoreTrackView? =
+    bestNcmStreamingMatch(track, candidates)
 
 private fun JsonElement?.array() = (this as? JsonArray).orEmpty()
 private fun JsonElement?.number() = (this as? JsonPrimitive)?.intOrNull ?: 0

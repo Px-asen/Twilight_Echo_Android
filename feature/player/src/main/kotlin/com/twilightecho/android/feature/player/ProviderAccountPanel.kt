@@ -2,6 +2,7 @@ package com.twilightecho.android.feature.player
 
 import android.graphics.BitmapFactory
 import android.util.Base64
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -114,9 +115,12 @@ internal fun LoginQrCode(image: ImageBitmap, description: String, modifier: Modi
 /** A settings panel the plugin registered: closed it is a row; open it shows the form its command returned. */
 @Composable
 private fun ProviderPanelCard(panel: ProviderPanel, open: ProviderPanelState?, busy: Boolean, presenter: PluginPresenter) {
+    val motionEnabled = rememberMotionEnabled()
+    var lastOpen by remember { mutableStateOf(open) }
+    if (open != null) lastOpen = open
     GlassCard(Modifier.fillMaxWidth().testTag("providerPanel-${panel.id}"), RoundedCornerShape(28.dp),
         onClick = if (open == null && !busy) ({ presenter.openPanel(panel) }) else null) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconTile(TwilightIcons.Settings, Modifier.padding(end = 14.dp))
                 Column(Modifier.weight(1f)) {
@@ -126,8 +130,17 @@ private fun ProviderPanelCard(panel: ProviderPanel, open: ProviderPanelState?, b
                 if (open != null) TextButton(onClick = { presenter.closePanel() }) { Text("收起") }
                 else Icon(TwilightIcons.ArrowRight, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            open?.form?.let { form -> ProviderFormFields(form, busy, presenter) }
-            open?.message?.let { SupportingText(it) }
+            AnimatedVisibility(
+                visible = open != null,
+                enter = TwilightMotion.sectionExpand(motionEnabled),
+                exit = TwilightMotion.sectionCollapse(motionEnabled)
+            ) {
+                val activeOpen = open ?: lastOpen
+                Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    activeOpen?.form?.let { form -> ProviderFormFields(form, busy, presenter) }
+                    activeOpen?.message?.let { SupportingText(it) }
+                }
+            }
         }
     }
 }

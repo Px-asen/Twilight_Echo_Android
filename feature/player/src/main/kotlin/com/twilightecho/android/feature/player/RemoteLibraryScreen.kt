@@ -1,10 +1,17 @@
 package com.twilightecho.android.feature.player
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,7 +45,7 @@ import kotlinx.coroutines.delay
 
 internal data class RemoteArtworkEnvironment(val remote: Boolean = false,
     val previews: Map<String, String?> = emptyMap(), val revision: Long = 0,
-    val request: (String) -> Unit = {})
+    val request: (String) -> Unit = {}, val lookup: (String) -> String? = { null })
 internal val LocalRemoteArtwork = compositionLocalOf { RemoteArtworkEnvironment() }
 
 @Composable
@@ -47,15 +54,20 @@ internal fun rememberPlayerArtwork(track: CoreTrackView?, size: Int = 1024, extr
     // A folder's image is a local file; any other cover is a provider's web image.
     val folderCover = track?.cover?.takeIf { it.startsWith("content://") }
     val remote = track?.id?.let { it.startsWith("remote-track:") || it.startsWith(DesktopMediaReference.PREFIX) } == true
+    val remotePreview = if (remote && track != null) {
+        if (track.id in environment.previews) environment.previews[track.id] else environment.lookup(track.id)
+    } else null
     LaunchedEffect(track?.id, environment.revision) {
         if (remote) track?.id?.let(environment.request)
     }
-    if (!remote && folderCover == null && (track?.source == null || track.source?.startsWith("provider://") == true)) {
+    if ((!remote || remotePreview == null) && folderCover == null &&
+        (track?.source == null || track.source?.startsWith("provider://") == true)
+    ) {
         track?.cover?.let { return rememberProviderArtwork(it, size, extractColors) }
     }
     return rememberTrackArtwork(track?.id, track?.title, track?.artist, track?.source?.let(CueSource::audio), track?.albumId,
         previewOnly = remote || track?.source?.startsWith("provider://") == true,
-        previewDataUrl = if (remote) environment.previews[track?.id] else null, coverUri = folderCover, maxSize = size,
+        previewDataUrl = remotePreview, coverUri = folderCover, maxSize = size,
         extractColors = extractColors)
 }
 
@@ -85,14 +97,18 @@ internal fun LibraryPlaybackHeader(state: PlayerUiState, actions: PlayerActions)
 @Composable
 private fun OutputSegment(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, selected: Boolean,
     enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    val bg by animateColorAsState(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent, label = "segmentBg")
+    val motionEnabled = rememberMotionEnabled()
+    val interaction = remember { MutableInteractionSource() }
+    val bg by animateColorAsState(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+        tween(if (motionEnabled) 180 else 0), label = "segmentBg")
     val fg by animateColorAsState(when {
         selected -> MaterialTheme.colorScheme.onPrimary
         enabled -> MaterialTheme.colorScheme.onSurface
         else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-    }, label = "segmentFg")
-    Row(modifier.clip(RoundedCornerShape(50)).background(bg)
-        .selectable(selected = selected, enabled = enabled, role = Role.Tab, onClick = onClick)
+    }, tween(if (motionEnabled) 180 else 0), label = "segmentFg")
+    Row(modifier.tactilePress(interaction, pressedScale = 0.95f, enabled = enabled && !selected)
+        .clip(RoundedCornerShape(50)).background(bg)
+        .selectable(selected = selected, interactionSource = interaction, indication = LocalIndication.current, enabled = enabled, role = Role.Tab, onClick = onClick)
         .heightIn(min = 36.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, Modifier.size(15.dp), tint = fg)
         Text(label, style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1, modifier = Modifier.padding(start = 6.dp))
@@ -234,8 +250,9 @@ private fun RemoteEntityScreen(state: PlayerUiState, actions: PlayerActions, mod
         itemsIndexed(data.sources?.items.orEmpty(), key = { _, source -> source.id }) { index, source ->
             val enabled = source.provider == "local" && source.availability != "missing" &&
                 (state.librarySource as? LibrarySource.Desktop)?.connected == true
-            SourceRow((data.sources?.offset ?: 0) + index + 1, source, enabled, desktopOutput) {
-                actions.playSource(source, data.sources!!.revision)
+            val revision = data.sources?.revision ?: 0L
+            SourceRow((data.sources?.offset ?: 0) + index + 1, source, revision, enabled, desktopOutput) {
+                actions.playSource(source, revision)
             }
         }
         item { data.sources?.let { LibraryPageControls(it.offset, it.items.size, it.total, data.detailLoading, actions.sourcePage) } }
@@ -286,8 +303,10 @@ private fun EntityHero(entity: CatalogEntity, name: String, facts: List<Metadata
 private fun IntroductionCard(title: String, intro: MetadataIntroduction) {
     var expanded by rememberSaveable(intro.value) { mutableStateOf(false) }
     var overflows by remember(intro.value) { mutableStateOf(false) }
+    val motionEnabled = rememberMotionEnabled()
     GlassCard(Modifier.fillMaxWidth().testTag("desktopIntroduction"), RoundedCornerShape(20.dp)) {
-        Column(Modifier.padding(start = 20.dp, end = 12.dp, top = 18.dp, bottom = 8.dp).animateContentSize()) {
+        Column(Modifier.padding(start = 20.dp, end = 12.dp, top = 18.dp, bottom = 8.dp)
+            .then(if (motionEnabled) Modifier.animateContentSize(spring(dampingRatio = 0.86f, stiffness = 380f)) else Modifier)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(intro.value, style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 27.sp),
                 maxLines = if (expanded) Int.MAX_VALUE else 6, overflow = TextOverflow.Ellipsis,
@@ -327,9 +346,27 @@ private fun FactTable(facts: List<MetadataFact>) {
 }
 
 @Composable
-private fun SourceRow(number: Int, source: CatalogSource, enabled: Boolean, desktopOutput: Boolean, play: () -> Unit) {
+private fun SourceRow(number: Int, source: CatalogSource, revision: Long, enabled: Boolean, desktopOutput: Boolean, play: () -> Unit) {
     val alpha = if (enabled) 1f else 0.5f
-    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+    val trackView = remember(source, revision, enabled) {
+        val t = source.track
+        CoreTrackView(
+            id = source.id,
+            title = t.title,
+            artist = t.artist,
+            album = t.album,
+            duration = t.duration,
+            format = t.format,
+            sampleRate = t.sampleRate,
+            bitDepth = t.bitDepth,
+            unavailableReason = if (!enabled && source.provider != "local") "请在电脑端选择此音源"
+                else if (source.availability == "missing") "电脑端文件已缺失" else null,
+            catalog = CatalogTrackReferences(revision, source.id)
+        )
+    }
+    Row(Modifier.fillMaxWidth()
+        .songRowClickable(track = trackView, enabled = enabled, onClick = play)
+        .padding(start = 20.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Text(number.toString().padStart(2, '0'), style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha), modifier = Modifier.width(32.dp))
@@ -343,7 +380,10 @@ private fun SourceRow(number: Int, source: CatalogSource, enabled: Boolean, desk
         if (source.track.duration > 0) Text(formatDurationSeconds(source.track.duration),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 8.dp))
-        Box(Modifier.size(48.dp).clip(CircleShape).clickable(enabled = enabled, role = Role.Button, onClick = play),
+        val playInteraction = remember { MutableInteractionSource() }
+        Box(Modifier.tactilePress(playInteraction, pressedScale = 0.88f, enabled = enabled)
+            .size(48.dp).clip(CircleShape)
+            .clickable(interactionSource = playInteraction, indication = LocalIndication.current, enabled = enabled, role = Role.Button, onClick = play),
             contentAlignment = Alignment.Center) {
             Box(Modifier.size(38.dp).clip(CircleShape).background(if (enabled) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)), contentAlignment = Alignment.Center) {

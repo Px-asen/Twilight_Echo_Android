@@ -2,6 +2,7 @@ package com.twilightecho.android.feature.player
 
 import android.content.Intent
 import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -94,8 +95,14 @@ internal fun SettingsTabScreen(state: PlayerUiState, actions: PlayerActions,
                         SettingsItem(TwilightIcons.Equalizer, "音频与 DSP", "输出、参数均衡器、DSP 处理链与场景",
                             onClick = { navigate(SettingsDestination.AUDIO) })
                         GroupDivider()
-                        SettingsItem(TwilightIcons.Library, "本地音乐", "${state.phoneTrackCount} 首歌曲 · 扫描与更新",
-                            onClick = { navigate(SettingsDestination.LIBRARY) })
+                        val librarySubtitle = if (state.musicFolders.isEmpty()) {
+                            "未选择音乐文件夹"
+                        } else {
+                            "${state.phoneTrackCount} 首歌曲 · ${state.musicFolders.size} 个文件夹"
+                        }
+                        SettingsItem(TwilightIcons.Library, "本地音乐", librarySubtitle,
+                            onClick = { navigate(SettingsDestination.LIBRARY) },
+                            modifier = Modifier.testTag("openLibrarySettings"))
                     }
                     SettingsGroup(title = "电脑") {
                         SettingsItem(TwilightIcons.Computer, "连接电脑",
@@ -125,51 +132,183 @@ internal fun SettingsTabScreen(state: PlayerUiState, actions: PlayerActions,
                 AudioSettingsPanel(state, actions)
             }
             SettingsDestination.LIBRARY -> item {
+                val motionEnabled = rememberMotionEnabled()
                 Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     LibraryStatsHero(state)
-                    GlassCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconTile(TwilightIcons.RadarScan, Modifier.padding(end = 14.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text("曲库扫描", style = MaterialTheme.typography.titleMedium)
-                                    SupportingText("扫描手机中的音频文件，更新你的音乐库。")
-                                }
-                            }
-                            if (state.isScanningLocalMusic) LinearProgressIndicator(Modifier.fillMaxWidth().clip(RoundedCornerShape(50)),
-                                color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                            PillButton(if (state.isScanningLocalMusic) "正在扫描…" else "扫描本地音乐", actions.scan,
-                                Modifier.fillMaxWidth(), TwilightIcons.RadarScan, enabled = !state.isScanningLocalMusic)
-                            state.scanStatusMessage?.let { SupportingText(it, Modifier.testTag("scanStatus")) }
-                            if (state.scanDetails.isNotEmpty()) {
-                                var detailsOpen by remember(state.scanDetails) { mutableStateOf(false) }
-                                TextButton(onClick = { detailsOpen = !detailsOpen }, Modifier.testTag("scanDetailsToggle")) {
-                                    Text(if (detailsOpen) "收起详情" else "详情（${state.scanDetails.size}）")
-                                }
-                                if (detailsOpen) state.scanDetails.forEach { SupportingText(it, Modifier.testTag("scanDetail")) }
-                            }
-                        }
-                    }
                     GlassCard(Modifier.fillMaxWidth().testTag("musicFoldersCard")) {
                         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconTile(TwilightIcons.Library, Modifier.padding(end = 14.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text("音乐文件夹", style = MaterialTheme.typography.titleMedium)
-                                    SupportingText("CUE 分轨和 APE、WavPack 文件从这些文件夹读取。")
+                                    SupportingText("选择存放音乐的文件夹，自动导入其中的音频文件与 CUE 分轨。")
                                 }
                             }
-                            state.musicFolders.forEach { folder ->
-                                Row(Modifier.fillMaxWidth().testTag("musicFolder"), verticalAlignment = Alignment.CenterVertically) {
-                                    Text(folder.label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis)
-                                    QuietIconButton(TwilightIcons.Close, "移除 ${folder.label}", { actions.removeMusicFolder(folder.uri) },
-                                        enabled = !state.isScanningLocalMusic)
+                            AnimatedVisibility(
+                                visible = state.isScanningLocalMusic,
+                                enter = TwilightMotion.sectionExpand(motionEnabled),
+                                exit = TwilightMotion.sectionCollapse(motionEnabled)
+                            ) {
+                                LinearProgressIndicator(Modifier.fillMaxWidth().clip(RoundedCornerShape(50)),
+                                    color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                            }
+                            if (state.musicFolders.isEmpty()) {
+                                SupportingText("尚未选择音乐文件夹，点击下方按钮添加目录。")
+                            } else {
+                                state.musicFolders.forEach { folder ->
+                                    Row(Modifier.fillMaxWidth().testTag("musicFolder"), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(folder.label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis)
+                                        QuietIconButton(TwilightIcons.Close, "移除 ${folder.label}", { actions.removeMusicFolder(folder.uri) },
+                                            enabled = !state.isScanningLocalMusic)
+                                    }
                                 }
                             }
-                            PillButton("添加文件夹", actions.addMusicFolder, Modifier.fillMaxWidth().testTag("addMusicFolder"),
-                                TwilightIcons.Plus, enabled = !state.isScanningLocalMusic, tonal = true)
+                            PillButton(
+                                if (state.musicFolders.isEmpty()) "选择音乐文件夹" else "添加音乐文件夹",
+                                actions.addMusicFolder,
+                                Modifier.fillMaxWidth().testTag("addMusicFolder"),
+                                TwilightIcons.Plus,
+                                enabled = !state.isScanningLocalMusic
+                            )
+                            if (state.musicFolders.isNotEmpty()) {
+                                PillButton(
+                                    if (state.isScanningLocalMusic) "正在读取…" else "刷新已选文件夹",
+                                    actions.scan,
+                                    Modifier.fillMaxWidth().testTag("refreshMusicFolders"),
+                                    TwilightIcons.Reset,
+                                    enabled = !state.isScanningLocalMusic,
+                                    tonal = true
+                                )
+                            }
+                            state.scanStatusMessage?.let { SupportingText(it, Modifier.testTag("scanStatus")) }
+                            if (state.scanDetails.isNotEmpty()) {
+                                var detailsOpen by remember(state.scanDetails) { mutableStateOf(false) }
+                                TextButton(onClick = { detailsOpen = !detailsOpen }, Modifier.testTag("scanDetailsToggle")) {
+                                    Text(if (detailsOpen) "收起详情" else "详情（${state.scanDetails.size}）")
+                                }
+                                AnimatedVisibility(
+                                    visible = detailsOpen,
+                                    enter = TwilightMotion.sectionExpand(motionEnabled),
+                                    exit = TwilightMotion.sectionCollapse(motionEnabled)
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        state.scanDetails.forEach { SupportingText(it, Modifier.testTag("scanDetail")) }
+                                    }
+                                }
+                            }
                         }
+                    }
+                    val excludedCount = state.preferences.excludedLocalTrackIds.size
+                    var shownExcludedCount by remember { mutableIntStateOf(excludedCount) }
+                    if (excludedCount > 0) shownExcludedCount = excludedCount
+                    AnimatedVisibility(
+                        visible = excludedCount > 0,
+                        enter = TwilightMotion.sectionExpand(motionEnabled),
+                        exit = TwilightMotion.sectionCollapse(motionEnabled)
+                    ) {
+                        GlassCard(Modifier.fillMaxWidth().testTag("excludedTracksCard")) {
+                            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconTile(TwilightIcons.Trash, Modifier.padding(end = 14.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text("已移除的歌曲", style = MaterialTheme.typography.titleMedium)
+                                        SupportingText("已从本机音乐库移除 $shownExcludedCount 首歌曲，读取文件夹时会自动跳过。")
+                                    }
+                                }
+                                PillButton(
+                                    label = "恢复并重新读取",
+                                    onClick = actions.restoreExcludedLocalTracks,
+                                    modifier = Modifier.fillMaxWidth().testTag("restoreExcludedTracksButton"),
+                                    icon = TwilightIcons.Reset,
+                                    enabled = !state.isScanningLocalMusic,
+                                    tonal = true
+                                )
+                            }
+                        }
+                    }
+                    var confirmResetLibrary by remember { mutableStateOf(false) }
+                    var clearMusicFoldersOnReset by remember { mutableStateOf(false) }
+                    GlassCard(Modifier.fillMaxWidth().testTag("resetLibraryCard")) {
+                        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconTile(
+                                    TwilightIcons.Reset,
+                                    Modifier.padding(end = 14.dp),
+                                    container = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                                    content = MaterialTheme.colorScheme.error
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text("重置音乐库", style = MaterialTheme.typography.titleMedium)
+                                    SupportingText("清空本机音乐库中已同步的歌曲与移除记录，不会删除手机存储中的音频文件。")
+                                }
+                            }
+                            PillButton(
+                                label = "重置音乐库",
+                                onClick = {
+                                    clearMusicFoldersOnReset = false
+                                    confirmResetLibrary = true
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("resetLibraryButton"),
+                                icon = TwilightIcons.Reset,
+                                enabled = !state.isScanningLocalMusic,
+                                tonal = true
+                            )
+                        }
+                    }
+                    if (confirmResetLibrary) {
+                        AlertDialog(
+                            onDismissRequest = { confirmResetLibrary = false },
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            shape = RoundedCornerShape(28.dp),
+                            modifier = Modifier.testTag("resetLibraryDialog"),
+                            title = { Text("重置本地音乐库？") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text(
+                                        "将清空此手机已同步的本地歌曲与移除记录，并停止正在播放的本地曲目。手机存储中的音频文件不会受到影响，之后可随时重新选择或刷新音乐文件夹。"
+                                    )
+                                    if (state.musicFolders.isNotEmpty()) {
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .clickable { clearMusicFoldersOnReset = !clearMusicFoldersOnReset }
+                                                .padding(vertical = 4.dp)
+                                                .testTag("resetClearFoldersToggle"),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Checkbox(
+                                                checked = clearMusicFoldersOnReset,
+                                                onCheckedChange = { clearMusicFoldersOnReset = it }
+                                            )
+                                            Text(
+                                                "同时移除已添加的音乐文件夹（${state.musicFolders.size} 个）",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                modifier = Modifier.padding(start = 6.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        val clearFolders = clearMusicFoldersOnReset && state.musicFolders.isNotEmpty()
+                                        confirmResetLibrary = false
+                                        actions.resetLocalMusicLibrary(clearFolders)
+                                    },
+                                    modifier = Modifier.testTag("confirmResetLibrary")
+                                ) {
+                                    Text("重置", color = MaterialTheme.colorScheme.error)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { confirmResetLibrary = false }) {
+                                    Text("取消")
+                                }
+                            }
+                        )
                     }
                     if (state.libraryError != null) GlassCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -181,12 +320,19 @@ internal fun SettingsTabScreen(state: PlayerUiState, actions: PlayerActions,
             }
             SettingsDestination.REMOTE -> item {
                 val remote = state.librarySource as? LibrarySource.Desktop
+                val motionEnabled = rememberMotionEnabled()
                 Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     CoreTopologyCard(state, actions, Modifier.padding(top = 4.dp, bottom = 14.dp))
                     SectionHeading("局域网中的电脑", "重新搜索", actions.refreshDiscovery)
                     state.desktopDiscovery.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
-                    if (state.desktopDiscovery.scanning) LinearProgressIndicator(Modifier.fillMaxWidth().clip(RoundedCornerShape(50)),
-                        color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                    AnimatedVisibility(
+                        visible = state.desktopDiscovery.scanning,
+                        enter = TwilightMotion.sectionExpand(motionEnabled),
+                        exit = TwilightMotion.sectionCollapse(motionEnabled)
+                    ) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth().clip(RoundedCornerShape(50)),
+                            color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                    }
                     if (state.desktopDiscovery.devices.isEmpty()) GlassCard(Modifier.fillMaxWidth()) {
                         Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
                             IconTile(TwilightIcons.RadarScan, Modifier.padding(end = 14.dp), size = 48.dp,
@@ -211,39 +357,51 @@ internal fun SettingsTabScreen(state: PlayerUiState, actions: PlayerActions,
                             Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 4.dp).testTag("remoteStatus"))
                         }
                     }
-                    if (state.isConnectingRemoteCore) {
-                        state.desktopApprovalCode?.let { code ->
-                            Text("验证码 ${code.take(3)} ${code.drop(3)}", style = MaterialTheme.typography.headlineMedium,
-                                modifier = Modifier.testTag("desktopApprovalCode"))
-                            SupportingText("电脑会弹出连接请求并显示验证码。两边一致时再允许；不一致请拒绝，可能有人在冒充这台电脑。")
+                    AnimatedVisibility(
+                        visible = state.isConnectingRemoteCore,
+                        enter = TwilightMotion.sectionExpand(motionEnabled),
+                        exit = TwilightMotion.sectionCollapse(motionEnabled)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            state.desktopApprovalCode?.let { code ->
+                                Text("验证码 ${code.take(3)} ${code.drop(3)}", style = MaterialTheme.typography.headlineMedium,
+                                    modifier = Modifier.testTag("desktopApprovalCode"))
+                                SupportingText("电脑会弹出连接请求并显示验证码。两边一致时再允许；不一致请拒绝，可能有人在冒充这台电脑。")
+                            }
+                            if (state.waitingForDesktopApproval && state.desktopApprovalCode == null)
+                                SupportingText("电脑会弹出连接请求。确认后，这部手机下次无需再次授权。")
+                            PillButton("取消连接", actions.cancelConnection, Modifier.fillMaxWidth(), TwilightIcons.Close, tonal = true)
                         }
-                        if (state.waitingForDesktopApproval && state.desktopApprovalCode == null)
-                            SupportingText("电脑会弹出连接请求。确认后，这部手机下次无需再次授权。")
-                        PillButton("取消连接", actions.cancelConnection, Modifier.fillMaxWidth(), TwilightIcons.Close, tonal = true)
                     }
                     if (remote != null) PillButton("切回本机音乐", actions.useLocal, Modifier.fillMaxWidth(), TwilightIcons.Phone,
                         enabled = !state.isConnectingRemoteCore, tonal = true)
                     TextButton(onClick = { manualConnection = !manualConnection }, modifier = Modifier.testTag("manualDesktopConnection")) {
                         Text(if (manualConnection) "收起手动连接" else "找不到电脑？手动连接", color = MaterialTheme.colorScheme.primary)
                     }
-                    if (manualConnection) GlassCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("手动连接", style = MaterialTheme.typography.titleMedium)
-                            SupportingText("适用于旧版电脑或网络屏蔽了自动发现的情况。")
-                            OutlinedTextField(state.remoteHostInput, actions.remoteHost, label = { Text("电脑地址") },
-                                placeholder = { Text("192.168.1.100:18492") }, singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), shape = RoundedCornerShape(16.dp),
-                                colors = twilightFieldColors(), enabled = !state.isConnectingRemoteCore,
-                                modifier = Modifier.fillMaxWidth().testTag("remoteHost"))
-                            OutlinedTextField(state.remotePinInput, actions.remotePin, label = { Text("六位配对码") },
-                                supportingText = { Text("已配对的电脑可留空") }, singleLine = true,
-                                visualTransformation = PasswordVisualTransformation(),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), shape = RoundedCornerShape(16.dp),
-                                colors = twilightFieldColors(), enabled = !state.isConnectingRemoteCore,
-                                modifier = Modifier.fillMaxWidth().testTag("remotePin"))
-                            PillButton(if (state.isConnectingRemoteCore) "正在连接…" else "连接电脑 Core", actions.connectRemote,
-                                Modifier.fillMaxWidth(), TwilightIcons.ArrowRight,
-                                enabled = !state.isConnectingRemoteCore && state.remoteHostInput.isNotBlank())
+                    AnimatedVisibility(
+                        visible = manualConnection,
+                        enter = TwilightMotion.sectionExpand(motionEnabled),
+                        exit = TwilightMotion.sectionCollapse(motionEnabled)
+                    ) {
+                        GlassCard(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text("手动连接", style = MaterialTheme.typography.titleMedium)
+                                SupportingText("适用于旧版电脑或网络屏蔽了自动发现的情况。")
+                                OutlinedTextField(state.remoteHostInput, actions.remoteHost, label = { Text("电脑地址") },
+                                    placeholder = { Text("192.168.1.100:18492") }, singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), shape = RoundedCornerShape(16.dp),
+                                    colors = twilightFieldColors(), enabled = !state.isConnectingRemoteCore,
+                                    modifier = Modifier.fillMaxWidth().testTag("remoteHost"))
+                                OutlinedTextField(state.remotePinInput, actions.remotePin, label = { Text("六位配对码") },
+                                    supportingText = { Text("已配对的电脑可留空") }, singleLine = true,
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), shape = RoundedCornerShape(16.dp),
+                                    colors = twilightFieldColors(), enabled = !state.isConnectingRemoteCore,
+                                    modifier = Modifier.fillMaxWidth().testTag("remotePin"))
+                                PillButton(if (state.isConnectingRemoteCore) "正在连接…" else "连接电脑 Core", actions.connectRemote,
+                                    Modifier.fillMaxWidth(), TwilightIcons.ArrowRight,
+                                    enabled = !state.isConnectingRemoteCore && state.remoteHostInput.isNotBlank())
+                            }
                         }
                     }
                 }
@@ -300,11 +458,16 @@ internal fun AudioSignalSummary(diagnostics: AudioDiagnosticsUiModel, modifier: 
                             audioResolution(diagnostics.actualSampleRateHz, diagnostics.actualBitDepth, diagnostics.actualSampleFormat))
                             .joinToString("\n"))
                     if (diagnostics.outputPerfect) Text("逐位输出", style = MaterialTheme.typography.bodyLarge)
+                    val motionEnabled = rememberMotionEnabled()
                     TextButton(onClick = { expanded = !expanded }, modifier = Modifier
                         .heightIn(min = 48.dp).testTag("audioOutputDetails"), contentPadding = PaddingValues(0.dp)) {
                         Text(if (expanded) "收起输出详情" else "输出详情", style = MaterialTheme.typography.titleMedium)
                     }
-                    if (expanded) {
+                    AnimatedVisibility(
+                        visible = expanded,
+                        enter = TwilightMotion.sectionExpand(motionEnabled),
+                        exit = TwilightMotion.sectionCollapse(motionEnabled)
+                    ) {
                         Column(Modifier.testTag("audioOutputFacts"), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                             if (diagnostics.requestedSampleRateHz > 0) SignalStage("引擎请求",
                                 audioResolution(diagnostics.requestedSampleRateHz, 0, diagnostics.requestedSampleFormat))

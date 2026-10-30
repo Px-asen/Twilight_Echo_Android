@@ -5,13 +5,21 @@ package com.twilightecho.android.feature.player
 import android.content.res.Configuration
 import android.view.accessibility.AccessibilityManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.composed
@@ -138,8 +146,30 @@ internal fun ImmersiveNowPlayingScreen(state: PlayerUiState, actions: PlayerActi
                         }
                     }
                 }
-                Crossfade(state.isLyricsMode, Modifier.weight(1f).fillMaxWidth(),
-                    tween(if (motionEnabled) 260 else 0), label = "coverLyrics") { lyrics ->
+                AnimatedContent(
+                    targetState = state.isLyricsMode,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    transitionSpec = {
+                        if (!motionEnabled) {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        } else if (targetState) {
+                            (fadeIn(tween(240)) +
+                                slideInVertically(tween(300, easing = TwilightMotion.EmphasizedDecelerate)) { (it * 0.045f).toInt() } +
+                                scaleIn(tween(300, easing = TwilightMotion.EmphasizedDecelerate), initialScale = 0.96f)) togetherWith
+                                (fadeOut(tween(170)) +
+                                    scaleOut(tween(260, easing = TwilightMotion.EmphasizedAccelerate), targetScale = 0.94f)) using
+                                SizeTransform(clip = false)
+                        } else {
+                            (fadeIn(tween(240)) +
+                                scaleIn(tween(300, easing = TwilightMotion.EmphasizedDecelerate), initialScale = 0.94f)) togetherWith
+                                (fadeOut(tween(170)) +
+                                    slideOutVertically(tween(250, easing = TwilightMotion.EmphasizedAccelerate)) { (it * 0.045f).toInt() } +
+                                    scaleOut(tween(250, easing = TwilightMotion.EmphasizedAccelerate), targetScale = 0.96f)) using
+                                SizeTransform(clip = false)
+                        }
+                    },
+                    label = "coverLyrics"
+                ) { lyrics ->
                     if (lyrics) LyricsPlayerLayout(state, playerActions, lyricsViewport, artwork, motionEnabled,
                         immersive, hasLyrics, stageTap, chromeEnter, chromeExit)
                     else CoverPlayerLayout(state, playerActions, artwork, motionEnabled)
@@ -294,10 +324,22 @@ private fun FullPlayerCover(artwork: TrackArtworkVisual, playing: Boolean, motio
         val ratio = artwork.imageBitmap.width.toFloat() / artwork.imageBitmap.height
         val width = minOf(maxWidth, maxHeight * ratio, 440.dp)
         val shape = RoundedCornerShape(12.dp)
-        ArtworkImage(artwork, Modifier.width(width).aspectRatio(ratio)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .shadow(lift, shape, clip = false, ambientColor = Color.Black, spotColor = Color.Black)
-            .clip(shape).testTag("fullCover"), description = "当前歌曲完整封面")
+        Box(
+            Modifier.width(width).aspectRatio(ratio)
+                .graphicsLayer { scaleX = scale; scaleY = scale }
+                .shadow(lift, shape, clip = false, ambientColor = Color.Black, spotColor = Color.Black)
+                .clip(shape)
+                .semantics { contentDescription = "当前歌曲完整封面" }
+                .testTag("fullCover")
+        ) {
+            Crossfade(
+                targetState = artwork,
+                animationSpec = tween(if (motionEnabled) 240 else 0),
+                label = "fullCoverArt"
+            ) { currentArtwork ->
+                ArtworkImage(currentArtwork, Modifier.fillMaxSize())
+            }
+        }
     }
 }
 
@@ -305,16 +347,31 @@ private fun FullPlayerCover(artwork: TrackArtworkVisual, playing: Boolean, motio
 private fun CoverPlaybackControls(state: PlayerUiState, actions: PlayerActions, condensed: Boolean) {
     val track = state.currentTrack ?: return
     val colors = MaterialTheme.colorScheme
+    val motionEnabled = rememberLyricsMotionEnabled()
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().testTag("coverMetadata"), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(track.title, color = colors.onSurface,
-                    style = (if (condensed) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall)
-                        .copy(fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.4).sp),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(trackByline(track), color = colors.onSurface.copy(alpha = 0.62f),
-                    style = if (condensed) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            AnimatedContent(
+                targetState = track,
+                modifier = Modifier.weight(1f).padding(end = 12.dp),
+                contentKey = { it.id },
+                transitionSpec = {
+                    if (!motionEnabled) EnterTransition.None togetherWith ExitTransition.None
+                    else (slideInVertically(tween(240, easing = TwilightMotion.EmphasizedDecelerate)) { it / 3 } +
+                        fadeIn(tween(200))) togetherWith
+                        (slideOutVertically(tween(150, easing = TwilightMotion.EmphasizedAccelerate)) { -it / 3 } +
+                            fadeOut(tween(120))) using SizeTransform(clip = false)
+                },
+                label = "coverTrackMeta"
+            ) { currentTrack ->
+                Column(Modifier.fillMaxWidth()) {
+                    Text(currentTrack.title, color = colors.onSurface,
+                        style = (if (condensed) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall)
+                            .copy(fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.4).sp),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(trackByline(currentTrack), color = colors.onSurface.copy(alpha = 0.62f),
+                        style = if (condensed) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+                }
             }
             PlayerFavoriteButton(state, actions)
         }
@@ -351,17 +408,43 @@ private fun TransportRow(state: PlayerUiState, actions: PlayerActions, modifier:
 private fun PressableIcon(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     size: Dp = 48.dp, iconSize: Dp = 24.dp, tint: Color = MaterialTheme.colorScheme.onSurface,
     enabled: Boolean = true, lit: Boolean = false) {
+    val motionEnabled = rememberLyricsMotionEnabled()
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.82f else 1f, spring(dampingRatio = 0.5f, stiffness = 700f), label = "press")
-    val disc by animateFloatAsState(if (pressed) 0.16f else if (lit) 0.14f else 0f, tween(140), label = "pressDisc")
+    val scale by animateFloatAsState(
+        if (pressed) 0.82f else 1f,
+        if (motionEnabled) spring(dampingRatio = 0.5f, stiffness = 700f) else snap(),
+        label = "press"
+    )
+    val disc by animateFloatAsState(
+        if (pressed) 0.16f else if (lit) 0.14f else 0f,
+        tween(if (motionEnabled) 140 else 0),
+        label = "pressDisc"
+    )
+    val animatedTint by animateColorAsState(
+        if (enabled) tint else tint.copy(alpha = 0.38f),
+        tween(if (motionEnabled) 180 else 0),
+        label = "pressTint"
+    )
     val ink = MaterialTheme.colorScheme.onSurface
     Box(modifier.size(size).clip(CircleShape)
+        .semantics { contentDescription = label }
         .clickable(interaction, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
         .drawBehind { drawCircle(ink.copy(alpha = disc), radius = this.size.minDimension / 2 * (0.72f + 0.28f * scale)) },
         contentAlignment = Alignment.Center) {
-        Icon(icon, label, Modifier.size(iconSize).graphicsLayer { scaleX = scale; scaleY = scale },
-            tint = if (enabled) tint else tint.copy(alpha = 0.38f))
+        AnimatedContent(
+            targetState = icon,
+            transitionSpec = {
+                if (!motionEnabled) EnterTransition.None togetherWith ExitTransition.None
+                else (scaleIn(spring(dampingRatio = 0.65f, stiffness = 560f), initialScale = 0.72f) + fadeIn(tween(130))) togetherWith
+                    (scaleOut(tween(110, easing = TwilightMotion.EmphasizedAccelerate), targetScale = 0.72f) + fadeOut(tween(100))) using
+                    SizeTransform(clip = false)
+            },
+            label = "pressGlyph"
+        ) { targetIcon ->
+            Icon(targetIcon, null, Modifier.size(iconSize).graphicsLayer { scaleX = scale; scaleY = scale },
+                tint = animatedTint)
+        }
     }
 }
 
@@ -369,13 +452,33 @@ private fun PressableIcon(icon: ImageVector, label: String, onClick: () -> Unit,
 @Composable
 private fun PlayPauseButton(state: PlayerUiState, actions: PlayerActions, size: Dp) {
     val colors = MaterialTheme.colorScheme
-    if (state.requestedPlaying == null && state.playbackState in listOf("loading", "buffering")) {
-        Box(Modifier.size(size).testTag("playerPlayPause"), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(Modifier.size(size * 0.42f), strokeWidth = 3.dp, color = colors.onSurface)
+    val motionEnabled = rememberLyricsMotionEnabled()
+    val loading = state.requestedPlaying == null && state.playbackState in listOf("loading", "buffering")
+    Box(Modifier.size(size).testTag("playerPlayPause"), contentAlignment = Alignment.Center) {
+        AnimatedContent(
+            targetState = loading,
+            transitionSpec = {
+                if (!motionEnabled) EnterTransition.None togetherWith ExitTransition.None
+                else (scaleIn(spring(dampingRatio = 0.7f, stiffness = 500f), initialScale = 0.75f) + fadeIn(tween(150))) togetherWith
+                    (scaleOut(tween(120), targetScale = 0.75f) + fadeOut(tween(110))) using SizeTransform(clip = false)
+            },
+            label = "playPauseState"
+        ) { isLoading ->
+            if (isLoading) {
+                Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(size * 0.42f), strokeWidth = 3.dp, color = colors.onSurface)
+                }
+            } else {
+                PressableIcon(
+                    if (state.playbackButtonPlaying) TwilightIcons.Pause else TwilightIcons.Play,
+                    if (state.playbackButtonPlaying) "暂停播放" else "开始播放",
+                    actions.togglePlayback,
+                    size = size,
+                    iconSize = size * 0.53f
+                )
+            }
         }
-    } else PressableIcon(if (state.playbackButtonPlaying) TwilightIcons.Pause else TwilightIcons.Play,
-        if (state.playbackButtonPlaying) "暂停播放" else "开始播放", actions.togglePlayback,
-        Modifier.testTag("playerPlayPause"), size = size, iconSize = size * 0.53f)
+    }
 }
 
 @Composable
@@ -458,16 +561,42 @@ private fun LyricsTrackHeader(state: PlayerUiState, actions: PlayerActions, artw
     condensed: Boolean) {
     val track = state.currentTrack ?: return
     val colors = MaterialTheme.colorScheme
+    val motionEnabled = rememberLyricsMotionEnabled()
     val cover = if (condensed) 60.dp else 76.dp
+    val coverShape = RoundedCornerShape(10.dp)
     Row(Modifier.fillMaxWidth().padding(vertical = if (condensed) 6.dp else 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        ArtworkImage(artwork, Modifier.size(cover)
-            .shadow(14.dp, RoundedCornerShape(10.dp), clip = false, ambientColor = Color.Black, spotColor = Color.Black)
-            .clip(RoundedCornerShape(10.dp)), androidx.compose.ui.layout.ContentScale.Crop)
-        Column(Modifier.weight(1f).padding(start = 16.dp, end = 8.dp)) {
-            Text(track.title, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(trackByline(track), style = MaterialTheme.typography.bodyMedium, color = colors.onSurface.copy(alpha = 0.62f),
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+        Box(
+            Modifier.size(cover)
+                .shadow(14.dp, coverShape, clip = false, ambientColor = Color.Black, spotColor = Color.Black)
+                .clip(coverShape)
+        ) {
+            Crossfade(
+                targetState = artwork,
+                animationSpec = tween(if (motionEnabled) 240 else 0),
+                label = "lyricsHeaderCover"
+            ) { currentArtwork ->
+                ArtworkImage(currentArtwork, Modifier.fillMaxSize(), androidx.compose.ui.layout.ContentScale.Crop)
+            }
+        }
+        AnimatedContent(
+            targetState = track,
+            modifier = Modifier.weight(1f).padding(start = 16.dp, end = 8.dp),
+            contentKey = { it.id },
+            transitionSpec = {
+                if (!motionEnabled) EnterTransition.None togetherWith ExitTransition.None
+                else (slideInVertically(tween(240, easing = TwilightMotion.EmphasizedDecelerate)) { it / 3 } +
+                    fadeIn(tween(200))) togetherWith
+                    (slideOutVertically(tween(150, easing = TwilightMotion.EmphasizedAccelerate)) { -it / 3 } +
+                        fadeOut(tween(120))) using SizeTransform(clip = false)
+            },
+            label = "lyricsTrackMeta"
+        ) { currentTrack ->
+            Column(Modifier.fillMaxWidth()) {
+                Text(currentTrack.title, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(trackByline(currentTrack), style = MaterialTheme.typography.bodyMedium, color = colors.onSurface.copy(alpha = 0.62f),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            }
         }
         PlayerFavoriteButton(state, actions)
     }
@@ -476,10 +605,30 @@ private fun LyricsTrackHeader(state: PlayerUiState, actions: PlayerActions, artw
 @Composable
 private fun PlayerFavoriteButton(state: PlayerUiState, actions: PlayerActions) {
     if (state.operatingMode is CoreOperatingMode.RemoteDesktopCore) return
-    PressableIcon(if (state.isCurrentTrackFavorite) TwilightIcons.HeartFilled else TwilightIcons.HeartOutline,
-        if (state.isCurrentTrackFavorite) "取消收藏" else "收藏歌曲", actions.toggleFavorite, iconSize = 26.dp,
+    val motionEnabled = rememberLyricsMotionEnabled()
+    val popScale = remember { Animatable(1f) }
+    var previousFavorite by remember(state.currentTrack?.id) { mutableStateOf(state.isCurrentTrackFavorite) }
+    LaunchedEffect(state.isCurrentTrackFavorite, motionEnabled) {
+        if (state.isCurrentTrackFavorite && !previousFavorite && motionEnabled) {
+            popScale.animateTo(1.24f, tween(110, easing = TwilightMotion.EmphasizedDecelerate))
+            popScale.animateTo(1f, spring(dampingRatio = 0.52f, stiffness = 520f))
+        } else {
+            popScale.snapTo(1f)
+        }
+        previousFavorite = state.isCurrentTrackFavorite
+    }
+    PressableIcon(
+        if (state.isCurrentTrackFavorite) TwilightIcons.HeartFilled else TwilightIcons.HeartOutline,
+        if (state.isCurrentTrackFavorite) "取消收藏" else "收藏歌曲",
+        actions.toggleFavorite,
+        Modifier.graphicsLayer {
+            scaleX = popScale.value
+            scaleY = popScale.value
+        },
+        iconSize = 26.dp,
         tint = if (state.isCurrentTrackFavorite) TwilightTokens.FavoriteRose else MaterialTheme.colorScheme.onSurface,
-        enabled = !state.isFavoriteBusy)
+        enabled = !state.isFavoriteBusy
+    )
 }
 
 @Composable
@@ -522,7 +671,17 @@ private fun SeekControl(state: PlayerUiState, actions: PlayerActions) {
         pendingTarget != null -> pendingTarget!!
         else -> external
     }
-    val thickness by animateDpAsState(if (dragging) 8.dp else 4.dp, spring(dampingRatio = 0.7f, stiffness = 500f), label = "seekThickness")
+    val motionEnabled = rememberLyricsMotionEnabled()
+    val thickness by animateDpAsState(
+        if (dragging) 8.dp else 4.dp,
+        if (motionEnabled) spring(dampingRatio = 0.7f, stiffness = 500f) else snap(),
+        label = "seekThickness"
+    )
+    val thumbSize by animateDpAsState(
+        if (dragging) 18.dp else 12.dp,
+        if (motionEnabled) spring(dampingRatio = 0.68f, stiffness = 520f) else snap(),
+        label = "seekThumb"
+    )
     Slider(value = position, onValueChange = { draft = it; pendingTarget = null; dragging = true },
         valueRange = 0f..duration.coerceAtLeast(1.0).toFloat(),
         enabled = duration > 0, onValueChangeFinished = {
@@ -532,7 +691,7 @@ private fun SeekControl(state: PlayerUiState, actions: PlayerActions) {
             actions.seek(target.toDouble())
         },
         thumb = {
-            Box(Modifier.size(if (dragging) 18.dp else 12.dp).shadow(3.dp, CircleShape)
+            Box(Modifier.size(thumbSize).shadow(3.dp, CircleShape)
                 .clip(CircleShape).background(colors.onSurface))
         },
         track = { slider ->
@@ -584,13 +743,27 @@ private fun QueueSheet(state: PlayerUiState, actions: PlayerActions) {
             }
             HorizontalDivider(Modifier.padding(top = 12.dp, start = 24.dp, end = 24.dp), color = colors.outlineVariant.copy(alpha = 0.5f))
             if (state.queueTotal == 0) EmptyState("队列为空", "从音乐库选择一首歌曲开始播放。")
+            val openSongMenu = LocalSongMenuOpener.current
             LazyColumn(Modifier.weight(1f).testTag("queueList"), state = list,
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp)) {
                 items(state.queueItems, key = { it.occurrenceId }) { entry ->
                     val current = entry.index == state.currentQueueIndex
+                    val entryTrack = entry.track
                     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
                         .background(if (current) colors.primary.copy(alpha = 0.14f) else Color.Transparent)
-                        .clickable(enabled = entry.track != null) { actions.selectQueueEntry(entry) }
+                        .then(
+                            if (entryTrack != null) {
+                                Modifier.songRowClickable(
+                                    track = entryTrack,
+                                    onClick = { actions.selectQueueEntry(entry) },
+                                    onLongClick = {
+                                        openSongMenu(SongMenuRequest(track = entryTrack, queueEntry = entry))
+                                    }
+                                )
+                            } else {
+                                Modifier.clickable(enabled = false) {}
+                            }
+                        )
                         .padding(horizontal = 12.dp, vertical = 12.dp).testTag("queue-${entry.occurrenceId}"),
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (current) Icon(TwilightIcons.SignalWave, "当前曲目", Modifier.size(24.dp), tint = colors.primary)

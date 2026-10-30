@@ -213,7 +213,8 @@ internal class DesktopLibraryPresenter(private val scope: CoroutineScope, privat
 
     fun requestArtwork(requestedId: String) {
         val id = artworkAliases[requestedId] ?: requestedId
-        if (!id.startsWith("remote-track:") || id in attemptedArtwork) return
+        val isDesktopTrack = id.startsWith("remote-track:") || id.startsWith(DesktopMediaReference.PREFIX)
+        if (!isDesktopTrack || id in attemptedArtwork) return
         pendingArtwork += id
         if (artworkJob?.isActive == true) return
         val origin = generation
