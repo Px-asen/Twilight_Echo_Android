@@ -39,9 +39,9 @@ DoP 开放条件包括：DAC 明确支持对应 DoP 规格、承载格式逐位�
 ### 重采样选项与实际算法一致
 
 - P2 首个切片的固定目标按设备声明筛选；设备未声明时提供 44.1、48、88.2、96、176.4、192、352.8、384 kHz 常用选项。连续播放首选仍为 44.1、48、96 kHz，允许集合可进一步约束请求。
-- `AudioPipeline` 输出请求仍限幅到 384 kHz，705.6／768 kHz 要贯通解析和协商链路。
-- 四个相位枚举已贯通配置，但当前 FFmpeg 实现主要通过滚降参数区分平滑选项；线性／最小相位响应需通过算法和脉冲响应验证。
-- Android FFmpeg 构建当前不包含 libsoxr，默认／高／极高档使用 libswresample；SoX 需要独立构建和运行证据。
+- `AudioPipeline`、允许集合与实时设备能力已贯通到 768 kHz；705.6／768 kHz 的配置、播放与协商验证见第 11 节。播放流与系统硬件采样率分别报告。
+- 第 10 节先确认并修正了旧相位别名与 SWR 抗混叠；第 15 节已接入真实最小相位。相位与滚降独立选择，旧请求保留，活动状态来自实际解码器。
+- 线性默认／高／极高档继续使用原 SWR 参数。最小相位通过独立 libsoxr 0.1.3 的直接 API 执行，不依赖 FFmpeg 缺少相位控制的 SoX 包装层；同率与 USB 原样 PCM 通路不变。
 - 家族同步作为可选输出策略。非整数倍重采样的质量取决于滤波器和实现；超高采样率按设备和用途开放。
 - Dither 作用于整数 PCM 量化；Float32 输出展示实际作用状态。
 
@@ -100,13 +100,14 @@ DSP 覆盖广和跨端架构是值得发展的方向。算法质量、兼容性�
 - CUE 虚拟曲目：稳定 ID、时长、Seek 边界、标签／封面、队列和无缝衔接。
 - AutoEQ 在线库单独处理来源、版本和许可证；蓝牙 Codec 按平台能力接入。
 
-### P2：PCM 输出与重采样（进行中，首个选率切片见第 9 节）
+### P2：PCM 输出、重采样与可选过渡（软件切片与门禁见第 9–16 节，硬件验收进行中）
 
 - 输出能力与实际协商闭环，按设备开放采样率。
 - 家族同步／允许采样率集合，贯通协议、持久化、JNI 与 C++ 选率策略。
-- 修正相位算法与标签，测试频响、脉冲响应、混叠和转换误差；按需构建 SoX。
-- 先评估 Android 14+ `MIXER_BEHAVIOR_BIT_PERFECT` 对目标 USB 设备的覆盖，再决定自研驱动投入。
-- AutoMix 单列为可选播放功能，接通分析、准备、取消与过渡状态。
+- 相位算法与标签已对齐；直接 SoX 最小相位的频响、脉冲、混叠、分块、尾部、整数输出和准确 Seek 验证见第 15 节。
+- Android 14+ `MIXER_BEHAVIOR_BIT_PERFECT` 接入评估见第 12 节；默认关闭的实验性 USB 原样 PCM 已实现，软件验证与目标 DAC 余项见第 13 节，暂不自研驱动。
+- AutoMix 默认关闭，已接通真实模型分析、准备、取消、过渡状态和缓存重建；软件证据与真机余项见第 14 节。
+- 第 16 节已复核通过正式 TypeScript 入口、完整 FFmpeg 解码与完整队列／路由目标；USB 八项专项纳入默认回归。第 9–15 节保留各切片当时的失败记录，当前软件门禁状态以第 16 节为准。
 
 ### P3：USB 独占与 DSD
 
@@ -256,7 +257,7 @@ P2 首个交付切片为：设备支持的采样率集合、家族同步／允�
 
 ## 9. P2 首个切片：PCM 选率与协商反馈
 
-2026-10-29：设备声明 → 配置与持久化 → JNI／C++ 选率 → 实际播放流反馈已贯通。调试安装包、报告与截图位于 `build/deliverables/p2/`。P2 仍在进行，相位算法、SoX、超过 384 kHz 的请求和 Android 14+ USB Bit-Perfect 评估尚未交付。
+2026-10-29：设备声明 → 配置与持久化 → JNI／C++ 选率 → 实际播放流反馈已贯通。调试安装包、报告与截图位于 `build/deliverables/p2/`。本节记录首轮范围；后续滤波与超过 384 kHz 的请求见第 10、11 节，USB 评估与实验实现见第 12、13 节。
 
 ### 已交付
 
@@ -282,12 +283,209 @@ P2 首个交付切片为：设备支持的采样率集合、家族同步／允�
 
 设备用例共 9 个不同用例通过，按变更影响范围复用有效结果，最终两项界面用例已针对交付 APK 重跑。首个设备批次有 7 项通过、大字体用例因 Compose 段落溢出标志失败；改为检查完整文字、逐行字形边界与省略状态后通过。此前界面点击测试还修正了横向选项行的滚动定位：先在纵向列表露出整行，再点击行内选项。请求与实际流反馈按完整短语自适应换行，避免大字体拆开数值和单位。截图中的能力和协商数值是界面夹具，真实设备声明另有平台映射用例。
 
-**宿主原生全量回归仍有缺口**：运行 `twilight_runtime_queue_reroute_unit` 全量目标时，在 `testClockSnapshotCannotUndoCompletedDopReroute` 创建 DSF 夹具处以 `errno 13` 退出（`p2-native-tests.log`）。本轮只将四个 PCM 专项计为通过。宿主测试维护者需排除夹具写入问题后补跑全量目标。
+**此切片当时的宿主原生全量缺口**：运行 `twilight_runtime_queue_reroute_unit` 全量目标时，在 `testClockSnapshotCannotUndoCompletedDopReroute` 创建 DSF 夹具处以 `errno 13` 退出（`p2-native-tests.log`）。该切片只将四个 PCM 专项计为通过。第 16 节已在原失败临时目录中通过当前完整目标。
 
 ### 继续推进的条件与顺序
 
 1. **目标手机／DAC 验收**：持有目标设备的验收者记录设备声明、音源、请求、实际播放流和硬件格式；检查有线／蓝牙／USB 切换、拔出暂停、空能力声明和不兼容集合。模拟器的注入能力变化不替代物理热插拔。
-2. **P2 下一切片**：先测量当前各相位选项的频响、脉冲响应、混叠和转换误差，再修正算法或标签，按证据决定 SoX 构建；更高采样率单独贯通边界与协商。
+2. **P2 滤波切片**：响应测量、准确标签和 SWR 抗混叠修正已完成，见第 10 节；更高采样率单独贯通边界与协商。
 3. **USB 路线**：按计划先评估 Android 14+ `MIXER_BEHAVIOR_BIT_PERFECT` 在目标手机／USB DAC 上的覆盖，USB 驱动和 DSD 继续按 P3 推进。
 
 本包来自 Android `783803b` 及当前工作区、共享核心 `0eaa570` 及未提交源码，`sourceDirty=true`。正式发布前需提交共享 TypeScript／C++ 修正，再重建核心与安装包。
+
+## 10. P2 第二个切片：真实滤波响应与抗混叠
+
+2026-10-30：已修正相位选项和实际状态反馈，改善高／极高档 SWR 滤波。以下记录此切片当时的实现；后续真实最小相位见第 15 节。历史调试包与证据位于 `build/deliverables/p2-resampler/`，当前方法、完整配置与局限见 `RESAMPLER_VALIDATION.md`。
+
+### 测量决定实现
+
+- 原 `minimum` 与 `linear` 的 PCM 完全相同，`minimum-smooth` 与 `linear-smooth` 也相同；默认档四项均相同。当时 Android 只提供实际支持的线性相位滤波，高／极高档可选标准或平滑滚降，旧最小相位字符串保持读取和保存。第 15 节使这些最小相位请求实际生效。
+- 高档 SWR 的 `filter_size` 从 32 改为 64，标准 `cutoff` 从 0.97 改为 0.94；极高档从 64／0.99 改为 128／0.96。平滑 `cutoff=0.91`，默认档参数保持不变。
+- Android FFmpeg 7.1.2 中，48→44.1 kHz、输入 23 kHz 正弦时，标准高档混叠残留从 −19.93 降至 −91.48 dB，标准极高档从 −31.10 降至 −97.33 dB（相对输入 RMS）。这些值对应指定测试频点。极高标准档在 20 kHz 的脉冲导出增益为 −0.00021 dB，平滑档为 −4.64 dB：平滑选项更早衰减高频，不是最小相位。
+- 新增活动解码流字段 `effectiveResamplerPhase` 与 `effectiveResamplerPhaseFallback`，随实际引擎、质量一起呈现。未重采样／停止时相位为 `null`；保存的请求和进程级能力探测不能冒充活动滤波器。
+- 此切片未构建 SoX：SWR 已解决测出的混叠问题，FFmpeg 的 SoX 包装层没有开放最小相位控制；后续改用直接 API，见第 15 节。
+
+### 验证与剩余条件
+
+- 同一生产解码器测试在 Windows FFmpeg 9.0.2 和 Android FFmpeg 7.1.2 上通过：36 组响应测量（3 组速率 × 3 档 × 4 个旧相位值）、257／4096 帧分块一致、尾部长度、同率 Float32 不变，以及 8 组准确 Seek、每组 4 个位置。C++ 运行时两项专项验证实际状态、旧请求回退与停止清除。
+- `feature/player` 106 项 JVM 测试通过；API 36 x86_64 模拟器 7 项通过：新原生重采样 1、设置界面 4、已有原生链路 2。检查常规与 1.5 倍字体截图，应用／测试 APK 构建成功，应用打包四个 ABI。
+- **此切片当时的宿主完整解码失败**：`twilight_ffmpeg_decoder_unit` 在 `assertSharedFilePreservesReadAndSeekAfterDeletion` 的 `file.is_open()` 失败，尚未进入完整解码测试，日志为 `p2-resampler-decoder.log`。第 16 节已复核通过当前完整解码与队列目标，历史日志保留。
+- **真机条件**：高／极高档滤波长度增加，ARM 手机连续播放性能、功耗、热插拔与 DAC 仍需目标设备验收。下一软件切片可推进超过 384 kHz 的配置与协商边界；Android 14+ USB Bit-Perfect 覆盖另按目标设备评估。
+
+本轮基于 Android `2d18aeb`、共享引擎 `c7e075a1` 加工作区修改。内置 Music Core 沿用 `c7e075a1` 的已提交 bundle，本轮仅增加 TypeScript 状态类型字段，未变更核心运行逻辑。
+
+## 11. P2 第三个切片：705.6／768 kHz PCM 请求
+
+2026-10-30：高采样率配置、保存与协商链路已贯通。调试安装包、测试日志、转换数据和大字体截图位于 `build/deliverables/p2-high-rate/`。
+
+### 已交付
+
+- 允许集合和实时设备声明的范围扩展到 **8000–768000 Hz**，仍最多 32 个不同整数。Kotlin、共享 TypeScript、场景导入和 C++ 使用相同边界；768001 Hz 集合项被拒绝，已接受配置保持不变。
+- 修正 `AudioPipeline` 请求解析、DSP 联合提交和独立能力刷新中的 384 kHz 截断。705600／768000 Hz 原值送到后端；解码器继续以实际协商格式输出。
+- 新高采样率选项按设备声明出现。设备未声明时常用选项仍到 384 kHz，保存／导入的高目标与允许集合继续可见、可编辑；未声明时也能围绕保存的高目标建立自选集合。旧自动／固定请求不新增设备准入条件，连续播放的默认值和选项不变。
+- 家族选择覆盖 44.1→705.6 kHz、48→768 kHz 及精确高源率；高固定目标与允许集合共同提交，图准备失败回退，暂停与位置保留。DSD／DoP 路径未扩展。
+
+### 软件验证与实际输出
+
+| 检查 | 结果与覆盖 | 记录 |
+| --- | --- | --- |
+| JVM | 237 项通过：core-client 98、native-integration 21、adapters 12、feature/player 106；含高目标与集合往返、设备过滤、旧请求兼容与越界拒绝 | `logs/p2-high-build.log`、`test-results/` |
+| 实际嵌入核心 | 20 项通过，705.6／768 kHz 经实际 bundle 应用、保存、重建，非法集合不覆盖旧值 | `logs/p2-high-core-tests.log` |
+| C++ PCM 专项 | 5 项通过，受控后端请求 705.6／768 kHz、返回 48 kHz，解码按 48 kHz；验证独立能力刷新、暂停、位置与失败回退 | `logs/p2-high-native-pcm-final.log` |
+| 生产 FFmpeg | Windows 9.0.2 与 Android 7.1.2 均通过 4 组升／降采样、2 组同率 Float32 不变、257／4096 帧分块一致、完整尾部和 4 组 Seek（每组 4 位置） | `measurements/p2-high-*-response.jsonl` |
+| 真实设备链路与界面 | API 36 x86_64 模拟器 9 个不同用例通过；高率用例补齐实际续播后单独复测通过。覆盖真实 QuickJS／JNI／AAudio、6250 ms 暂停 Seek、恢复 48 kHz，以及 1.5 倍字体高率选项、未声明能力下的保存配置 | `logs/p2-high-device.log`、`logs/p2-high-playback-device.log`、`screenshots/` |
+| 打包 | 应用／测试 APK 构建成功；核心同步校验通过，四个 ABI 原生库已打包 | 构建日志与 `logs/apk-inventory.log` |
+
+模拟器中，705.6／768 kHz 请求各自得到同率 AAudio 播放流，**系统硬件均为 48 kHz**；两种请求都能续播、暂停并 Seek 回 6250 ms，再切回 48 kHz 播放。原始记录见 `measurements/negotiation.txt`。界面测试另使用注入的设备能力和协商数值，截图不是物理 DAC 的测量。
+
+原生专项首轮使用的 Int24 假源被共享测试后端识别为 DoP 载波，因而没有应用 PCM 协商覆盖；改用明确的 Float32 假源后验证通过。实际生产解码转换由独立 FFmpeg 测试覆盖。Android 的四组 1 kHz 正弦转换误差均低于 −104 dB（相对输入 RMS），该数值不代表全频带响应或真机性能。
+
+### 仍需完成的验收
+
+- 持有目标手机／USB DAC 的验收者确认设备声明、真实硬件高率输出、热插拔与持续播放功耗／温升；本轮模拟器未触发 AAudio 高率拒绝，真实设备的拒绝与恢复还需记录。
+- 本切片未重复运行第 9、10 节失败的两个全量目标，原生通过范围为专项和内存输入转换；当前完整目标的后续通过记录见第 16 节。
+- Android 14+ `MIXER_BEHAVIOR_BIT_PERFECT` 的接入条件与可观测状态评估见第 12 节；目标 USB 设备覆盖仍待验证。AutoMix 与真实最小相位的后续软件交付分别见第 14、15 节。
+
+本轮基于 Android `2d18aeb`、共享引擎／核心 `c7e075a1` 加工作区修改。Music Core 重新构建并同步，`sourceDirty=true`；交付目录保存锁文件。此包用于调试验收，正式发布需提交相应源码并重建。
+
+## 12. P2 USB 路线评估：复用系统接口与 AAudio
+
+2026-10-30：接口、AOSP 14／16 源码与当前引擎的接入评估完成，新增只读设备探针。结论与实施边界见 `USB_BIT_PERFECT_ASSESSMENT.md`；测试 APK、探针脚本、原始来源与模拟器报告位于 `build/deliverables/p2-usb-assessment/`。
+
+**首选路线为 Preferred Mixer Attributes 加 AAudio 专用 typed PCM 模式，暂不自研 USB 驱动或另建 AudioTrack 引擎。** Android 14 的 USB 可配置混音属性是平台要求，但 Bit-Perfect 是可选的 AIDL HAL 能力，必须从目标设备返回的完整编码／采样率／声道配置判断。
+
+评估时后端固定 Float32、低延迟请求，未实现 `startTyped()`，管线的 typed 后端名单也没有 Android。选定的新模式使用普通 AudioTrack 路径对应的 AAudio `PERFORMANCE_MODE_NONE`／Shared，保留整数 PCM；设置系统偏好成功后再验证实际路由和格式。原自动／固定／Exclusive 行为保持不变，不能复用旧 `bitPerfect` 字段来表示这个新请求。
+
+`getPreferredMixerAttributes()` 和监听器只报告偏好，不提供活动逐轨 Bit-Perfect 证明。新状态应分开设备声明、系统接受的偏好、活动格式与原样传输证据；现有 `outputPerfect` 保留全链路含义。启用设计还必须处理硬件音量、无静默降级的失败恢复，以及系统重配与物理拔出的区别。
+
+只读 `P2UsbMixerCapabilityTest` 构建并在 API 36 x86_64 模拟器通过，实际记录两个非 USB 输出、零 USB 输出，状态为 `no_usb_output`。评估包读取未要求 `MODIFY_AUDIO_SETTINGS`，也未设置／清除偏好或播放音频；后续实验实现已添加设置／清除权限。当前没有目标手机＋USB DAC，尚未执行真实设备偏好写入及原样传输验证。
+
+评估选定的 typed PCM 与可恢复偏好控制已在下一切片落地，见第 13 节。持有目标硬件的验收者先用交付探针提交能力 JSON，再验证输出、热插拔、并发声音与硬件音量；DSD／DoP 继续留在 P3。
+
+## 13. P2 第四个切片：默认关闭的实验性 USB 原样 PCM
+
+2026-10-30：独立请求、系统偏好租约、AAudio typed PCM、暂停与失败恢复已贯通。调试 APK、源码快照、报告和截图位于 `build/deliverables/p2-usb-pcm/`，安装与复现见其中的 `README.md`。
+
+### 使用条件与行为
+
+- **单独启用**：设置 → 音频与 DSP → 输出方式中的“USB 原样 PCM（实验）”，对应 `dsp.usbPcmPassthrough=false` 默认值。请求随 Music Core 会话、场景与 `.tedsp` Android 扩展保存；系统偏好、偏好接受与格式匹配事实不保存。旧 `bitPerfect`／Exclusive 的含义不变。
+- **先控制硬件音量**：先调低 DAC 硬件音量，再由用户选择应用音量 100%、原速、跟随音源、关闭交叉淡化和改变采样的 DSP；重采样设为默认、关闭抖动与前置余量。开关不自动改动音量、输出策略或 DSP。冲突请求在替换当前输出前拒绝。
+- **严格准入**：Android 14+，当前路由为单一 USB 输出，或用户明确选择 USB 设备；必须匹配设备声明的完整 Bit-Perfect 元组。首版仅支持位置掩码单／双声道，I16、packed I24、I32 与 Float32；索引掩码和多声道声明不擅自换算。系统接受并回读偏好后，用相同 MEDIA／MUSIC 属性、`PERFORMANCE_MODE_NONE`／Shared 打开流，检查实际设备、编码、速率和声道。
+- **保持采样**：解码器至生产 AAudio 回调使用 typed 缓冲，保留 I32 低位，短回调尾部按真实帧字节数静音。原样模式暂停不应用普通 PCM 的 200 ms 淡出，普通播放仍保留原淡出行为；不走 Float32 回退。
+- **失败可恢复**：不支持、格式不符、偏好／路由／播放流失效时暂停并保留位置，不自动切到扬声器。暂停、停止、切设备和关闭模式释放本次偏好；用户确认后可重试，或关闭模式再点播放恢复普通输出。成功续播清除旧错误提示。
+- **UID 租约**：进程内引擎互斥持有系统偏好，查询到既有偏好时拒绝覆盖，不恢复别人的旧值。清除失败保留占用并阻止新输出，显式操作重试；已销毁会话的遗留清理由下一会话接续。JNI 回调按引擎绑定，在非实时线程同步执行，实时音频回调不调用 Binder／JNI。
+- **状态分层**：界面分别报告 `usbPcmPreferenceAccepted` 与 `usbPcmFormatMatched`；Android `outputPerfect` 仍为 false。偏好和格式成功不能代替物理输出验证。
+
+### 软件验收
+
+| 检查 | 结果与覆盖 | 交付目录内记录 |
+| --- | --- | --- |
+| JVM | 250 项通过：core-client 104、feature/player 112、native-integration 34；含 12 项偏好租约测试、配置冲突、场景往返和恢复后错误清除 | `logs/usb-final-build.log`、`logs/usb-recovery-delivery-build.log`、`test-results/` |
+| 实际 Music Core bundle | 21 项通过；独立默认值、保存／重建、非法布尔拒绝，偏好／格式事实不提升 `outputPerfect` | `logs/usb-core-tests.log`、`core-lock.json` |
+| C++ USB 专项 | 8 个用例通过；生产回调逐字节与短尾、typed I32、四编码暂停无淡出、协商不符、流／偏好失效无自动重开、拒绝恢复和暂停加载 | `logs/usb-native-runtime-final.log` |
+| 生产 FFmpeg | Windows 9.0.2 与 Android 7.1.2 各 8 组通过：四编码 × 单／双声道，每组 5003 帧、257／4096 分块、5 个准确 Seek、短尾静音与越界哨兵，逐字节一致 | `measurements/usb-decoder-*.jsonl` |
+| API 36 x86_64 设备 | 10 个不同用例通过：USB 无设备拒绝／6250 ms 暂停恢复 1、真实 QuickJS 保存重建 1、普通原生链路 2、已有 PCM 策略／高率回归 4、常规／1.5 倍字体界面 2 | `logs/usb-device-final.log`、`logs/usb-device-recovery-final.log`、`measurements/no-usb-recovery.txt`、`screenshots/` |
+| 相关原生与打包 | 既有 5 个 PCM 选率专项通过；应用／测试 APK 构建及核心同步校验通过，应用打包四个 ABI 的 JNI、引擎与 FFmpeg 库 | `logs/usb-native-pcm-regression.log`、构建日志、`logs/apk-inventory.log` |
+
+设备首轮 10 项中 9 项通过。持久化测试沿用了真实核心默认的连续播放策略，被新模式正确拒绝；测试现显式选择跟随音源，并验证拒绝时原配置不变。另修复普通续播后残留的 USB 错误提示。最终 USB 两项与原生链路两项复测通过；输入未变的 PCM／界面证据复用，常规与大字体实际截图已检查。模拟器无 USB DAC，成功状态的界面夹具不计入物理输出证据。
+
+### 硬件验收与其他 P2 余项
+
+持有 **Android 14+ 目标手机与声明 Bit-Perfect 的 USB DAC** 的验收者负责：完整元组采集、偏好设置／回读／清除、实际流与硬件格式、数字采样保持、源格式切换、物理插拔、焦点／铃声及并发应用竞争、硬件音量和持续播放功耗。当前没有该硬件，不能据模拟器或受控后端宣布设备 Bit-Perfect 验收完成。
+
+本切片未重跑第 9、10 节原样失败的全量目标，通过范围为上述专项与内存 WAV 解码；当前完整目标的后续通过记录见第 16 节。AutoMix 与真实最小相位后续交付见第 14、15 节；P3 DSD／DoP 仍为独立余项。
+
+本包基于 Android `2d18aeb0`、共享引擎／核心 `be318b6e` 加当前工作区修改，内置核心 `sourceDirty=true`。交付保留锁文件及本切片相关源码快照；属于调试验收包，正式发布需整理提交相应源码并重建。
+
+## 14. P2 第五个切片：默认关闭的 AutoMix
+
+2026-10-30：Android 已接通共享 AutoMix 协调器、真实 Beat This／YAMNet 模型和原生过渡。调试 APK、源码快照、原始报告与截图位于 `build/deliverables/p2-automix/`；使用条件、实现和复现见 `AUTOMIX_VALIDATION.md`。
+
+### 已交付
+
+- **模式与状态**：设置 → 音频与 DSP → 播放与输出 → AutoMix（实验），提供关闭／自然／DJ。默认关闭，原生接受后才保存设置。分析准备、原生就绪、实际混合、完成与降级分别呈现，与普通交叉淡化分开。USB 原样 PCM 与 AutoMix 双向拒绝冲突，不先改变输出或覆盖已接受设置；模式切换的新输出失败时恢复原模式、位置及播放／暂停状态。
+- **边界分析**：复用共享选择／准备／精确 plan ID 提交，不用普通 crossfade 代替。自然模式对曲尾和下一首开头各跑一个最多 30 秒模型窗口；DJ 扩大到尾部 100 秒／头部 60 秒的重叠窗口。Android 不做后台全曲模型分析，不接 Demucs／stems；模型与许可证按既有锁随 APK 打包，首次使用在工作线程提取，原生校验图身份。
+- **文件与缓存**：普通本地文件及提供完整 regular fd 的 SAF／MediaStore 输入可用。SAF 直接复制获准 descriptor，以独立 `pread` reader 解码，不重开受限的 `/proc/self/fd` 路径。完整内容身份、分轨范围、模型、参数和窗口共同决定缓存；首次身份校验会读取完整文件。缓存最多 128 条／16 MiB，只保存分析特征，不保存原生 ticket、plan 或输出事实。重启保持暂停，用户播放后复用缓存重新准备和提交。
+- **取消与普通播放**：分析单独串行 worker，取消有独立桥接通道，token 等原生调用返回后才销毁。暂停、Seek、队列／模式变化使旧准备失效；关闭引擎先取消并排空分析。流、pipe、文件切片或无法取得实际文件身份时继续普通播放；缺少安全候选、错过边界或模型失败也保留普通播放。连续专辑分轨保留无缝语义。
+- **文件变化**：准备、提交及等待边界的非实时轮询检查源身份／stamp，观察到变化撤销计划。POSIX descriptor 不排斥其他进程写入，实时回调不进行文件查询。旧 V1 C 输入 ABI、桌面文件缓存／协调器入口保留，实际 QuickJS bundle 无 Node 文件 IO shim。
+
+### 软件验收
+
+| 检查 | 结果与覆盖 | 交付目录内记录 |
+| --- | --- | --- |
+| JVM | 155 项通过：native-integration 40、feature/player 115；含 worker 取消先后顺序、排队上限、token／关闭生命周期，状态字段与说明 | `logs/automix-final-build.log`、`logs/automix-worker-tests.log`、`test-results/` |
+| 共享与实际 bundle | 桌面协调器／缓存 21 项；实际嵌入核心 25 项（AutoMix 4、既有 21）通过，含默认关闭、身份失败、精确提交、缓存重建、Seek／内容变化失效和 ACK 拒绝 | `logs/automix-shared-tests.log`、`logs/automix-core-final-tests.log` |
+| 原生专项 | C kernel／plan／tail／release／job 五个目标通过；真实 FFmpeg AutoMix 三项、模式失败恢复／USB 互斥两项通过；既有 USB 8、PCM 5 个专项通过 | `logs/automix-native-*.log` |
+| API 36 x86_64 | 6 个不同用例通过：真实模型／SAF 过渡 1、真实 QuickJS 取消／保存／缓存重建／互斥 1、设置界面 2、原有原生链路 2 | `logs/automix-final-device-regression.log`、`logs/automix-core-followup-device.log`、`logs/automix-device-followup.log` |
+| 打包与界面 | 应用／测试 APK 构建成功、核心锁校验通过，应用包含四个 ABI、两张锁定模型图与许可证；常规／1.5 倍字体截图已检查 | 构建日志、`logs/apk-inventory.log`、`screenshots/` |
+
+最终设备记录中，两个 30 秒模型窗口共 **19907 ms**；分析中 Seek 为 **9 ms**，取消至分析返回为 **21 ms**。原生选择了 **8 秒 content-boundary**，测试观察到实际 `mixing`，随后队列推进一首；修改已提交计划的下一首文件会撤销计划。真实 QuickJS 链路在分析中暂停耗时 **304 ms**，重启恢复自然模式与 **7 秒暂停位置**，再次播放没有新增模型调用、重新提交了精确 plan ID。原始系列见 `measurements/`。
+
+模型正向用例使用带受控尾部渐弱的生成音频。未渐弱的恒定测试音频由真实模型处理后因 `low_beat_confidence` 被正确拒绝，未放松候选规则。QuickJS 首轮测试在原生 Ready 后、submit ACK 前过早断言；现等待实际提交完成后通过。界面用例使用状态夹具，仅验证交互和排版。
+
+### 接续验收与 P2 余项
+
+- **目标 ARM 手机验收者**：用真实音乐分别检查自然／DJ 的候选与听感、短曲错过边界的普通播放、模型首次提取和缓存复用、暂停／Seek／切歌／路由变化，以及长时间功耗、温升和内存。模拟器时延不作为手机性能承诺；32 位超过 2 GiB 文件的实机执行尚待验证，已启用 64 位文件偏移并完成四 ABI 构建。
+- **目标手机／DAC 持有者**：继续第 13 节的正向 USB Bit-Perfect、热插拔及功耗验收。AutoMix 软件通过不关闭这些硬件项。
+- **软件门禁后续**：此切片保留的 `logs/automix-typecheck.log` 记录了 composite 项目文件清单错误；正式脚本既有的 `--composite false` 入口现已完整通过。DSF／解码的当前完整目标也已通过，方法与测试入口修正见第 16 节。
+
+真实最小相位后续交付见第 15 节，P3 DSD／DoP 仍未接入。P2 保持进行中。本包来自 Android `2d18aeb0`、共享引擎／核心 `be318b6e` 加未提交源码，内置核心 `sourceDirty=true`；正式发布需整理提交对应源码并重建。
+
+## 15. P2 第六个切片：真实最小相位重采样
+
+2026-10-30：直接 SoX 最小相位已接入生产解码器。调试 APK、库源码、原始测量、复现脚本与截图位于 `build/deliverables/p2-minimum-phase/`；完整参数和测量方法见 `RESAMPLER_VALIDATION.md`。
+
+### 使用与实现
+
+- 设置 → 音频与 DSP → 重采样与输出余量，分别选择质量、线性／最小相位和标准／平滑滚降。默认仍为线性相位；旧 `minimum`／`minimum-smooth` 不改写，现在使用真实最小相位。默认档固定滚降，保存的平滑请求继续报告实际差异。
+- 保留原 SWR 线性滤波与同率通路。只有速率不同时，最小相位或显式 SoX 档位才使用独立 libsoxr 0.1.3。SWR 在源采样率转换表示／声道，直接 SoX 执行唯一一次速率转换，最小相位 `phase_response=0`。SoX 与 SWR 带宽不同，相位的公平比较使用同一 SoX recipe，仅改变相位参数。
+- Seek 清空两级状态，EOF 排空 SoX 尾部；支持 I16／packed I24／I32 输出，库内 dither 关闭。新转换器初始化失败保留旧滤波器、待读样本和已接受状态。AutoMix 准备、可选素材导出与续接继承各流的相位／滚降；分析参数及旧调用的默认线性行为不变。实际相位经既有原生状态进入 Android，停止／同率不声称活动重采样。
+- 新库独立动态链接，保持 LGPL-2.1-or-later 可替换；四 ABI APK 包含许可，交付保留修改后库源码。桌面依赖暂存、打包白名单和对应源码许可同步更新，独立暂存的真实 Node addon 可加载。
+
+### 软件验收
+
+| 检查 | 结果 | 交付目录内证据 |
+| --- | --- | --- |
+| 生产响应与 Seek | Windows FFmpeg 9.0.2／Android 7.1.2 各通过：36 组响应、16 组 Seek × 4 位置；原高率 4 组转换各 4 个 Seek、2 组同率不变；新增最小相位高率 Seek 2 组、短尾 6 组 | `measurements/minimum-*-final.jsonl` |
+| 同引擎相位比较 | HQ／VHQ × 两种滚降 × 三组速率，12 组通过；Android 四频点最大幅频差小于 0.000891 dB，带 8 帧保护区的前区能量均显著减少 | 同上，`matched-soxr-phase` 行 |
+| 整数与恢复 | 两端各 12 组 I16／I24／I32 单双声道 × 两种滚降，分块、声道隔离、每组 4 个 Seek、短尾和越界通过；不支持的配置失败后原数据连续，随后可改回 SWR | 同上，`minimum-typed` 与结尾检查 |
+| 既有功能 | 两端 USB 实际解码各 8 组逐字节回归；宿主 AutoMix 线性及最小相位的自然／DJ、普通／CUE 准确续接通过；SoX 档位与旧 wrapper 缓存专项、关闭直接 SoX 的 Android 构建通过 | `measurements/*usb*`、`logs/minimum-automix-regression.log`、`minimum-automix-phase-after.log`、回退／复现日志 |
+| Android 应用 | player 115 项 JVM；API 36 x86_64 共 6 个不同用例通过：真实相位切换与暂停位置 1、最小相位真实模型／SAF 过渡 1、设置／大字体 2、原生链路 2；最终包复测真实相位与模型过渡 2 项 | `test-results/`、`logs/minimum-device.log`、`minimum-final-device.log`、`minimum-automix-final-device.log` |
+| 打包与界面 | 应用／测试 APK、核心同步校验通过；四 ABI 独立库与许可证齐全，新增库 16 KiB 页对齐；API 26 符号静态兼容检查通过；常规／1.5 倍字体截图已检查 | 构建日志、`logs/apk-inventory.log`、`logs/soxr-elf-inspection.log`、`screenshots/` |
+
+Android 48→44.1 kHz、HQ 标准的保护区前能量比例从匹配线性滤波的 **0.00524531** 变为最小相位的 **1.85×10⁻¹⁴**；VHQ 标准为 **0.00553079 → 1.96×10⁻²⁷**。该指标排除主峰前 8 帧的主瓣上升沿，不能当作所有主峰前能量。首轮未排除主瓣的断言失败保留在历史报告，测量方法已据此修正。1 kHz 残差先拟合相位，避免把预期相位旋转算成失真；详细数列及适用条件见验证文档。
+
+联动专项还复现了 AutoMix 续接丢失相位的问题，修正前逐样本断言失败；准备／导出／续接统一配置后通过。最终模拟器用真实模型完成 48 kHz 过渡并升轨，状态保持 `soxr / ultra / minimum-smooth` 且无回退；暂停 Seek 和分析取消继续可用。对应报告在 `measurements/automix-minimum/`。
+
+### 接续条件
+
+目标 ARM 手机持有者继续验收实际音乐听感、长时间播放、路由／Seek、温升与功耗；目标手机／DAC 持有者继续第 13 节正向 USB Bit-Perfect 与热插拔。API 26 这里只做符号静态检查，运行证据来自 API 36 x86_64；四 ABI 构建不代替 ARM 实机执行。
+
+本切片当时未重复运行失败的全量目标，历史日志保留在验收包。正式 TypeScript 入口及当前完整 DSF／FFmpeg 相关目标的后续通过记录见第 16 节。P2 保持进行中，P3 DSD／DoP 未扩展。
+
+调试包基于 Android `2d18aeb0cf8921ba633233e5a53145513ae839ca`、共享引擎 `be318b6e25386b6e85a2d6a334f6bf194b9e9878` 加当前源码。Music Core 沿用 AutoMix 的已验证 bundle，`sourceDirty=true`；正式发布前仍需整理提交并重建。
+
+## 16. P2 软件门禁复核与默认回归
+
+2026-10-30：此前切片留下的类型／完整原生检查缺口已按当前工作区复核通过。复现命令、原始日志与相关测试快照位于 `build/deliverables/p2-software-gates/`。本轮只修改共享测试入口及文档，应用继续使用第 15 节的最小相位调试 APK。
+
+| 检查 | 当前结果 | 交付目录内证据 |
+| --- | --- | --- |
+| 正式 TypeScript 入口 | `pnpm run typecheck` 的 core、node、web 三阶段通过；node／web 使用项目既有的 `--composite false`，未调整 include 范围 | `logs/p2-gates-typecheck.log` |
+| 完整生产解码回归 | Windows FFmpeg 9.0.2、直接 SoX 启用、断言启用，`twilight_ffmpeg_decoder_unit` 通过；包括中文路径、打开中改名／删除、失败句柄释放、准确 Seek、FLAC 尾部及 SoX 档位 | `logs/p2-gates-decoder-before.log` |
+| 完整队列／路由回归 | `twilight_runtime_queue_reroute_unit` 默认入口通过，187 次用例调用（含参数组合），37.93 秒；在原 DSF 失败的临时目录运行，包含 DoP 时钟与 DSF 创建 | `logs/p2-gates-runtime-final.log` |
+| USB 测试接入 | 原样 PCM 的八项专项现由默认入口和原 `TAE_RUNTIME_USB_PCM_ONLY` 入口共用；两种入口均通过 | 同上及 `logs/p2-gates-usb-entrypoint.log` |
+
+### 修正了测试入口，没有放宽音频断言
+
+当前完整队列目标首先暴露了失效的源码检查：AutoMix 恢复已给 `play` 增加可选错误上下文参数，测试仍匹配旧的完整签名。现按方法入口提取函数体，继续检查解析后 DSP 快照复用、无重复 JSON 解析等原约束；找不到方法时直接打印缺失签名。修正前失败保留在 `logs/p2-gates-runtime-full.log`。
+
+进一步检查发现 USB 八项测试只挂在手动专项分支，默认全量入口没有调用。现集中为同一个测试组，同时接入两个入口；默认回归从 179 次调用增加到 187 次。它们覆盖 typed PCM／短尾、无暂停淡化、协商不符、流／偏好失效、失败恢复和初始暂停，受控后端用于检查管线契约。
+
+历史 DSF `errno 13` 与完整解码 `file.is_open()` 在当前构建未复现，本轮未修改文件 IO 实现。历史 TS6307 对应 composite 文件清单校验；正式入口本来就禁用该构建约束，三个类型检查均通过，旧错误不再列为当前正式入口的缺口。此前失败日志仍随包保留。
+
+### P2 下一步是目标设备验收
+
+当前 adb 只连接 API 36 x86_64 模拟器。目标 ARM 手机持有者继续实际音乐听感、持续 CPU／温升／功耗、路由和 Seek；Android 14+ 手机／USB DAC 持有者继续第 13 节正向 Bit-Perfect、数字采样保持、物理插拔、系统竞争和硬件音量。运行时回归使用受控解码器／后端，物理输出证据由目标设备提供。
+
+本轮复核上述三个已记录的缺口，未执行整套桌面发布流水线。源码基线仍为 Android `2d18aeb0`、共享仓库 `be318b6e` 加未提交工作区；正式发布按项目流程整理提交、完成目标设备验收并重建。P2 保持进行中，P3 DSD／DoP 未扩展。
