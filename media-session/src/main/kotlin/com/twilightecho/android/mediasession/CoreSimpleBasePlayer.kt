@@ -43,7 +43,8 @@ class CoreSimpleBasePlayer(
     private val playbackHost: AndroidPlaybackHost,
     private val coreClient: CoreClient = playbackHost.mediaSessionCoreClient,
     applicationLooper: Looper = Looper.getMainLooper(),
-    private val artworkLoader: suspend (CoreTrackView) -> ByteArray? = { null }
+    private val artworkLoader: suspend (CoreTrackView) -> ByteArray? = { null },
+    private val playRequest: suspend () -> Unit = { playbackHost.requestSystemFocusAndPlay() }
 ) : SimpleBasePlayer(applicationLooper) {
 
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -63,6 +64,7 @@ class CoreSimpleBasePlayer(
         val duration: Double?, val artwork: ByteArray?)
     private var timelineKey: TimelineKey? = null
     private var timelineItems: List<MediaItemData> = emptyList()
+    private var playRequestVersion = 0L
 
     init {
         mainScope.launch {
@@ -158,22 +160,28 @@ class CoreSimpleBasePlayer(
         return stateBuilder.build()
     }
 
-    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> =
-        sourceFuture {
+    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        val version = ++playRequestVersion
+        val origin = playbackHost.systemMediaTransport.generation
+        return sourceFuture {
             if (playWhenReady) {
-                playbackHost.requestSystemFocusAndPlay()
+                if (!playbackHost.systemMediaTransport.isRemote) playbackHost.awaitStarted()
+                if (version == playRequestVersion && origin == playbackHost.systemMediaTransport.generation) playRequest()
             } else {
                 coreClient.executeCommand(CoreTypedCommand.Pause)
             }
             null
         }
+    }
 
-    override fun handleStop(): ListenableFuture<*> =
-        sourceFuture {
+    override fun handleStop(): ListenableFuture<*> {
+        playRequestVersion++
+        return sourceFuture {
             playbackHost.audioFocusCoordinator.abandonPlaybackFocus()
             coreClient.executeCommand(CoreTypedCommand.Stop)
             null
         }
+    }
 
     override fun handleSeek(
         mediaItemIndex: Int,

@@ -11,6 +11,7 @@ import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.CueSource
 import com.twilightecho.android.coreclient.DesktopMediaReference
 import com.twilightecho.android.playbackhost.AndroidPlaybackHost
+import com.twilightecho.android.playbackhost.NcmFallbackUri
 import com.twilightecho.android.plugins.providerArtworkData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -22,18 +23,26 @@ internal class MediaSessionArtwork(private val context: Context, private val hos
         val source = track.source.orEmpty()
         val desktop = DesktopMediaReference.parse(source)
         val bytes = when {
-            // NCM and v2 provider covers: CDN URLs fetched under the provider's own grants.
-            source.startsWith("provider://") -> track.cover?.let { providerArtworkData(it, size = 512) }
+            // NCM and v2 provider covers: prefer cached desktop cover for offline fallback tracks, then CDN URL.
+            source.startsWith("provider://") -> {
+                val cachedDesktop = if (track.id.startsWith("remote-track:")) {
+                    decodePreview(host.cachedOrRemoteTrackArtwork(track.id))
+                } else null
+                cachedDesktop ?: run {
+                    val coverUrl = track.cover
+                        ?: NcmFallbackUri.parse(source)?.let { parsed ->
+                            host.cachedNcmFallbackMatch(parsed)?.cover ?: host.resolveNcmFallbackMatch(parsed)?.cover
+                        }
+                    coverUrl?.let { providerArtworkData(it, size = 512) }
+                }
+            }
             desktop != null -> {
                 val preview = host.desktopArtwork(desktop.serverId, listOf(track.id)).getOrNull()
                     ?.items?.firstOrNull { it.id == track.id }?.cover
                 decodePreview(preview)
             }
             track.id.startsWith("remote-track:") || host.systemMediaTransport.isRemote -> {
-                val serverId = host.playbackDesktopServerId() ?: return@withContext null
-                val preview = host.desktopArtwork(serverId, listOf(track.id)).getOrNull()
-                    ?.items?.firstOrNull { it.id == track.id }?.cover
-                decodePreview(preview)
+                decodePreview(host.cachedOrRemoteTrackArtwork(track.id))
             }
             else -> localArtwork(CueSource.audio(source), track.albumId, track.cover)
         } ?: return@withContext null
@@ -78,7 +87,7 @@ internal class MediaSessionArtwork(private val context: Context, private val hos
     }
 
     private fun decodePreview(value: String?): ByteArray? {
-        if (value == null || value.length > 250_000 ||
+        if (value == null || value.length > 2 * 1024 * 1024 ||
             !Regex("^data:image/(?:png|jpe?g|webp);base64,", RegexOption.IGNORE_CASE).containsMatchIn(value)) return null
         return runCatching { Base64.decode(value.substringAfter(','), Base64.DEFAULT) }.getOrNull()
     }

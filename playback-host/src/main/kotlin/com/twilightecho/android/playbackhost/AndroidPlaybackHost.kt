@@ -3,21 +3,23 @@ package com.twilightecho.android.playbackhost
 import android.content.Context
 import com.twilightecho.android.adapters.AndroidAudioDeviceAdapter
 import com.twilightecho.android.adapters.AndroidClockAdapter
-import com.twilightecho.android.adapters.AndroidMediaStoreScannerAdapter
 import com.twilightecho.android.adapters.AndroidMusicFolderScanner
 import com.twilightecho.android.adapters.LibraryScanSummary
 import com.twilightecho.android.adapters.MusicFolder
 import com.twilightecho.android.adapters.AndroidNetworkAdapter
 import com.twilightecho.android.adapters.AndroidResourceAccessAdapter
 import com.twilightecho.android.adapters.AndroidSessionStoreAdapter
+import com.twilightecho.android.adapters.AndroidTrackMetadataProbe
 import com.twilightecho.android.coreclient.CoreClient
 import com.twilightecho.android.coreclient.CoreClientIdentity
 import com.twilightecho.android.coreclient.CoreOperatingMode
+import com.twilightecho.android.coreclient.CoreQueueEdits
 import com.twilightecho.android.coreclient.CoreResult
 import com.twilightecho.android.coreclient.CoreSnapshot
 import com.twilightecho.android.coreclient.DesktopCertificateMismatchException
 import com.twilightecho.android.coreclient.CoreTypedCommand
 import com.twilightecho.android.coreclient.DefaultCoreClient
+import com.twilightecho.android.coreclient.TrackInspectionDetails
 import com.twilightecho.android.coreclient.RemoteCoreCredentials
 import com.twilightecho.android.coreclient.RemoteNetworkCoreTransport
 import com.twilightecho.android.coreclient.DesktopCertificatePin
@@ -35,6 +37,8 @@ import com.twilightecho.android.coreclient.AuthorizedDesktopMedia
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.DesktopCapabilities
 import com.twilightecho.android.coreclient.TrackArtworkPage
+import com.twilightecho.android.coreclient.TrackArtworkPreview
+import com.twilightecho.android.coreclient.PlayMode
 import com.twilightecho.android.coreclient.EntityMetadataDetail
 import com.twilightecho.android.coreclient.OutputPresetCoordinator
 import com.twilightecho.android.nativeintegration.NativeAudioEngineAdapter
@@ -44,7 +48,9 @@ import com.twilightecho.android.runtimehost.CoreRuntimeThreadDispatcher
 import com.twilightecho.android.runtimehost.QuickJsRuntimeHost
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -72,6 +78,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
 import java.io.Closeable
@@ -89,8 +96,8 @@ import kotlinx.coroutines.channels.Channel
  * - `CoreRuntimeThreadDispatcher` + `QuickJsRuntimeHost` (Music Core JS runtime)
  * - `NativeAudioEngineAdapter` (C++ Audio Core via JNI)
  * - `AndroidSessionStoreAdapter` (Atomic CAS session store)
- * - `AndroidResourceAccessAdapter` (MediaStore / SAF URI permission-aware resource access)
- * - `AndroidMediaStoreScannerAdapter` (Phase 2 local MediaStore audio scanner)
+ * - `AndroidResourceAccessAdapter` (SAF URI permission-aware resource access)
+ * - `AndroidMusicFolderScanner` (User-selected SAF music folder scanner)
  * - `AudioFocusCoordinator` (System AudioFocus & `ACTION_AUDIO_BECOMING_NOISY`)
  *
  * Implements Section 5.4 **Platform Safety Brake**:
@@ -106,6 +113,7 @@ class AndroidPlaybackHost private constructor(
     private val appContext: Context = context.applicationContext
     private val hostScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val started = AtomicBoolean(false)
+    private val startup = CompletableDeferred<Unit>()
     private val closed = AtomicBoolean(false)
     private val userPlaybackRevision = AtomicLong(0)
     // While Music Core applies a platform interruption, its engine pause is not the user's.
@@ -120,8 +128,9 @@ class AndroidPlaybackHost private constructor(
         storageDirectory = File(appContext.filesDir, "twilight_core_state")
     )
     val resourceAccessAdapter = AndroidResourceAccessAdapter(appContext)
-    val mediaStoreScanner = AndroidMediaStoreScannerAdapter(appContext)
     private val musicFolderScanner = AndroidMusicFolderScanner(appContext)
+    private val trackMetadataProbe = AndroidTrackMetadataProbe(appContext)
+    private val localLibraryMutex = Mutex()
     private val mutableMusicFolders = MutableStateFlow(musicFolderScanner.folders())
     /** The music folders the user picked, oldest first. */
     val musicFolders: StateFlow<List<MusicFolder>> = mutableMusicFolders.asStateFlow()
@@ -150,13 +159,16 @@ class AndroidPlaybackHost private constructor(
         providerStream = { source ->
             // Plugins-repository providers (QQ, Kugou, Jellyfin, ...) resolve through the plugin that queued the song.
             if (!source.startsWith("provider://ncm/")) return@NativeAudioEngineAdapter plugins.openStream(source)
-            val uri = java.net.URI(source)
-            require(uri.host == "ncm" && uri.path.matches(Regex("/[0-9]+"))) { "音源引用无效" }
+            val fallbackTrack = NcmFallbackUri.parse(source)
+            val directSongId = NcmFallbackUri.directSongId(source)
+            require(fallbackTrack != null || directSongId != null) { "音源引用无效" }
             val quality = userPreferences.state.value.ncmQuality
             com.twilightecho.android.nativeintegration.ProviderStreamDataSource(resolveUrl = { force ->
                 kotlinx.coroutines.runBlocking {
+                    val songId = directSongId ?: resolveNcmFallbackMatch(fallbackTrack!!)?.ncmSongId
+                        ?: throw java.io.IOException("网易云上没有找到「${fallbackTrack!!.title}」")
                     val result = plugins.call("com.twilightecho.provider.ncm", "getPlaybackUrl",
-                        ncmPlaybackArguments(uri.path.removePrefix("/"), quality, force))
+                        ncmPlaybackArguments(songId, quality, force))
                     result.jsonPrimitive.content.let { if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it }
                 }
             })
@@ -222,10 +234,14 @@ class AndroidPlaybackHost private constructor(
 
     // Remembered computer libraries: their songs stay listed (and playable through a fallback) while offline.
     private val trackIndexStore = DesktopTrackIndexStore(File(appContext.filesDir, "twilight_core_state"))
+    private val artworkCache = DesktopArtworkCache(File(appContext.filesDir, "twilight_core_state"))
     private val indexMutex = Mutex()
     private val indexLoaded = CompletableDeferred<Unit>()
     private val indexSyncJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val artworkSyncJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val desktopWatchers = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    @Volatile private var trackArtworkLocations: Map<String, Pair<String, String>> = emptyMap()
+    @Volatile private var sourceToRemoteTrackIds: Map<Pair<String, String>, String> = emptyMap()
     private val mutableDesktopLibraries = MutableStateFlow<List<DesktopLibraryIndex>>(emptyList())
     val desktopLibraries: StateFlow<List<DesktopLibraryIndex>> = mutableDesktopLibraries.asStateFlow()
     private val mutableConnectedDesktops = MutableStateFlow<Set<String>>(emptySet())
@@ -234,6 +250,17 @@ class AndroidPlaybackHost private constructor(
     private val mutableAdoptedSessions = MutableSharedFlow<String>(extraBufferCapacity = 4)
     /** Emits a computer's name after the phone signed into the streaming account that computer shared. */
     val providerSessionAdopted: SharedFlow<String> = mutableAdoptedSessions.asSharedFlow()
+    private val mutablePlaybackNotices = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    /** User-facing playback notices emitted by background host policies (e.g. skipping an unmatched offline song). */
+    val playbackNotices: SharedFlow<String> = mutablePlaybackNotices.asSharedFlow()
+
+    private class CachedNcmFallback(val match: CoreTrackView?, val recordedAtMs: Long = System.currentTimeMillis())
+    private val ncmFallbackLock = Any()
+    private val ncmFallbackCache = object : LinkedHashMap<String, CachedNcmFallback>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedNcmFallback>?): Boolean =
+            size > MAX_NCM_FALLBACK_CACHE
+    }
+    private val inFlightNcmFallbacks = HashMap<String, Deferred<CoreTrackView?>>()
 
     val primaryCoreClient: CoreClient = DefaultCoreClient(
         identity = CoreClientIdentity.androidPrimaryClient(),
@@ -283,12 +310,15 @@ class AndroidPlaybackHost private constructor(
         if (started.compareAndSet(false, true)) {
             publishKnownDesktops()
             hostScope.launch(Dispatchers.IO) {
+                runCatching { artworkCache.loadIndexes() }
                 val stored = runCatching { trackIndexStore.loadAll() }.getOrDefault(emptyList())
                 indexMutex.withLock {
                     mutableDesktopLibraries.update { current ->
                         (stored.filter { saved -> current.none { it.serverId == saved.serverId } } + current).sortedBy { it.hostLabel }
                     }
+                    rebuildArtworkLookup(mutableDesktopLibraries.value)
                 }
+                prewarmInitialDesktopArtwork(mutableDesktopLibraries.value)
                 indexLoaded.complete(Unit)
             }
             hostScope.launch {
@@ -298,12 +328,14 @@ class AndroidPlaybackHost private constructor(
                     // The runtime host now fails every request with this reason; crashing the
                     // process would only hide it behind a restart loop.
                     android.util.Log.e("TwilightPlaybackHost", "Music Core failed to start", error)
+                    startup.completeExceptionally(error)
                     return@launch
                 }
                 localCoreClient.reconcileState()
                 primaryCoreClient.reconcileState()
                 mediaSessionCoreClient.reconcileState()
                 libraryCoreClient.reconcileState()
+                startup.complete(Unit)
                 audioDeviceAdapter.subscribeRouteChanges { route -> outputPresets.outputChanged { audioDeviceAdapter.outputIdentity(route) } }
                 audioDeviceAdapter.subscribeRemovedOutputs(outputPresets::outputsRemoved)
                 val route = audioDeviceAdapter.getActiveRoute()
@@ -322,7 +354,14 @@ class AndroidPlaybackHost private constructor(
             }
             hostScope.launch { localCoreClient.snapshot.collect { refreshSystemMediaRoute() } }
             hostScope.launch { operatingMode.collect { refreshSystemMediaRoute() } }
+            hostScope.launch { observeOfflineFallbackAutoSkip() }
         }
+    }
+
+    /** Waits for session restoration and client reconciliation, including a media-button cold start. */
+    suspend fun awaitStarted() {
+        ensureStarted()
+        startup.await()
     }
 
     private suspend fun refreshSystemMediaRoute() = mediaRouteMutex.withLock {
@@ -623,9 +662,251 @@ class AndroidPlaybackHost private constructor(
         }
     }
 
-    /** Cover previews for songs of a specific computer, independent of which library is being browsed. */
-    suspend fun desktopArtwork(serverId: String, ids: List<String>): Result<TrackArtworkPage> =
-        connections[serverId]?.library?.artwork(ids) ?: Result.failure(IllegalStateException("电脑未连接"))
+    /** Synchronous memory-cached desktop cover lookup (supports both `remote-track:` and `desktop-stream:`). */
+    fun cachedDesktopArtworkMemory(id: String): String? {
+        val (serverId, durableKey) = resolveArtworkTarget(null, id) ?: return null
+        return artworkCache.getMemoryOnly(serverId, durableKey)
+    }
+
+    /** Resolves a cached or live desktop cover for [id] without requiring the caller to know its serverId. */
+    suspend fun cachedOrRemoteTrackArtwork(id: String): String? {
+        if (started.get() && !indexLoaded.isCompleted) indexLoaded.await()
+        val fallbackServerId = (librarySource.value as? LibrarySource.Desktop)?.serverId ?: playbackDesktopServerId()
+        val (serverId, _) = resolveArtworkTarget(fallbackServerId, id) ?: return null
+        return desktopArtwork(serverId, listOf(id)).getOrNull()?.items?.firstOrNull { it.id == id }?.cover
+    }
+
+    /** Cover previews for songs of a specific computer, backed by persistent disk + memory cache while offline. */
+    suspend fun desktopArtwork(serverId: String, ids: List<String>): Result<TrackArtworkPage> {
+        if (ids.isEmpty()) return Result.success(TrackArtworkPage(0, emptyList()))
+        if (started.get() && !indexLoaded.isCompleted) indexLoaded.await()
+        val distinctIds = ids.distinct()
+        val durableByRequested = HashMap<String, String>(distinctIds.size)
+        val remoteByRequested = HashMap<String, String>(distinctIds.size)
+        for (requestedId in distinctIds) {
+            val target = resolveArtworkTarget(serverId, requestedId)
+            val durableKey = target?.second ?: "id:$requestedId"
+            durableByRequested[requestedId] = durableKey
+            val remoteQueryId = when {
+                requestedId.startsWith("remote-track:") -> requestedId
+                else -> DesktopMediaReference.parse(requestedId)?.let { ref ->
+                    sourceToRemoteTrackIds[serverId to ref.sourceId]
+                }
+            }
+            if (remoteQueryId != null) remoteByRequested[requestedId] = remoteQueryId
+        }
+
+        val connection = connections[serverId]?.takeIf { serverId in mutableConnectedDesktops.value }
+        if (connection != null && remoteByRequested.isNotEmpty()) {
+            val queryIds = remoteByRequested.values.distinct()
+            val remoteItems = HashMap<String, String?>()
+            var pageRevision = 0L
+            var queryFailure: Throwable? = null
+            for (batch in queryIds.chunked(ARTWORK_SYNC_BATCH_SIZE)) {
+                connection.library.artwork(batch).fold(
+                    onSuccess = { page ->
+                        pageRevision = page.revision
+                        for (item in page.items) remoteItems[item.id] = item.cover
+                    },
+                    onFailure = { err -> queryFailure = err }
+                )
+                if (queryFailure != null) break
+            }
+            if (remoteItems.isNotEmpty() || queryFailure == null) {
+                val revKey = connection.client.snapshot.value?.let { "${it.epoch}:${it.presentationRevision ?: 0L}" }
+                val cacheUpdates = HashMap<String, String?>()
+                for ((requestedId, remoteId) in remoteByRequested) {
+                    if (remoteId in remoteItems) {
+                        val durableKey = durableByRequested.getValue(requestedId)
+                        cacheUpdates[durableKey] = remoteItems[remoteId]
+                    }
+                }
+                if (cacheUpdates.isNotEmpty()) {
+                    withContext(Dispatchers.IO) { artworkCache.putBatch(serverId, cacheUpdates, revKey) }
+                }
+                val resolved = ArrayList<TrackArtworkPreview>(distinctIds.size)
+                withContext(Dispatchers.IO) {
+                    for (requestedId in distinctIds) {
+                        val remoteId = remoteByRequested[requestedId]
+                        if (remoteId != null && remoteId in remoteItems) {
+                            resolved += TrackArtworkPreview(requestedId, remoteItems[remoteId])
+                        } else {
+                            val cached = artworkCache.get(serverId, durableByRequested.getValue(requestedId))
+                            if (cached != null) resolved += TrackArtworkPreview(requestedId, cached)
+                        }
+                    }
+                }
+                return Result.success(TrackArtworkPage(pageRevision, resolved))
+            }
+            val fallbackCached = withContext(Dispatchers.IO) {
+                distinctIds.mapNotNull { requestedId ->
+                    artworkCache.get(serverId, durableByRequested.getValue(requestedId))
+                        ?.let { TrackArtworkPreview(requestedId, it) }
+                }
+            }
+            return if (fallbackCached.isNotEmpty()) {
+                Result.success(TrackArtworkPage(0, fallbackCached))
+            } else {
+                Result.failure(queryFailure ?: IllegalStateException("电脑封面读取失败"))
+            }
+        }
+
+        val cachedItems = withContext(Dispatchers.IO) {
+            distinctIds.mapNotNull { requestedId ->
+                artworkCache.get(serverId, durableByRequested.getValue(requestedId))
+                    ?.let { TrackArtworkPreview(requestedId, it) }
+            }
+        }
+        return Result.success(TrackArtworkPage(0, cachedItems))
+    }
+
+    private fun resolveArtworkTarget(defaultServerId: String?, id: String): Pair<String, String>? {
+        trackArtworkLocations[id]?.let { return it }
+        DesktopMediaReference.parse(id)?.let { ref ->
+            if (ref.serverId.isNotBlank() && ref.sourceId.isNotBlank()) {
+                return ref.serverId to "source:${ref.sourceId}"
+            }
+        }
+        return defaultServerId?.takeIf { it.isNotBlank() }?.let { it to "id:$id" }
+    }
+
+    private fun rebuildArtworkLookup(indexes: List<DesktopLibraryIndex>) {
+        val locations = HashMap<String, Pair<String, String>>()
+        val bySource = HashMap<Pair<String, String>, String>()
+        for (index in indexes) {
+            for (track in index.tracks) {
+                val durableKey = desktopTrackArtworkKey(track)
+                locations[track.id] = index.serverId to durableKey
+                val sourceId = track.catalog?.sourceId?.takeIf { it.isNotBlank() }
+                if (sourceId != null && track.id.startsWith("remote-track:")) {
+                    bySource[index.serverId to sourceId] = track.id
+                }
+            }
+        }
+        trackArtworkLocations = locations
+        sourceToRemoteTrackIds = bySource
+    }
+
+    private fun prewarmInitialDesktopArtwork(indexes: List<DesktopLibraryIndex>) {
+        var remaining = INITIAL_ARTWORK_PREWARM_LIMIT
+        for (index in indexes) {
+            for (track in index.tracks) {
+                if (remaining <= 0) return
+                artworkCache.get(index.serverId, desktopTrackArtworkKey(track))
+                remaining--
+            }
+        }
+    }
+
+    fun rememberNcmFallbackMatch(track: CoreTrackView, match: CoreTrackView) {
+        synchronized(ncmFallbackLock) {
+            ncmFallbackCache[NcmFallbackUri.cacheKey(track)] = CachedNcmFallback(match)
+        }
+    }
+
+    fun cachedNcmFallbackMatch(track: CoreTrackView): CoreTrackView? = synchronized(ncmFallbackLock) {
+        ncmFallbackCache[NcmFallbackUri.cacheKey(track)]?.match
+    }
+
+    /**
+     * Resolves the best NetEase Cloud Music match for an offline desktop track, deduplicating concurrent
+     * lookups and caching results across queue pre-resolution, stream opening, and lyrics loading.
+     */
+    suspend fun resolveNcmFallbackMatch(track: CoreTrackView): CoreTrackView? {
+        val directId = track.ncmSongId?.takeIf { it.matches(DIGITS_ONLY) }
+            ?: NcmFallbackUri.directSongId(track.source)
+        if (directId != null) {
+            return CoreTrackView(
+                id = "provider://ncm/$directId",
+                source = "provider://ncm/$directId",
+                ncmSongId = directId,
+                title = track.title,
+                artist = track.artist,
+                album = track.album,
+                cover = track.cover,
+                duration = track.duration
+            )
+        }
+        if (track.title.isBlank()) return null
+        val key = NcmFallbackUri.cacheKey(track)
+        val deferred: Deferred<CoreTrackView?> = synchronized(ncmFallbackLock) {
+            val cached = ncmFallbackCache[key]
+            if (cached != null) {
+                if (cached.match != null || System.currentTimeMillis() - cached.recordedAtMs < NEGATIVE_NCM_CACHE_TTL_MS) {
+                    return cached.match
+                }
+                ncmFallbackCache.remove(key)
+            }
+            inFlightNcmFallbacks[key]?.takeIf { it.isActive } ?: hostScope.async(Dispatchers.IO) {
+                try {
+                    val query = listOf(track.title, track.artist).filter { it.isNotBlank() }.joinToString(" ")
+                    val raw = plugins.call(
+                        NCM_PROVIDER_PLUGIN,
+                        "searchSongs",
+                        buildJsonArray {
+                            add(JsonPrimitive(query))
+                            add(JsonPrimitive(NCM_MATCH_CANDIDATES))
+                            add(JsonPrimitive(0))
+                        }
+                    )
+                    val matched = bestNcmStreamingMatch(track, parseNcmSearchCandidates(raw))
+                    synchronized(ncmFallbackLock) {
+                        ncmFallbackCache[key] = CachedNcmFallback(matched)
+                    }
+                    matched
+                } finally {
+                    synchronized(ncmFallbackLock) {
+                        inFlightNcmFallbacks.remove(key)
+                    }
+                }
+            }.also { inFlightNcmFallbacks[key] = it }
+        }
+        return try {
+            deferred.await()
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun observeOfflineFallbackAutoSkip() {
+        var consecutiveSkips = 0
+        var lastSkippedOccurrence: String? = null
+        localCoreClient.snapshot.collect { snap ->
+            if (snap == null) return@collect
+            val state = snap.playback?.state
+            if (state == "playing") {
+                consecutiveSkips = 0
+                lastSkippedOccurrence = null
+                return@collect
+            }
+            val track = snap.track ?: return@collect
+            if (state != "error" || !NcmFallbackUri.isFallbackMatchSource(track.source)) return@collect
+            val queue = snap.queue ?: return@collect
+            if (queue.total <= 1) return@collect
+            val mode = PlayMode.fromWireValue(snap.playback?.playMode)
+            if (mode == PlayMode.SINGLE) return@collect
+            if (mode == PlayMode.SEQUENCE && queue.index >= queue.total - 1) return@collect
+
+            val occurrenceKey = "${snap.epoch}:${queue.revision}:${queue.index}:${queue.occurrenceId ?: track.id}"
+            if (occurrenceKey == lastSkippedOccurrence) return@collect
+            lastSkippedOccurrence = occurrenceKey
+
+            val maxSkips = minOf(queue.total - 1, MAX_CONSECUTIVE_FALLBACK_SKIPS)
+            if (consecutiveSkips >= maxSkips) return@collect
+            consecutiveSkips++
+
+            val errText = snap.error.orEmpty()
+            val message = if ("没有找到" in errText) {
+                "网易云上没有找到「${track.title}」，已自动跳到下一首"
+            } else {
+                "「${track.title}」在网易云暂不可播，已自动跳到下一首"
+            }
+            mutablePlaybackNotices.tryEmit(message)
+            localCoreClient.executeCommand(CoreTypedCommand.Next)
+        }
+    }
 
     /** Resolves lyrics from the paired computer for a phone-streamed [DesktopMediaReference] song. */
     suspend fun resolveDesktopLyrics(resourceId: String): Result<com.twilightecho.android.coreclient.CoreLyricsView> {
@@ -673,13 +954,18 @@ class AndroidPlaybackHost private constructor(
                     if (connections[serverId] !== connection) return@collect
                     val online = state.phase == RemoteConnectionPhase.CONNECTED
                     mutableConnectedDesktops.update { if (online) it + serverId else it - serverId }
-                    if (online) startIndexSync(serverId)
+                    if (online) startIndexSync(serverId) else artworkSyncJobs.remove(serverId)?.cancel()
                 }
             }
             // A restarted desktop issues new session references; a changed library needs a new list.
             launch {
                 connection.client.snapshot.map { it?.epoch to it?.libraryRevision }.distinctUntilChanged().drop(1)
                     .collectLatest { delay(INDEX_RESYNC_DELAY_MS); startIndexSync(serverId, restart = true) }
+            }
+            // Updated desktop covers refresh missing cached previews gently in the background.
+            launch {
+                connection.client.snapshot.map { it?.epoch to it?.presentationRevision }.distinctUntilChanged().drop(1)
+                    .collectLatest { delay(ARTWORK_SYNC_SPACING_MS); startArtworkSync(serverId, restart = true) }
             }
         }
     }
@@ -723,6 +1009,7 @@ class AndroidPlaybackHost private constructor(
                 existing.revision == page.revision && existing.tracks.size == page.total) {
                 val labelled = existing.labelled(connection.source)
                 publishIndex(labelled, persist = labelled != existing)
+                startArtworkSync(serverId)
                 return
             }
             page.items.mapTo(tracks, ::indexedDesktopTrack)
@@ -735,7 +1022,10 @@ class AndroidPlaybackHost private constructor(
                 publishIndex(DesktopLibraryIndex(serverId, connection.source.libraryId, connection.source.hostLabel,
                     connection.source.baseUrl, epoch, revision, System.currentTimeMillis(), done, tracks.toList()), persist)
             }
-            if (done) return
+            if (done) {
+                startArtworkSync(serverId)
+                return
+            }
             delay(INDEX_REQUEST_SPACING_MS)
         }
     }
@@ -745,7 +1035,75 @@ class AndroidPlaybackHost private constructor(
 
     private suspend fun publishIndex(index: DesktopLibraryIndex, persist: Boolean) = indexMutex.withLock {
         mutableDesktopLibraries.update { list -> (list.filterNot { it.serverId == index.serverId } + index).sortedBy { it.hostLabel } }
-        if (persist) withContext(Dispatchers.IO) { runCatching { trackIndexStore.save(index) } }
+        rebuildArtworkLookup(mutableDesktopLibraries.value)
+        if (persist) {
+            withContext(Dispatchers.IO) {
+                runCatching { trackIndexStore.save(index) }
+                if (index.complete) {
+                    runCatching {
+                        artworkCache.retainServerKeys(
+                            index.serverId,
+                            index.tracks.mapTo(HashSet(index.tracks.size), ::desktopTrackArtworkKey)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startArtworkSync(serverId: String, restart: Boolean = false) {
+        synchronized(artworkSyncJobs) {
+            val running = artworkSyncJobs[serverId]
+            if (running?.isActive == true && !restart) return
+            running?.cancel()
+            artworkSyncJobs[serverId] = hostScope.launch(Dispatchers.IO) {
+                running?.join()
+                syncDesktopArtwork(serverId)
+            }
+        }
+    }
+
+    /**
+     * Gently pre-fetches uncached song covers in batches of 8 while connected, spaced so interactive
+     * desktop browsing and library index sync always retain burst RPC budget.
+     */
+    private suspend fun syncDesktopArtwork(serverId: String) {
+        indexLoaded.await()
+        val connection = connections[serverId]?.takeIf { serverId in mutableConnectedDesktops.value } ?: return
+        val index = desktopLibraries.value.find { it.serverId == serverId } ?: return
+        val snapshot = connection.client.snapshot.value
+        if (index.epoch != null && snapshot?.epoch != null && index.epoch != snapshot.epoch) return
+        val revKey = snapshot?.let { "${it.epoch}:${it.presentationRevision ?: 0L}" }
+        val pendingTracks = index.tracks.filter { track ->
+            track.id.startsWith("remote-track:") && !artworkCache.isKnown(serverId, desktopTrackArtworkKey(track), revKey)
+        }
+        if (pendingTracks.isEmpty()) return
+
+        var failures = 0
+        for (batch in pendingTracks.chunked(ARTWORK_SYNC_BATCH_SIZE)) {
+            if (!currentCoroutineContext().isActive || connections[serverId] !== connection || serverId !in mutableConnectedDesktops.value) return
+            if (indexSyncJobs[serverId]?.isActive == true) return
+            val ids = batch.map { it.id }
+            val page = connection.library.artwork(ids).getOrNull()
+            if (page == null) {
+                if (++failures > ARTWORK_SYNC_MAX_FAILURES) return
+                delay(ARTWORK_SYNC_SPACING_MS shl failures)
+                continue
+            }
+            failures = 0
+            val returned = page.items.associate { it.id to it.cover }
+            val updates = HashMap<String, String?>()
+            for (track in batch) {
+                if (track.id in returned) {
+                    updates[desktopTrackArtworkKey(track)] = returned[track.id]
+                }
+            }
+            if (updates.isNotEmpty()) {
+                val latestRev = connection.client.snapshot.value?.let { "${it.epoch}:${it.presentationRevision ?: 0L}" } ?: revKey
+                artworkCache.putBatch(serverId, updates, latestRev)
+            }
+            delay(ARTWORK_SYNC_SPACING_MS)
+        }
     }
 
     /** Asks every connected computer for its streaming sign-in, e.g. right after the provider was enabled. */
@@ -857,6 +1215,7 @@ class AndroidPlaybackHost private constructor(
             val connection = connections.remove(serverId)
             desktopWatchers.remove(serverId)?.cancel()
             indexSyncJobs.remove(serverId)?.cancel()
+            artworkSyncJobs.remove(serverId)?.cancel()
             mutableConnectedDesktops.update { it - serverId }
             if ((librarySource.value as? LibrarySource.Desktop)?.serverId == serverId) runCatching { restoreLocalLibrary() }
             if (connection != null && switchableTransport.currentTransport === connection.transport) {
@@ -873,7 +1232,11 @@ class AndroidPlaybackHost private constructor(
             rememberSession { it.forgetting(serverId) }
             indexMutex.withLock {
                 mutableDesktopLibraries.update { list -> list.filterNot { it.serverId == serverId } }
-                withContext(Dispatchers.IO) { runCatching { trackIndexStore.delete(serverId) } }
+                rebuildArtworkLookup(mutableDesktopLibraries.value)
+                withContext(Dispatchers.IO) {
+                    runCatching { trackIndexStore.delete(serverId) }
+                    runCatching { artworkCache.deleteServer(serverId) }
+                }
             }
             publishKnownDesktops()
             // Revoking on the computer is best effort and must not hold the phone up while it is offline.
@@ -908,25 +1271,154 @@ class AndroidPlaybackHost private constructor(
     }
 
     /**
-     * Scans MediaStore and the picked music folders, then replaces the phone's Music Core library with the
-     * result: CUE sheets in the folders split their audio files into songs, and audio MediaStore does not list
-     * joins in. A folder that cannot be read keeps no songs, and the summary names it.
+     * Scans the user-selected SAF music folders and replaces the phone's Music Core library with the
+     * result: CUE sheets in the folders split their audio files into songs, and all supported audio files
+     * inside the chosen folders are imported without querying MediaStore or requiring storage permissions.
      */
-    /** Without Android's music permission only the music folders are read, and the library holds only their songs. */
     suspend fun scanAndSyncDeviceMusic(): Result<LibraryScanSummary> {
         ensureStarted()
-        return runCatching {
-            val withDeviceMusic = mediaStoreScanner.canReadDeviceMusic()
-            val scanned = if (withDeviceMusic) mediaStoreScanner.scanDeviceMusic() else emptyList()
-            val folders = musicFolderScanner.scan(scanned)
-            mutableMusicFolders.value = musicFolderScanner.folders()
-            val library = folders.songs.over(scanned.map { it.track })
-            localCoreClient.reconcileState()
-            localCoreClient.syncLocalTracks(library).getOrThrow()
-            LibraryScanSummary(library.size, library.count { it.id.startsWith("local:cue:") }, folders.songs.skipped,
-                folders.unreadable, withDeviceMusic)
+        return localLibraryMutex.withLock {
+            scanAndSyncDeviceMusicLocked()
         }
     }
+
+    private suspend fun scanAndSyncDeviceMusicLocked(): Result<LibraryScanSummary> = runCatching {
+        val folders = musicFolderScanner.scan()
+        val activeFolders = musicFolderScanner.folders()
+        mutableMusicFolders.value = activeFolders
+        val excluded = userPreferences.state.value.excludedLocalTrackIds
+        val library = folders.songs.tracks.distinctBy { it.id }.filterNot { it.id in excluded }
+        localCoreClient.reconcileState()
+        localCoreClient.syncLocalTracks(library).getOrThrow()
+        LibraryScanSummary(
+            songs = library.size,
+            cueSongs = library.count { it.id.startsWith("local:cue:") },
+            skipped = folders.songs.skipped,
+            unreadableFolders = folders.unreadable,
+            withDeviceMusic = false,
+            folderCount = activeFolders.size
+        )
+    }
+
+    /**
+     * Removes a single song from the phone's local music library (and any local playlists / active queue
+     * occurrences referencing it) and records its ID so future scans keep it hidden until restored or reset.
+     */
+    suspend fun deleteLocalTrack(trackId: String): Result<Unit> {
+        ensureStarted()
+        return localLibraryMutex.withLock {
+            runCatching {
+                userPreferences.update { it.copy(excludedLocalTrackIds = it.excludedLocalTrackIds + trackId) }
+                localCoreClient.reconcileState()
+                val remaining = localCoreClient.searchTracks("").getOrThrow().items.filterNot { it.id == trackId }
+                localCoreClient.syncLocalTracks(remaining).getOrThrow()
+
+                val playlistsContaining = localCoreClient.snapshot.value?.playlists
+                    ?.filter { trackId in it.trackIds }
+                    .orEmpty()
+                for (playlist in playlistsContaining) {
+                    localCoreClient.removeTrackFromPlaylist(playlist.id, trackId)
+                }
+
+                val queue = localCoreClient.snapshot.value?.queue
+                if (queue != null && queue.total > 0) {
+                    val matchingEntries = collectLocalQueueEntryIds(queue.total) { it.track?.id == trackId }
+                    if (matchingEntries.isNotEmpty()) {
+                        if (matchingEntries.size >= queue.total) {
+                            localCoreClient.executeCommand(CoreTypedCommand.Stop)
+                            val latest = localCoreClient.snapshot.value?.queue ?: queue
+                            localCoreClient.executeCommand(
+                                CoreTypedCommand.QueueEdit(latest.id, latest.revision, CoreQueueEdits.clear())
+                            )
+                        } else {
+                            localCoreClient.executeCommand(
+                                CoreTypedCommand.QueueEdit(queue.id, queue.revision, CoreQueueEdits.remove(matchingEntries))
+                            )
+                        }
+                        if (!switchableTransport.isRemote) {
+                            primaryCoreClient.reconcileState()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Clears the user's deleted-song exclusion set and immediately rescans device music.
+     */
+    suspend fun restoreExcludedLocalTracks(): Result<LibraryScanSummary> {
+        ensureStarted()
+        return localLibraryMutex.withLock {
+            userPreferences.update { it.copy(excludedLocalTrackIds = emptySet()) }
+            scanAndSyncDeviceMusicLocked()
+        }
+    }
+
+    /**
+     * Resets the phone's local music library: clears all synced local songs and deleted-song exclusions,
+     * optionally releases all added SAF music folders, and clears local library songs from the phone queue.
+     */
+    suspend fun resetLocalMusicLibrary(clearMusicFolders: Boolean = false): Result<Unit> {
+        ensureStarted()
+        return localLibraryMutex.withLock {
+            runCatching {
+                userPreferences.update { it.copy(excludedLocalTrackIds = emptySet()) }
+                if (clearMusicFolders) {
+                    musicFolderScanner.folders().forEach { folder -> musicFolderScanner.remove(folder.uri) }
+                    mutableMusicFolders.value = musicFolderScanner.folders()
+                }
+                localCoreClient.reconcileState()
+                val snap = localCoreClient.snapshot.value
+                val queue = snap?.queue
+                if (queue != null && queue.total > 0) {
+                    val localEntries = collectLocalQueueEntryIds(queue.total) { entry ->
+                        val t = entry.track
+                        t != null && !t.source.orEmpty().startsWith("provider://") &&
+                            !t.id.startsWith(DesktopMediaReference.PREFIX)
+                    }
+                    if (localEntries.isNotEmpty()) {
+                        if (localEntries.size >= queue.total) {
+                            localCoreClient.executeCommand(CoreTypedCommand.Stop)
+                            val latest = localCoreClient.snapshot.value?.queue ?: queue
+                            localCoreClient.executeCommand(
+                                CoreTypedCommand.QueueEdit(latest.id, latest.revision, CoreQueueEdits.clear())
+                            )
+                        } else {
+                            localCoreClient.executeCommand(
+                                CoreTypedCommand.QueueEdit(queue.id, queue.revision, CoreQueueEdits.remove(localEntries))
+                            )
+                        }
+                    }
+                }
+                localCoreClient.syncLocalTracks(emptyList()).getOrThrow()
+                if (!switchableTransport.isRemote) {
+                    primaryCoreClient.reconcileState()
+                }
+            }
+        }
+    }
+
+    private suspend fun collectLocalQueueEntryIds(
+        total: Int,
+        predicate: (com.twilightecho.android.coreclient.CoreQueueEntryView) -> Boolean
+    ): List<String> {
+        val entryIds = ArrayList<String>()
+        var offset = 0
+        while (offset < total) {
+            val window = localCoreClient.queryQueueWindow(offset = offset, limit = 200).getOrNull() ?: break
+            if (window.items.isEmpty()) break
+            window.items.forEach { entry ->
+                if (predicate(entry)) entryIds += entry.occurrenceId
+            }
+            offset += window.items.size
+        }
+        return entryIds.distinct()
+    }
+
+    /** Probes local audio file headers and tags on demand for the track info / tags sheet. */
+    suspend fun inspectTrackMetadata(track: CoreTrackView): TrackInspectionDetails =
+        trackMetadataProbe.inspect(track)
 
     /** Keeps read access to a folder from the system folder picker; the next scan reads it. */
     fun addMusicFolder(uri: String): Result<Unit> =
@@ -1012,7 +1504,14 @@ class AndroidPlaybackHost private constructor(
 
     override fun close() {
         if (closed.compareAndSet(false, true)) {
+            startup.cancel()
             desktopDiscovery.stop()
+            desktopWatchers.values.forEach { it.cancel() }
+            desktopWatchers.clear()
+            indexSyncJobs.values.forEach { it.cancel() }
+            indexSyncJobs.clear()
+            artworkSyncJobs.values.forEach { it.cancel() }
+            artworkSyncJobs.clear()
             connections.values.forEach { it.transport.close() }
             connections.clear()
             audioFocusCoordinator.close()
@@ -1030,8 +1529,17 @@ class AndroidPlaybackHost private constructor(
 
     companion object {
         private val USER_STOP_COMMANDS = setOf(CoreTypedCommand.Pause.name, CoreTypedCommand.Stop.name)
+        private val DIGITS_ONLY = Regex("^[0-9]+$")
         private const val NCM_PROVIDER = "ncm"
         private const val NCM_PROVIDER_PLUGIN = "com.twilightecho.provider.ncm"
+        private const val NCM_MATCH_CANDIDATES = 5
+        private const val MAX_NCM_FALLBACK_CACHE = 512
+        private const val NEGATIVE_NCM_CACHE_TTL_MS = 120_000L
+        private const val MAX_CONSECUTIVE_FALLBACK_SKIPS = 8
+        private const val INITIAL_ARTWORK_PREWARM_LIMIT = 48
+        private const val ARTWORK_SYNC_BATCH_SIZE = 8
+        private const val ARTWORK_SYNC_SPACING_MS = 2_000L
+        private const val ARTWORK_SYNC_MAX_FAILURES = 3
         private const val INDEX_PAGE_SIZE = 200
         private const val INDEX_REQUEST_SPACING_MS = 3_000L
         private const val INDEX_MAX_FAILURES = 4
