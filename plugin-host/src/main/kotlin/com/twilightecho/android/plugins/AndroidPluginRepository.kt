@@ -32,13 +32,14 @@ private fun ownerKey(providerId: String) = "owner:$providerId"
 private fun userServerKey(pluginId: String) = "userServer:$pluginId"
 
 /** Platform IO/runtime for shared Music Core's mobile plugin repository rules. */
-class AndroidPluginRepository(context: Context) : Closeable {
+class AndroidPluginRepository internal constructor(context: Context, private val http: PluginHttp) : Closeable {
+    constructor(context: Context) : this(context, PluginHttp())
+
     private val app = context.applicationContext
     private val root = File(app.filesDir, "plugins-v1").apply { mkdirs() }
     private val stateFile = File(root, "installed.json")
     private val secrets = PluginSecrets(File(root, "settings"))
     private val preferences = app.getSharedPreferences("plugin-repository", Context.MODE_PRIVATE)
-    private val http = PluginHttp()
     private val gateway = NcmGateway(http, preferences.getString("deviceId", null) ?: UUID.randomUUID().toString().replace("-", "").also { preferences.edit().putString("deviceId", it).apply() })
     private val network = PluginNetwork()
     private val spoolDirectory = File(app.cacheDir, "provider-media")
@@ -474,7 +475,8 @@ class AndroidPluginRepository(context: Context) : Closeable {
             else -> error("插件未获准调用宿主能力：$method")
         }
         buildJsonObject { put("ok", true); put("value", value) }.toString().also {
-            require(it.length <= 500_000) { "插件宿主返回数据过大，请减小分页大小" }
+            // HostBinder already slices replies; a full user library need not fit one Binder transaction.
+            require(it.length <= MAX_TRANSFER_CHARS) { "插件宿主返回数据超过传输上限" }
         }
     } catch (error: Throwable) { buildJsonObject { put("ok", false); put("error", error.message ?: "插件宿主调用失败") }.toString() }
     /** A v2 envelope's notices are published whether the call succeeded or not. */

@@ -30,13 +30,12 @@ internal fun digest(name: String, value: ByteArray) = MessageDigest.getInstance(
 internal fun form(values: Map<String, String>) = values.entries.joinToString("&") { URLEncoder.encode(it.key, "UTF-8") + "=" + URLEncoder.encode(it.value, "UTF-8") }
 
 /** Every network hop is mediated outside the untrusted process; there is no ambient cookie jar. */
-internal class PluginHttp {
-    private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+internal class PluginHttp(private val client: OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .callTimeout(20, TimeUnit.SECONDS).connectTimeout(10, TimeUnit.SECONDS)
         .dns(object : Dns { override fun lookup(hostname: String): List<InetAddress> = Dns.SYSTEM.lookup(hostname).also { addresses ->
             require(addresses.none { it.isAnyLocalAddress || it.isLoopbackAddress || it.isLinkLocalAddress || it.isSiteLocalAddress || it.isMulticastAddress ||
                 ((it.address[0].toInt() and 254) == 252 && it.address.size == 16) }) { "插件不能访问内网地址" }
-        } }).build()
+        } }).build()) {
     data class Reply(val status: Int, val bytes: ByteArray, val cookies: List<String>)
     fun request(url: String, hosts: List<String>, body: String? = null, headers: Map<String, String> = emptyMap(), maxBytes: Int = 8 * 1024 * 1024, downloadRedirects: Int = 0,
         onCall: (Call) -> Unit = {}): Reply {
