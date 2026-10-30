@@ -516,6 +516,86 @@ object TwilightIcons {
         } }
     }
 
+    val Info: ImageVector by lazy {
+        strokeIcon("TwilightInfo") {
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.85f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(21f, 12f)
+                arcTo(9f, 9f, 0f, isMoreThanHalf = true, isPositiveArc = true, 3f, 12f)
+                arcTo(9f, 9f, 0f, isMoreThanHalf = true, isPositiveArc = true, 21f, 12f)
+                moveTo(12f, 11.5f)
+                verticalLineTo(16.5f)
+                moveTo(12f, 7.8f)
+                verticalLineTo(8.1f)
+            }
+        }
+    }
+
+    val PlayNext: ImageVector by lazy {
+        strokeIcon("TwilightPlayNext") {
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.85f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(4f, 6f)
+                horizontalLineTo(15f)
+                moveTo(4f, 11f)
+                horizontalLineTo(11f)
+                moveTo(4f, 16f)
+                horizontalLineTo(11f)
+                moveTo(14.5f, 11.5f)
+                lineTo(20.5f, 15.2f)
+                lineTo(14.5f, 19f)
+                close()
+            }
+        }
+    }
+
+    val PlaylistAdd: ImageVector by lazy {
+        strokeIcon("TwilightPlaylistAdd") {
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.85f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(4f, 6f)
+                horizontalLineTo(17f)
+                moveTo(4f, 11f)
+                horizontalLineTo(17f)
+                moveTo(4f, 16f)
+                horizontalLineTo(11f)
+                moveTo(17.5f, 13.5f)
+                verticalLineTo(19.5f)
+                moveTo(14.5f, 16.5f)
+                horizontalLineTo(20.5f)
+            }
+        }
+    }
+
+    val Reset: ImageVector by lazy {
+        strokeIcon("TwilightReset") {
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.85f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(4.5f, 8.5f)
+                arcTo(8.2f, 8.2f, 0f, isMoreThanHalf = true, isPositiveArc = true, 6.2f, 17.8f)
+                moveTo(4.2f, 4.2f)
+                verticalLineTo(8.8f)
+                horizontalLineTo(8.8f)
+            }
+        }
+    }
+
     /** Material Symbols Rounded SVGs use a 0 -960 960 960 viewBox. */
     private fun roundedSymbol(name: String, data: String): ImageVector = ImageVector.Builder(
         name = name,

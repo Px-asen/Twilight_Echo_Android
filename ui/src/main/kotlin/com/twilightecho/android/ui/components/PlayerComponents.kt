@@ -2,13 +2,18 @@ package com.twilightecho.android.ui.components
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -18,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -67,9 +73,16 @@ fun AmbientBackground(modifier: Modifier = Modifier, artwork: TrackArtworkVisual
 @Composable
 fun GlassCard(modifier: Modifier = Modifier, shape: Shape = RoundedCornerShape(16.dp),
     onClick: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier.clip(shape).background(MaterialTheme.colorScheme.surfaceContainer)
-        .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier),
-        content = content)
+    if (onClick != null) {
+        val interaction = remember { MutableInteractionSource() }
+        Column(modifier.tactilePress(interaction, pressedScale = 0.975f)
+            .clip(shape).background(MaterialTheme.colorScheme.surfaceContainer)
+            .clickable(interactionSource = interaction, indication = LocalIndication.current, role = Role.Button, onClick = onClick),
+            content = content)
+    } else {
+        Column(modifier.clip(shape).background(MaterialTheme.colorScheme.surfaceContainer),
+            content = content)
+    }
 }
 
 /** Quiet grey group label, in sentence case like an iOS grouped-list header. */
@@ -92,7 +105,10 @@ fun QuietIconButton(icon: ImageVector, label: String, onClick: () -> Unit,
 @Composable
 fun GlassIconButton(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     size: Dp = 40.dp) {
-    Box(modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onClick),
+    val interaction = remember { MutableInteractionSource() }
+    Box(modifier.size(48.dp).tactilePress(interaction, pressedScale = 0.88f)
+        .clip(CircleShape)
+        .clickable(interactionSource = interaction, indication = LocalIndication.current, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center) {
         Box(Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
             contentAlignment = Alignment.Center) {
@@ -117,10 +133,14 @@ fun SectionHeading(title: String, actionLabel: String? = null, onAction: () -> U
 @Composable
 fun SectionLink(title: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     trailing: @Composable RowScope.() -> Unit = {}) {
-    Row(modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = onClick)
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val arrowShift by animateDpAsState(if (pressed) 4.dp else 2.dp, spring(stiffness = 600f), label = "sectionArrow")
+    Row(modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+        .clickable(interactionSource = interaction, indication = LocalIndication.current, role = Role.Button, onClick = onClick)
         .padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, style = SectionTitleStyle, maxLines = 1)
-        Icon(TwilightIcons.ArrowRight, null, Modifier.padding(start = 2.dp).size(20.dp),
+        Icon(TwilightIcons.ArrowRight, null, Modifier.padding(start = arrowShift).size(20.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.weight(1f))
         trailing()
@@ -164,16 +184,19 @@ fun EmptyState(title: String, message: String, icon: ImageVector = TwilightIcons
 @Composable
 fun PillButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, icon: ImageVector? = null,
     enabled: Boolean = true, tonal: Boolean = false) {
-    val container = if (tonal) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f) else MaterialTheme.colorScheme.primary
-    val content = if (tonal) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onPrimary
-    Row(modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(50))
-        .background(if (enabled) container else container.copy(alpha = 0.3f))
-        .clickable(enabled = enabled, role = Role.Button, onClick = onClick).padding(horizontal = 22.dp),
+    val interaction = remember { MutableInteractionSource() }
+    val targetContainer = if (tonal) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f) else MaterialTheme.colorScheme.primary
+    val targetContent = if (tonal) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onPrimary
+    val container by animateColorAsState(if (enabled) targetContainer else targetContainer.copy(alpha = 0.3f), tween(180), label = "pillBtnBg")
+    val content by animateColorAsState(if (enabled) targetContent else targetContent.copy(alpha = 0.5f), tween(180), label = "pillBtnFg")
+    Row(modifier.heightIn(min = 48.dp).tactilePress(interaction, pressedScale = 0.95f, enabled = enabled)
+        .clip(RoundedCornerShape(50))
+        .background(container)
+        .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled, role = Role.Button, onClick = onClick)
+        .padding(horizontal = 22.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-        if (icon != null) Icon(icon, null, Modifier.padding(end = 8.dp).size(18.dp),
-            tint = if (enabled) content else content.copy(alpha = 0.5f))
-        Text(label, style = MaterialTheme.typography.labelLarge, color = if (enabled) content else content.copy(alpha = 0.5f),
-            maxLines = 1)
+        if (icon != null) Icon(icon, null, Modifier.padding(end = 8.dp).size(18.dp), tint = content)
+        Text(label, style = MaterialTheme.typography.labelLarge, color = content, maxLines = 1)
     }
 }
 
@@ -185,13 +208,15 @@ fun <T> PillTabs(options: List<T>, selected: T, label: (T) -> String, onSelect: 
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         options.forEach { option ->
             val active = option == selected
+            val interaction = remember { MutableInteractionSource() }
             val bg by animateColorAsState(if (active) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
-                else Color.Transparent, label = "pillBg")
+                else Color.Transparent, tween(200), label = "pillBg")
             val fg by animateColorAsState(if (active) MaterialTheme.colorScheme.onSurface
-                else MaterialTheme.colorScheme.onSurfaceVariant, label = "pillFg")
+                else MaterialTheme.colorScheme.onSurfaceVariant, tween(200), label = "pillFg")
             Text(label(option), style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1,
-                modifier = Modifier.clip(RoundedCornerShape(50)).background(bg)
-                    .clickable(role = Role.Tab) { onSelect(option) }
+                modifier = Modifier.tactilePress(interaction, pressedScale = 0.94f)
+                    .clip(RoundedCornerShape(50)).background(bg)
+                    .clickable(interactionSource = interaction, indication = LocalIndication.current, role = Role.Tab) { onSelect(option) }
                     .then(if (tag(option).isNotEmpty()) Modifier.testTag(tag(option)) else Modifier)
                     .heightIn(min = 40.dp).padding(horizontal = 18.dp, vertical = 10.dp))
         }
@@ -236,10 +261,12 @@ fun SettingsItem(icon: ImageVector?, title: String, subtitle: String? = null, mo
 /** Small rounded label, e.g. "FLAC 24/96" or a status. */
 @Composable
 fun TagChip(text: String, modifier: Modifier = Modifier, highlighted: Boolean = false) {
-    Text(text, modifier.clip(RoundedCornerShape(6.dp)).background(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)).padding(horizontal = 8.dp, vertical = 3.dp),
-        style = MaterialTheme.typography.labelMedium,
-        color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+    val bg by animateColorAsState(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), tween(200), label = "tagBg")
+    val fg by animateColorAsState(if (highlighted) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant, tween(200), label = "tagFg")
+    Text(text, modifier.clip(RoundedCornerShape(6.dp)).background(bg).padding(horizontal = 8.dp, vertical = 3.dp),
+        style = MaterialTheme.typography.labelMedium, color = fg, maxLines = 1)
 }
 
 /** Square or round artwork with title and subtitle beneath, for carousels and grids. */
@@ -247,8 +274,12 @@ fun TagChip(text: String, modifier: Modifier = Modifier, highlighted: Boolean = 
 fun ArtworkTile(artwork: TrackArtworkVisual, title: String, subtitle: String?, onClick: () -> Unit,
     modifier: Modifier = Modifier, round: Boolean = false, centered: Boolean = false) {
     val shape = if (round) CircleShape else RoundedCornerShape(16.dp)
+    val interaction = remember { MutableInteractionSource() }
     // Bottom padding keeps the subtitle clear of the rounded corner of the click/ripple clip.
-    Column(modifier.clip(RoundedCornerShape(16.dp)).clickable(role = Role.Button, onClick = onClick).padding(bottom = 6.dp),
+    Column(modifier.tactilePress(interaction, pressedScale = 0.96f)
+        .clip(RoundedCornerShape(16.dp))
+        .clickable(interactionSource = interaction, indication = LocalIndication.current, role = Role.Button, onClick = onClick)
+        .padding(bottom = 6.dp),
         horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start) {
         ArtworkImage(artwork, Modifier.fillMaxWidth().aspectRatio(1f).clip(shape)
             .border(1.dp, Color.White.copy(alpha = 0.06f), shape), ContentScale.Crop)
