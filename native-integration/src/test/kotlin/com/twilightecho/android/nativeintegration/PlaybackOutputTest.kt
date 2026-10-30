@@ -51,6 +51,36 @@ class PlaybackOutputTest {
         assertEquals(0.6, gain.effective, 0.0001)
     }
 
+    @Test fun autoMixFactsAreNativeObservationsAndClearWhenAbsent() {
+        val ready = parseNativePlaybackSnapshot("""{"state":"playing","queueIndex":0,"upcomingQueueIndex":1,
+            "autoMixMode":"natural","autoMixState":"ready","autoMixStrategy":"content-boundary",
+            "autoMixPlanId":91,"autoMixDurationSeconds":6,"autoMixDecodeMs":24,"autoMixPrepareMs":7,
+            "crossfadeMixActive":false,"isDsd":false}""", old, 1.0, DefaultCoreClient.DefaultJson)!!
+        assertEquals("natural", ready.autoMixMode)
+        assertEquals("ready", ready.autoMixState)
+        assertEquals("content-boundary", ready.autoMixStrategy)
+        assertEquals(91L, ready.autoMixPlanId)
+        assertEquals(6.0, ready.autoMixDurationSeconds, 0.0)
+        assertEquals(24L, ready.autoMixDecodeMs)
+        assertEquals(7L, ready.autoMixPrepareMs)
+        assertEquals(1, ready.upcomingQueueIndex)
+        assertFalse(ready.crossfadeMixActive)
+        assertFalse(ready.outputPerfect)
+        val stopped = parseNativePlaybackSnapshot("""{"state":"stopped"}""", ready, 1.0, DefaultCoreClient.DefaultJson)!!
+        assertEquals("off", stopped.autoMixState)
+        assertEquals("", stopped.autoMixStrategy)
+        assertEquals(0L, stopped.autoMixPlanId)
+        assertEquals(-1, stopped.upcomingQueueIndex)
+    }
+
+    @Test fun successfulPlaybackClearsThePreviousRecoverableError() {
+        val refused = old.copy(state = "paused", errorMessage = "USB preference rejected")
+        val paused = parseNativePlaybackSnapshot("""{"state":"paused"}""", refused, 1.0, DefaultCoreClient.DefaultJson)!!
+        assertEquals(refused.errorMessage, paused.errorMessage)
+        val resumed = parseNativePlaybackSnapshot("""{"state":"playing"}""", paused, 1.0, DefaultCoreClient.DefaultJson)!!
+        assertNull(resumed.errorMessage)
+    }
+
     @Test fun restoreSeekIsCachedAndSafetyBrakeIsNotAUserPause() = runBlocking {
         var userPauses = 0
         val adapter = NativeAudioEngineAdapter(onUserPause = { userPauses++ })

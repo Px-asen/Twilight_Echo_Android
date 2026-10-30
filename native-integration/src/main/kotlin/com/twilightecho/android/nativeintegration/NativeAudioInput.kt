@@ -14,6 +14,7 @@ class NativeAudioInput internal constructor(
 ) {
     private val closed = AtomicBoolean(false)
     fun size(): Long = read { source.size }
+    fun duplicateLocalFileDescriptor(): Int = read { (source as? ContentAudioDataSource)?.duplicateLocalFileDescriptor() ?: -1 }
     fun readAt(position: Long, bytes: ByteArray, offset: Int, count: Int): Int = read {
         source.readAt(position, bytes, offset, count)
     }

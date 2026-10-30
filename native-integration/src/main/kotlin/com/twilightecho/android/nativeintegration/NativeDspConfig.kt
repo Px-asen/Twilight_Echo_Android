@@ -79,12 +79,26 @@ internal fun nativeDspState(config: CoreEqConfigView, json: Json, revision: Long
 
 internal fun nativeOutputConfig(config: CoreEqConfigView, deviceSampleRates: List<Int> = emptyList()): String {
     val dsp = config.dsp
-    require(dsp.allowedSampleRates.size <= 32 && dsp.allowedSampleRates.all { it in 8000..384000 } &&
+    require(dsp.allowedSampleRates.size <= 32 && dsp.allowedSampleRates.all { it in PcmSampleRates.range } &&
         dsp.allowedSampleRates.distinct().size == dsp.allowedSampleRates.size) { "允许采样率集合无效" }
     require(!dsp.sampleRateFamilySync || (config.bitPerfect && dsp.outputStage.targetSampleRate == 0)) {
         "家族同步不能与固定采样率或连续播放策略同时启用"
     }
-    val rates = deviceSampleRates.filter { it in 8000..384000 }.distinct().sorted()
+    if (dsp.usbPcmPassthrough) {
+        require(config.bitPerfect && !dsp.exclusive && !dsp.sampleRateFamilySync &&
+            dsp.outputStage.targetSampleRate == 0 && dsp.playbackRate == 1.0 && dsp.crossfadeSeconds == 0.0) {
+            "USB 原样 PCM 需要跟随音源、原速、关闭独占请求和交叉淡化"
+        }
+        require(!dsp.enabled || ((!config.enabled || (config.preampDb == 0.0 &&
+            (if (dsp.eqMode == "graphic") config.bandsDb.all { it == 0.0 }
+             else dsp.parametricBands.none { it.enabled && (it.gain != 0.0 || it.filterType !in setOf("peak", "lowShelf", "highShelf")) }))) &&
+            dsp.nodes.none { it.enabled && it.type != "meter" })) { "USB 原样 PCM 需要关闭会改变样本的 DSP" }
+        require(dsp.outputStage.dither == "off" && !dsp.outputStage.headroomEnabled &&
+            dsp.outputStage.resamplerQuality == "native" && dsp.outputStage.resamplerPhase == "linear") {
+            "USB 原样 PCM 需要默认重采样设置、关闭抖动和前置余量"
+        }
+    }
+    val rates = deviceSampleRates.filter { it in PcmSampleRates.range }.distinct().sorted()
     require(dsp.allowedSampleRates.isEmpty() || rates.isEmpty() || dsp.allowedSampleRates.any { it in rates }) {
         "允许采样率与当前设备没有交集，请调整允许集合或切换输出设备"
     }
@@ -95,6 +109,7 @@ internal fun nativeOutputConfig(config: CoreEqConfigView, deviceSampleRates: Lis
         put("playbackPolicy", if (config.bitPerfect) "bit-perfect-first" else "continuity-first")
         put("continuitySampleRate", dsp.continuitySampleRate)
         put("preferredBufferSize", dsp.bufferFrames)
+        put("usbPcmPassthrough", dsp.usbPcmPassthrough)
         put("sampleRateFamilySync", dsp.sampleRateFamilySync)
         put("allowedSampleRates", JsonArray(dsp.allowedSampleRates.sorted().map(::JsonPrimitive)))
         put("deviceSampleRates", JsonArray(rates.map(::JsonPrimitive)))

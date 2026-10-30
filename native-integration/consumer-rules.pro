@@ -3,3 +3,5 @@
 -keep class com.twilightecho.android.nativeintegration.NativeAudioInputProvider { public *; }
 -keep class com.twilightecho.android.nativeintegration.TwilightAudioEngineJni { *; }
 -keep interface com.twilightecho.android.nativeintegration.TwilightAudioEventListener { *; }
+
+-keep class com.twilightecho.android.nativeintegration.AndroidUsbPcmPolicy { public *; }

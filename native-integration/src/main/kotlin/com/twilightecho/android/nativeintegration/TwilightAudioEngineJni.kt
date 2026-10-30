@@ -14,6 +14,7 @@ class TwilightAudioEngineJni {
     external fun nativeDestroyEngine(handle: Long)
     external fun nativeSetEventListener(handle: Long, listener: TwilightAudioEventListener?)
     external fun nativeSetStateEventsEnabled(handle: Long, enabled: Boolean): Int
+    external fun nativeSetUsbPcmPolicy(handle: Long, policy: AndroidUsbPcmPolicy): Int
     external fun nativeSetInputProvider(handle: Long, provider: NativeAudioInputProvider): Int
 
     external fun nativePlay(handle: Long, source: String, startTimeSeconds: Double): Int
@@ -47,6 +48,16 @@ class TwilightAudioEngineJni {
     external fun nativeGetEngineCapabilitiesJson(handle: Long): String
     external fun nativeGetLastErrorJson(handle: Long): String
     external fun nativeGetVersion(): String
+    external fun nativeSetAutoMixMode(handle: Long, mode: String): Int
+    external fun nativeSelectAutoMix(handle: Long, requestJson: String): String
+    external fun nativePrepareAutoMix(handle: Long, requestJson: String): Int
+    external fun nativeSubmitAutoMix(handle: Long, planId: Long): Int
+    external fun nativeCancelAutoMix(handle: Long): Int
+    external fun nativeCreateAutoMixCancel(timeoutMs: Int): Long
+    external fun nativeCancelAutoMixAnalysis(token: Long)
+    external fun nativeDestroyAutoMixCancel(token: Long)
+    external fun nativeAnalyzeAutoMix(handle: Long, source: String, optionsJson: String, token: Long): String
+    external fun nativeIdentifyAutoMixSource(handle: Long, source: String, token: Long): String
 
     companion object {
         const val TAE_RESULT_OK = 0

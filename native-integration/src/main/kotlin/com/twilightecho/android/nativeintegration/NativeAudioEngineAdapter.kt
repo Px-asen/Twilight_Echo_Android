@@ -119,7 +119,7 @@ class NativeAudioEngineAdapter(
         outputPerfect = false
     )
 
-    private var queuedTracks: List<CoreTrackView> = emptyList()
+    @Volatile private var queuedTracks: List<CoreTrackView> = emptyList()
     /** Core generation of [queuedTracks]; stamped on every snapshot this adapter reports. */
     @Volatile private var queueGeneration = 0L
     private val gain = PlaybackGain()
@@ -134,6 +134,12 @@ class NativeAudioEngineAdapter(
     @Volatile private var nativePlaybackEventsEnabled = false
     private var nativeSourceLoaded = false
     private var nativePlayMode = "sequential"
+    private val usbPcmPolicy = appContext?.let(::AndroidUsbPcmPolicy)
+    private val autoMixWorker = AutoMixAnalysisWorker(object : AutoMixCancellationTokens {
+        override fun create() = jni.nativeCreateAutoMixCancel(120_000)
+        override fun cancel(token: Long) = jni.nativeCancelAutoMixAnalysis(token)
+        override fun destroy(token: Long) = jni.nativeDestroyAutoMixCancel(token)
+    })
     private val inputProvider = NativeAudioInputProvider { source ->
         when {
             source.startsWith("provider://") -> providerStream?.invoke(source)
@@ -201,6 +207,7 @@ class NativeAudioEngineAdapter(
             engineHandle = runCatching { jni.nativeCreateEngine() }.getOrDefault(0L)
             if (engineHandle != 0L) {
                 check(jni.nativeSetInputProvider(engineHandle, inputProvider) == 0)
+                usbPcmPolicy?.let { check(jni.nativeSetUsbPcmPolicy(engineHandle, it) == 0) }
                 jni.nativeSetEventListener(engineHandle, jniEventListener)
                 jni.nativeSetStateEventsEnabled(engineHandle, true)
             }
@@ -533,6 +540,9 @@ class NativeAudioEngineAdapter(
             lastAppliedConfig = phoneConfig
             return@withContext
         }
+        require(phoneConfig?.dsp?.usbPcmPassthrough != true || gain.effective == 1.0) {
+            "USB 原样 PCM 需要应用增益为 1 且没有焦点衰减；请先调低 DAC 硬件音量，再自行调整应用音量"
+        }
         val state = phoneConfig?.let { nativeDspState(it, json, dspRevision + 1L, outputConfig) }
         val handle = engineHandle
         if (jni.isNativeLibraryLoaded && handle != 0L) {
@@ -553,7 +563,7 @@ class NativeAudioEngineAdapter(
             } else applied(jni.nativeSetDspConfig(handle, configJson))
         } else if (phoneConfig != null && (phoneConfig.dsp.nodes.any { it.enabled } || phoneConfig.dsp.eqMode != "graphic" ||
                 phoneConfig.dsp.playbackRate != 1.0 || phoneConfig.dsp.outputStage.targetSampleRate != 0 || phoneConfig.dsp.crossfadeSeconds > 0 ||
-                phoneConfig.dsp.sampleRateFamilySync || phoneConfig.dsp.allowedSampleRates.isNotEmpty())) {
+                phoneConfig.dsp.usbPcmPassthrough || phoneConfig.dsp.sampleRateFamilySync || phoneConfig.dsp.allowedSampleRates.isNotEmpty())) {
             throw java.io.IOException("这些 DSP 功能需要包含共享原生引擎的版本")
         }
         lastDspConfigJson = configJson
@@ -567,6 +577,70 @@ class NativeAudioEngineAdapter(
         if (engineHandle == 0L) CoreDspStatus() else
             json.decodeFromString<CoreDspStatus>(jni.nativeGetDspGraphStatusJson(engineHandle))
     }
+
+    override suspend fun setAutoMixMode(mode: String): Boolean = withContext(controlDispatcher) {
+        require(mode in setOf("off", "natural", "dj")) { "invalid_auto_mix_mode" }
+        if (engineHandle == 0L) return@withContext mode == "off"
+        // Rejected optional preparation must not turn ordinary playback into an error.
+        val result = jni.nativeSetAutoMixMode(engineHandle, mode)
+        if (result != 0) {
+            val error = json.parseToJsonElement(jni.nativeGetLastErrorJson(engineHandle)).jsonObject
+            throw java.io.IOException(error["message"]?.jsonPrimitive?.contentOrNull ?: "AutoMix 模式未被接受")
+        }
+        nativeSnapshot()?.let { cachedSnapshot = it }
+        broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
+        true
+    }
+    private fun autoMixRequest(requestJson: String): String {
+        val request = json.parseToJsonElement(requestJson).jsonObject.toMutableMap()
+        for (key in listOf("currentSource", "nextSource")) {
+            val source = request[key]?.jsonPrimitive?.contentOrNull ?: continue
+            request[key] = JsonPrimitive(autoMixSource(source))
+        }
+        return JsonObject(request).toString()
+    }
+    private fun autoMixSource(source: String): String = nativeSource(source,
+        queuedTracks.firstOrNull { CueSource.audio(it.source ?: it.id) == source })
+    override suspend fun selectAutoMix(requestJson: String): String = withContext(controlDispatcher) {
+        if (engineHandle == 0L) """{"ok":false,"reason":"analysis_service_unavailable"}"""
+        else jni.nativeSelectAutoMix(engineHandle, autoMixRequest(requestJson))
+    }
+    override suspend fun prepareAutoMix(requestJson: String): Boolean = withContext(controlDispatcher) {
+        engineHandle != 0L && jni.nativePrepareAutoMix(engineHandle, autoMixRequest(requestJson)) == 0
+    }
+    override suspend fun submitAutoMix(planId: Long): Boolean = withContext(controlDispatcher) {
+        engineHandle != 0L && jni.nativeSubmitAutoMix(engineHandle, planId) == 0
+    }
+    override suspend fun cancelAutoMix(): Boolean = withContext(controlDispatcher) {
+        engineHandle == 0L || jni.nativeCancelAutoMix(engineHandle) == 0
+    }
+    override suspend fun identifyAutoMixSource(source: String, requestId: String): String = autoMixWorker.execute(requestId) { token ->
+        check(!closed.get() && engineHandle != 0L) { "analysis_service_unavailable" }
+        jni.nativeIdentifyAutoMixSource(engineHandle, autoMixSource(source), token)
+    }
+    override suspend fun analyzeAutoMix(source: String, optionsJson: String, requestId: String): String = autoMixWorker.execute(requestId) { token ->
+        check(!closed.get() && engineHandle != 0L) { "analysis_service_unavailable" }
+        val context = appContext ?: throw java.io.IOException("public_assets_unavailable")
+        val options = json.parseToJsonElement(optionsJson).jsonObject.toMutableMap()
+        options["assetDirectory"] = JsonPrimitive(AutoMixAssets.directory(context))
+        jni.nativeAnalyzeAutoMix(engineHandle, autoMixSource(source), JsonObject(options).toString(), token)
+    }
+    override fun cancelAutoMixAnalysis(requestId: String) { autoMixWorker.cancel(requestId) }
+    override suspend fun readAutoMixCache(): String? = autoMixWorker.execute("cache-read") {
+        val file = appContext?.let { File(it.cacheDir, "automix-windows.json") } ?: return@execute null
+        if (!file.isFile || file.length() > 16 * 1024 * 1024) null else file.readText()
+    }
+    override suspend fun writeAutoMixCache(text: String?) { autoMixWorker.execute("cache-write") {
+        val context = appContext ?: return@execute
+        val file = android.util.AtomicFile(File(context.cacheDir, "automix-windows.json"))
+        if (text == null) file.delete() else {
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            require(bytes.size <= 16 * 1024 * 1024) { "AutoMix cache budget exceeded" }
+            val stream = file.startWrite()
+            try { stream.write(bytes); file.finishWrite(stream) }
+            catch (error: Throwable) { file.failWrite(stream); throw error }
+        }
+    } }
 
     /** Route capabilities are live host facts, never saved into an EQ scene or session. */
     suspend fun refreshOutputCapabilities() = withContext(controlDispatcher) {
@@ -898,14 +972,17 @@ class NativeAudioEngineAdapter(
                 }.getOrNull()
                 // Rejected graph edits leave the live graph and playback intact. The command
                 // response reports the error; it must not turn a playing track into an error.
-                if (obj?.get("context")?.jsonPrimitive?.contentOrNull in setOf("dsp-state", "dsp-config", "output-config")) return
+                val context = obj?.get("context")?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (context in setOf("dsp-state", "dsp-config", "output-config") || context.contains("auto-mix")) return
                 val code = obj?.get("code")?.jsonPrimitive?.contentOrNull ?: "TAE_INTERNAL_ERROR"
                 val message = inputFailure(obj, currentInputSource())?.message
                     ?: obj?.get("message")?.jsonPrimitive?.contentOrNull ?: "Audio engine error"
                 // A successful platform fallback supersedes the native decoder's availability error.
                 // If fallback setup failed, keep reporting the native failure to the caller.
                 if (platformMediaPlayer != null && code == "TAE_RESULT_BACKEND_UNAVAILABLE") return
-                cachedSnapshot = cachedSnapshot.withoutOutputFacts().copy(state = "error", errorMessage = message)
+                val usbPaused = obj?.get("context")?.jsonPrimitive?.contentOrNull == "usb-pcm"
+                cachedSnapshot = (if (usbPaused) nativeSnapshot() ?: cachedSnapshot else cachedSnapshot)
+                    .withoutOutputFacts().copy(state = if (usbPaused) "paused" else "error", errorMessage = message)
                 broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
                 broadcastEvent(
                     AudioEvent.EngineError(
@@ -935,7 +1012,8 @@ class NativeAudioEngineAdapter(
 
     private fun nativeSource(source: String, track: CoreTrackView?): String =
         if (appContext != null && track?.id in setOf("track-twilight-overture", "track-nocturne-in-cobalt", "track-solstice-drift"))
-            DemoAudioSynthesizer.ensureDemoWavFile(appContext, track!!.id).absolutePath else source
+            DemoAudioSynthesizer.ensureDemoWavFile(appContext, track!!.id).absolutePath
+        else if (source.startsWith("file://")) Uri.parse(source).path ?: source else source
 
     private fun nativeSnapshot(): AudioSnapshot? =
         if (engineHandle == 0L) null else runCatching {
@@ -948,7 +1026,10 @@ class NativeAudioEngineAdapter(
         val source = if (error?.get("context")?.jsonPrimitive?.contentOrNull == "seek") currentInputSource() else activeResourceId
         val message = inputFailure(error, source)?.message
             ?: error?.get("message")?.jsonPrimitive?.contentOrNull ?: "原生音频操作失败 ($result)"
-        cachedSnapshot = cachedSnapshot.withoutOutputFacts().copy(state = "error", errorMessage = message)
+        val usbPaused = error?.get("context")?.jsonPrimitive?.contentOrNull == "usb-pcm"
+        if (usbPaused) nativeSourceLoaded = true
+        cachedSnapshot = (if (usbPaused) nativeSnapshot() ?: cachedSnapshot else cachedSnapshot)
+            .withoutOutputFacts().copy(state = if (usbPaused) "paused" else "error", errorMessage = message)
         broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
         broadcastEvent(AudioEvent.EngineError("NATIVE_AUDIO_$result", message, true))
         throw java.io.IOException(message)
@@ -981,7 +1062,7 @@ class NativeAudioEngineAdapter(
             controlScope.cancel()
             // Cleanup follows the in-flight native operation on the same serial executor.
             // cancelAll above unblocks its IO; never destroy a handle still in nativePlay.
-            controlExecutor.execute {
+            autoMixWorker.close { controlExecutor.execute {
                 releasePlatformMediaPlayer()
                 val handle = engineHandle
                 engineHandle = 0L
@@ -989,10 +1070,10 @@ class NativeAudioEngineAdapter(
                     runCatching {
                         jni.nativeSetEventListener(handle, null)
                         jni.nativeDestroyEngine(handle)
+                        usbPcmPolicy?.close()
                     }
                 }
-            }
-            controlExecutor.shutdown()
+            }; controlExecutor.shutdown() }
         }
     }
 }

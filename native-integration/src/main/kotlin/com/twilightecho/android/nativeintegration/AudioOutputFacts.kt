@@ -4,6 +4,8 @@ import com.twilightecho.android.runtimehost.AudioSnapshot
 
 internal fun AudioSnapshot.withoutOutputFacts() = copy(
     actualSampleRate = null, actualBitDepth = null, actualChannels = null, actualSampleFormat = null,
+    usbPcmPreferenceAccepted = false,
+    usbPcmFormatMatched = false,
     requestedSampleRate = null, requestedSampleFormat = null,
     hardwareSampleRate = null, hardwareBitDepth = null, hardwareChannels = null, hardwareSampleFormat = null,
     actualDeviceId = null, actualDeviceName = null, exclusive = false,

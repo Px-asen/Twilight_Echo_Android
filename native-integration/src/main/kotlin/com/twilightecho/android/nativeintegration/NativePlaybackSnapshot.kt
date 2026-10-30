@@ -25,6 +25,7 @@ internal fun parseNativePlaybackSnapshot(payloadJson: String, current: AudioSnap
 
     current.copy(
         state = state,
+        errorMessage = if (state == "playing") null else current.errorMessage,
         positionMs = posMs,
         durationMs = durMs,
         volume = userVolume,
@@ -50,6 +51,8 @@ internal fun parseNativePlaybackSnapshot(payloadJson: String, current: AudioSnap
         actualChannels = obj["actualChannels"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 },
         actualSampleFormat = text("actualOutputFormat"),
         requestedSampleRate = positive("requestedSampleRate"),
+        usbPcmPreferenceAccepted = output?.get("usbPcmPreferenceAccepted")?.jsonPrimitive?.booleanOrNull == true,
+        usbPcmFormatMatched = output?.get("usbPcmFormatMatched")?.jsonPrimitive?.booleanOrNull == true,
         requestedSampleFormat = text("requestedSampleFormat"),
         hardwareSampleRate = positive("hardwareSampleRate"),
         hardwareBitDepth = positive("hardwareBitDepth"),
@@ -70,6 +73,16 @@ internal fun parseNativePlaybackSnapshot(payloadJson: String, current: AudioSnap
         crossfadeMixActive = obj["crossfadeMixActive"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
         crossfadeEffectiveSeconds = obj["crossfadeEffectiveSeconds"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
         crossfadeCurve = obj["crossfadeCurve"]?.jsonPrimitive?.contentOrNull,
-        crossfadeBlockedReason = obj["crossfadeBlockedReason"]?.jsonPrimitive?.contentOrNull
+        crossfadeBlockedReason = obj["crossfadeBlockedReason"]?.jsonPrimitive?.contentOrNull,
+        upcomingQueueIndex = obj["upcomingQueueIndex"]?.jsonPrimitive?.intOrNull ?: -1,
+        isDsd = obj["isDsd"]?.jsonPrimitive?.booleanOrNull == true,
+        autoMixMode = obj["autoMixMode"]?.jsonPrimitive?.contentOrNull ?: "off",
+        autoMixState = obj["autoMixState"]?.jsonPrimitive?.contentOrNull ?: "off",
+        autoMixReason = obj["autoMixReason"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+        autoMixStrategy = obj["autoMixStrategy"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+        autoMixPlanId = obj["autoMixPlanId"]?.jsonPrimitive?.longOrNull ?: 0,
+        autoMixDurationSeconds = obj["autoMixDurationSeconds"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        autoMixDecodeMs = obj["autoMixDecodeMs"]?.jsonPrimitive?.longOrNull ?: 0,
+        autoMixPrepareMs = obj["autoMixPrepareMs"]?.jsonPrimitive?.longOrNull ?: 0
     ).let { if (released || state !in setOf("playing", "paused")) it.withoutOutputFacts() else it }
 }.getOrNull()
