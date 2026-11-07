@@ -131,7 +131,7 @@ data class AudioSourceDescriptor(
 @Serializable
 data class AudioSnapshot(
     val engineSessionId: String = "native-session-1",
-    val state: String = "idle", // "idle" | "loading" | "playing" | "paused" | "ended" | "error"
+    val state: String = "idle", // "idle" | "loading" | "buffering" | "playing" | "paused" | "ended" | "error"
     val positionMs: Long = 0L,
     val durationMs: Long? = null,
     val volume: Double = 1.0,
@@ -179,6 +179,14 @@ data class AudioSnapshot(
     val crossfadeBlockedReason: String? = null,
     val upcomingQueueIndex: Int = -1,
     val isDsd: Boolean = false,
+    val dsdMode: String? = null,
+    val dsdRate: Int? = null,
+    val actualDsdRate: Int? = null,
+    val dsdRatePolicy: String? = null,
+    val dsdConversion: String? = null,
+    val dsdConversionReason: String? = null,
+    val transportSampleRate: Int? = null,
+    val semanticSampleRate: Int? = null,
     val autoMixMode: String = "off",
     val autoMixState: String = "off",
     val autoMixReason: String = "",

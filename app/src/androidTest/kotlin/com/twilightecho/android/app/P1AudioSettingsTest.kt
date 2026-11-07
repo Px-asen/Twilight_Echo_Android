@@ -15,6 +15,7 @@ import androidx.test.uiautomator.UiDevice
 import com.twilightecho.android.coreclient.*
 import com.twilightecho.android.feature.player.*
 import com.twilightecho.android.ui.theme.TwilightEchoTheme
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Rule
@@ -30,6 +31,8 @@ class P1AudioSettingsTest {
     @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
     private lateinit var ui: MutableState<PlayerUiState>
     private var reapplied = 0
+    private var commitGate: CompletableDeferred<Unit>? = null
+    private var commitFailure: String? = null
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val device get() = UiDevice.getInstance(instrumentation)
 
@@ -46,6 +49,16 @@ class P1AudioSettingsTest {
             preamp = { value -> audio { it.copy(preampDb = value) } },
             editDsp = { edit -> audio { it.copy(dsp = edit(it.dsp)) } },
             editAudio = ::audio,
+            commitAudioEdit = { edit ->
+                val before = ui.value.eqConfig
+                val next = edit(before)
+                commitGate?.await()
+                val failure = commitFailure
+                if (failure != null) Result.failure(IllegalStateException(failure)) else {
+                    ui.value = ui.value.copy(eqConfig = next)
+                    Result.success(CoreAudioEditReceipt(before, next))
+                }
+            },
             saveDspScene = { name -> audio { it.copy(scenes = it.scenes + scene("saved-${it.scenes.size}", name, it)) } },
             applyDspScene = { id -> audio { config -> config.scenes.find { it.id == id }?.let(config::withScene) ?: config } },
             deleteDspScene = { id -> audio { it.copy(scenes = it.scenes.filterNot { scene -> scene.id == id }) } },
@@ -59,6 +72,16 @@ class P1AudioSettingsTest {
 
     private fun switchIn(tag: String) = rule.onNode(hasAnyAncestor(hasTestTag(tag)) and isToggleable())
 
+    private fun pasteEq(text: String = "Preamp: -6.2 dB\nFilter 1: ON PK Fc 2400 Hz Gain 4 dB Q 2.4") {
+        rule.runOnUiThread {
+            val clip = ClipData.newPlainText("eq", text).apply {
+                description.extras = PersistableBundle().apply { putBoolean("com.android.systemui.SUPPRESS_CLIPBOARD_OVERLAY", true) }
+            }
+            (rule.activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
+        }
+        rule.onNodeWithTag("eq-import-paste").performScrollTo().performClick()
+    }
+
     private fun shot(name: String) {
         rule.waitForIdle()
         Thread.sleep(400)
@@ -70,16 +93,9 @@ class P1AudioSettingsTest {
 
     @Test fun eqTextImportShowsHeadroomAndBypassStopsProcessing() {
         start(PlayerUiState(eqConfig = CoreEqConfigView(enabled = true)))
-        rule.onNodeWithTag("audio-page-eq").performScrollTo().performClick()
+        rule.openAudioSettingsPage("eq")
         val text = "Preamp: -6.2 dB\nFilter 1: ON LSC Fc 105 Hz Gain 5.5 dB Q 0.71\nFilter 2: ON PK Fc 2400 Hz Gain 9 dB Q 2.4\n"
-        rule.runOnUiThread {
-            // Emulators and debuggable builds skip the system clipboard preview for clips marked this way.
-            val clip = ClipData.newPlainText("eq", text).apply {
-                description.extras = PersistableBundle().apply { putBoolean("com.android.systemui.SUPPRESS_CLIPBOARD_OVERLAY", true) }
-            }
-            (rule.activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
-        }
-        rule.onNodeWithTag("eq-import-paste").performScrollTo().performClick()
+        pasteEq(text)
         rule.onNodeWithTag("eq-import-summary").performScrollTo()
             .assertTextEquals("已导入 EqualizerAPO：2 个滤波器，前级 -6.2 dB")
         val imported = ui.value.eqConfig
@@ -114,12 +130,95 @@ class P1AudioSettingsTest {
         assertEquals(0.0, ui.value.eqConfig.preampDb, 0.0)
     }
 
+    @Test fun eqImportWaitsForCoreAndRejectedImportCanBeRetried() {
+        val before = CoreEqConfigView(preampDb = -2.0)
+        start(PlayerUiState(eqConfig = before))
+        rule.openAudioSettingsPage("eq")
+        val gate = CompletableDeferred<Unit>()
+        rule.runOnIdle { commitGate = gate; commitFailure = "配置被拒绝" }
+        pasteEq()
+        rule.onNodeWithTag("eq-import-pending").assertExists()
+        rule.onNodeWithTag("eq-import-summary").assertDoesNotExist()
+        rule.onNodeWithTag("eq-import-paste").assertIsNotEnabled()
+        assertEquals(before, ui.value.eqConfig)
+        rule.runOnIdle { gate.complete(Unit) }
+        rule.onNodeWithTag("eq-import-notice").assertTextEquals("未能确认导入：配置被拒绝")
+        rule.onNodeWithTag("eq-import-summary").assertDoesNotExist()
+        assertEquals(before, ui.value.eqConfig)
+
+        rule.runOnIdle { commitGate = null; commitFailure = null }
+        pasteEq()
+        rule.onNodeWithTag("eq-import-summary").assertExists()
+        rule.onNodeWithTag("eq-import-notice").assertDoesNotExist()
+        assertEquals(-6.2, ui.value.eqConfig.preampDb, 0.0)
+
+        rule.runOnIdle { commitFailure = "第二次导入被拒绝" }
+        pasteEq("Preamp: -4 dB\nFilter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1")
+        rule.onNodeWithTag("eq-import-summary").assertTextEquals("已导入 EqualizerAPO：1 个滤波器，前级 -6.2 dB")
+        assertEquals(-6.2, ui.value.eqConfig.preampDb, 0.0)
+        rule.runOnIdle { commitFailure = null }
+        rule.onNodeWithTag("eq-import-undo").performScrollTo().performClick()
+        assertEquals(before, ui.value.eqConfig)
+    }
+
+    @Test fun eqUndoWaitsForCoreAndRetainsHistoryOnFailure() {
+        start(PlayerUiState(eqConfig = CoreEqConfigView(preampDb = -2.0)))
+        rule.openAudioSettingsPage("eq")
+        pasteEq()
+        val gate = CompletableDeferred<Unit>()
+        rule.runOnIdle {
+            ui.value = ui.value.copy(eqConfig = ui.value.eqConfig.copy(dsp = ui.value.eqConfig.dsp.copy(playbackRate = 1.25)))
+            commitGate = gate; commitFailure = "撤销被拒绝"
+        }
+        rule.onNodeWithTag("eq-import-undo").performScrollTo().performClick()
+        rule.onNodeWithTag("eq-import-pending").assertExists()
+        rule.onNodeWithTag("eq-import-summary").assertExists()
+        rule.onNodeWithTag("eq-import-undo").assertIsNotEnabled()
+        assertEquals("parametric", ui.value.eqConfig.dsp.eqMode)
+        rule.runOnIdle { gate.complete(Unit) }
+        rule.onNodeWithTag("eq-import-notice").assertTextEquals("未能确认撤销：撤销被拒绝")
+        rule.onNodeWithTag("eq-import-undo").assertIsEnabled()
+
+        rule.runOnIdle { commitGate = null; commitFailure = null }
+        rule.onNodeWithTag("eq-import-undo").performClick()
+        rule.onNodeWithTag("eq-import-summary").assertDoesNotExist()
+        rule.onNodeWithTag("eq-import-notice").assertTextEquals("已恢复导入前的均衡器")
+        assertEquals("graphic", ui.value.eqConfig.dsp.eqMode)
+        assertEquals(-2.0, ui.value.eqConfig.preampDb, 0.0)
+        assertEquals(1.25, ui.value.eqConfig.dsp.playbackRate, 0.0)
+    }
+
+    @Test fun importedEqSceneSaveOnlyFinishesAfterCoreAcknowledgement() {
+        start(PlayerUiState())
+        rule.openAudioSettingsPage("eq")
+        pasteEq()
+        val rejected = CompletableDeferred<Unit>()
+        rule.runOnIdle { commitGate = rejected; commitFailure = "保存被拒绝" }
+        rule.onNodeWithTag("eq-import-save-scene").performScrollTo().performClick()
+        rule.onNodeWithTag("eq-import-pending").assertExists()
+        rule.onNodeWithTag("eq-import-save-scene").assertIsNotEnabled()
+        assertTrue(ui.value.eqConfig.scenes.isEmpty())
+        rule.runOnIdle { rejected.complete(Unit) }
+        rule.onNodeWithTag("eq-import-notice").assertTextEquals("未能确认保存：保存被拒绝")
+        rule.onNodeWithTag("eq-import-save-scene").assertIsEnabled()
+
+        val accepted = CompletableDeferred<Unit>()
+        rule.runOnIdle { commitGate = accepted; commitFailure = null }
+        rule.onNodeWithTag("eq-import-save-scene").performClick()
+        assertTrue(ui.value.eqConfig.scenes.isEmpty())
+        rule.runOnIdle { accepted.complete(Unit) }
+        rule.onNodeWithTag("eq-import-save-scene").assertDoesNotExist()
+        rule.onNodeWithTag("eq-import-notice").assertTextEquals("已保存场景“EqualizerAPO 均衡”")
+        assertEquals(1, ui.value.eqConfig.scenes.size)
+        assertEquals(-6.2, ui.value.eqConfig.withScene(ui.value.eqConfig.scenes.single()).preampDb, 0.0)
+    }
+
     @Test fun devicePresetsShowTheOutputAndBindScenes() {
         val hd650 = scene("a", "HD 650 校正", CoreEqConfigView(enabled = true, preampDb = -6.0))
         val commute = scene("b", "通勤", CoreEqConfigView(enabled = true, preampDb = -2.0))
         val output = OutputDeviceIdentity("wired_headset", "HD 650")
         start(PlayerUiState(eqConfig = CoreEqConfigView(scenes = listOf(hd650, commute)), outputPreset = OutputPresetStatus(output)))
-        rule.onNodeWithTag("audio-page-scenes").performScrollTo().performClick()
+        rule.openAudioSettingsPage("scenes")
         rule.onNodeWithTag("output-preset-status").performScrollTo()
         rule.onNodeWithText("当前输出：HD 650").assertIsDisplayed()
         rule.onNodeWithText("未设置预设，保持当前声音").assertIsDisplayed()
@@ -201,6 +300,17 @@ class P1AudioSettingsTest {
             target.delete()
             file.delete()
         }
+    }
+
+    @Test fun monitorLabelsNameMonoSpectrumAndCumulativeCorrelation() {
+        start(PlayerUiState(eqConfig = CoreEqConfigView(enabled = true,
+            dsp = CoreDspConfig(nodes = listOf(CoreDspNode("meter", "meter", enabled = true)))),
+            dspStatus = CoreDspStatus(meter = CoreDspMeter(correlation = -1.0, clipCount = 3)),
+            audioLevels = List(48) { if (it == 27) 0.84f else 0f }))
+        rule.openAudioSettingsPage("rack")
+        rule.onNodeWithText("频谱 · 声道平均").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag("dsp-spectrum").assertIsDisplayed()
+        rule.onNodeWithText("累计相关性 -1.00 · 削波 3").performScrollTo().assertIsDisplayed()
     }
 
     /** A short 48 kHz stereo float WAV. */

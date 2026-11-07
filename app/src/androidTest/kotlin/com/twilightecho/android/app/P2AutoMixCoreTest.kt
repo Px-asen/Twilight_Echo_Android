@@ -32,16 +32,31 @@ class P2AutoMixCoreTest {
         val cancellations = CopyOnWriteArrayList<String>()
         val results = CopyOnWriteArrayList<String>()
         val submissions = CopyOnWriteArrayList<Long>()
+        val timeline = CopyOnWriteArrayList<String>()
+        private val startedAt = now
+        private var lastState = ""
+        private fun record(message: String) { timeline += "${now - startedAt}ms $message" }
         val active = AtomicReference<String?>()
         // Trace the real port without substituting models, native status or ACKs.
         private val traced = object : AudioEnginePort by audio {
             override suspend fun analyzeAutoMix(source: String, optionsJson: String, requestId: String): String {
                 analyses += requestId; active.set(requestId)
-                return try { audio.analyzeAutoMix(source, optionsJson, requestId).also { results += it } }
+                record("analysis-start $requestId $optionsJson")
+                return try { audio.analyzeAutoMix(source, optionsJson, requestId).also {
+                    results += it; record("analysis-end $requestId")
+                } }
                 finally { active.compareAndSet(requestId, null) }
             }
             override fun cancelAutoMixAnalysis(requestId: String) { cancellations += requestId; audio.cancelAutoMixAnalysis(requestId) }
-            override suspend fun submitAutoMix(planId: Long) = audio.submitAutoMix(planId).also { if (it) submissions += planId }
+            override suspend fun selectAutoMix(requestJson: String) = audio.selectAutoMix(requestJson).also {
+                record("selection $it")
+            }
+            override suspend fun prepareAutoMix(requestJson: String) = audio.prepareAutoMix(requestJson).also {
+                record("prepare $it")
+            }
+            override suspend fun submitAutoMix(planId: Long) = audio.submitAutoMix(planId).also {
+                record("submit $planId $it"); if (it) submissions += planId
+            }
         }
         private val resources = AndroidResourceAccessAdapter(context)
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -58,7 +73,13 @@ class P2AutoMixCoreTest {
             assertTrue(result.toString(), result.isSuccess)
         }
         suspend fun mode(mode: String) = command(CoreTypedCommand.SettingsEdit(key = "autoMixMode", valueJson = JsonPrimitive(mode).toString()))
-        suspend fun playback(): CorePlaybackView { check(client.reconcileState().isSuccess); return client.snapshot.value!!.playback!! }
+        suspend fun playback(): CorePlaybackView {
+            check(client.reconcileState().isSuccess)
+            return client.snapshot.value!!.playback!!.also { playback ->
+                val state = "${playback.queueIndex}/${playback.state}/${playback.autoMixState}/${playback.autoMixReason}"
+                if (state != lastState) { record("state $state at ${playback.position}s"); lastState = state }
+            }
+        }
         override fun close() { runBlocking { host.shutdown() }; scope.cancel(); audio.close(); resources.close() }
     }
 
@@ -89,7 +110,15 @@ class P2AutoMixCoreTest {
                 val paused = s.playback(); assertEquals("paused", paused.state); assertEquals(7.0, paused.position, .025)
                 s.command(CoreTypedCommand.Play(null))
                 // Native Ready precedes the coordinator's exact-ID submit ACK.
-                await(90000) { s.playback().autoMixState == "ready" && s.submissions.isNotEmpty() }
+                try {
+                    await(90000) { s.playback().autoMixState == "ready" && s.submissions.isNotEmpty() }
+                } catch (failure: TimeoutCancellationException) {
+                    File(reports, "quickjs-preparation-timeout.txt").writeText(
+                        "playback=${s.playback()}\nnative=${s.audio.getSnapshot()}\n" +
+                            "analyses=${s.analyses}\ncancellations=${s.cancellations}\n" +
+                            "submissions=${s.submissions}\ntimeline=${s.timeline.joinToString("\n")}\nresults=${s.results}\n")
+                    throw AssertionError("AutoMix was not ready within 90 s; see quickjs-preparation-timeout.txt", failure)
+                }
                 val ready = s.playback()
                 assertEquals("content-boundary", ready.autoMixStrategy)
                 assertTrue(ready.autoMixPlanId > 0)

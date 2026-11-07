@@ -50,16 +50,15 @@ internal val LocalRemoteArtwork = compositionLocalOf { RemoteArtworkEnvironment(
 
 @Composable
 internal fun rememberPlayerArtwork(track: CoreTrackView?, size: Int = 1024, extractColors: Boolean = true): TrackArtworkVisual {
-    val environment = LocalRemoteArtwork.current
     // A folder's image is a local file; any other cover is a provider's web image.
     val folderCover = track?.cover?.takeIf { it.startsWith("content://") }
     val remote = track?.id?.let { it.startsWith("remote-track:") || it.startsWith(DesktopMediaReference.PREFIX) } == true
     val remotePreview = if (remote && track != null) {
+        // Local/provider tiles do not subscribe to every arriving desktop cover.
+        val environment = LocalRemoteArtwork.current
+        LaunchedEffect(track.id, environment.revision) { environment.request(track.id) }
         if (track.id in environment.previews) environment.previews[track.id] else environment.lookup(track.id)
     } else null
-    LaunchedEffect(track?.id, environment.revision) {
-        if (remote) track?.id?.let(environment.request)
-    }
     if ((!remote || remotePreview == null) && folderCover == null &&
         (track?.source == null || track.source?.startsWith("provider://") == true)
     ) {
@@ -88,10 +87,17 @@ internal fun LibraryPlaybackHeader(state: PlayerUiState, actions: PlayerActions)
             OutputSegment("此手机", TwilightIcons.Phone, target == null, true, Modifier.testTag("targetPhone")) {
                 actions.playbackTarget(true)
             }
-            if (source != null || target != null) OutputSegment("电脑", TwilightIcons.Computer, target != null,
+            if (source != null || target != null) OutputSegment("控制电脑", TwilightIcons.Computer, target != null,
                 source?.connected == true, Modifier.testTag("targetDesktop")) { actions.playbackTarget(false) }
         }
     }
+    if (target != null) {
+        TextButton(onClick = { actions.desktopAudioOpen(true) }, enabled = target.connected,
+            modifier = Modifier.padding(horizontal = 12.dp).testTag("desktopAudio")) {
+            Text("电脑输出 · DSP · 信号链")
+        }
+    }
+    if (state.desktopAudioOpen) DesktopAudioSheet(state, actions)
 }
 
 @Composable
@@ -184,11 +190,7 @@ private fun RemoteEntityScreen(state: PlayerUiState, actions: PlayerActions, mod
         if (expiry != null) { delay((expiry - now).coerceAtLeast(1)); now = System.currentTimeMillis() }
     }
     val external = metadata?.artwork?.firstOrNull { it.usage?.canDisplay(now) != false }
-    val preview = when (metadata?.artworkOverride?.mode) {
-        "clear" -> null
-        "value" -> metadata.manualArtwork?.dataUrl
-        else -> metadata?.manualArtwork?.dataUrl ?: external?.dataUrl
-    }
+    val preview = metadata?.artworkPreview(now)
     val artwork = rememberTrackArtwork(entity.id, metadata?.name ?: entity.title, entity.artist, null,
         previewDataUrl = preview, previewOnly = true, cachePreview = false)
     val facts = metadata?.facts.orEmpty().filter { it.usage?.canDisplay(now) != false }
@@ -215,6 +217,9 @@ private fun RemoteEntityScreen(state: PlayerUiState, actions: PlayerActions, mod
         }
         item {
             Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                FilledTonalButton(onClick = { actions.entityEditor.open(entity) },
+                    enabled = (state.librarySource as? LibrarySource.Desktop)?.connected == true,
+                    modifier = Modifier.testTag("desktopEntityManage")) { Text("整理资料与个人偏好") }
                 data.detailError?.let {
                     Text(it, color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = { actions.openEntity(entity) }) { Text("重新读取资料") }
@@ -222,7 +227,7 @@ private fun RemoteEntityScreen(state: PlayerUiState, actions: PlayerActions, mod
                 val intro = metadata?.introduction
                 if (!artist && intro != null) IntroductionCard("关于这张专辑", intro)
                 else if (!artist && metadata != null) GlassCard(Modifier.fillMaxWidth()) {
-                    SupportingText("电脑还没有这张专辑的简介，可在电脑端「音乐库资料」中补全。", Modifier.padding(18.dp))
+                    SupportingText("还没有这张专辑的简介，点「整理资料与个人偏好」补全。", Modifier.padding(18.dp))
                 }
             }
         }
@@ -251,9 +256,12 @@ private fun RemoteEntityScreen(state: PlayerUiState, actions: PlayerActions, mod
             val enabled = source.provider == "local" && source.availability != "missing" &&
                 (state.librarySource as? LibrarySource.Desktop)?.connected == true
             val revision = data.sources?.revision ?: 0L
-            SourceRow((data.sources?.offset ?: 0) + index + 1, source, revision, enabled, desktopOutput) {
-                actions.playSource(source, revision)
-            }
+            SourceRow((data.sources?.offset ?: 0) + index + 1, source, revision, enabled, desktopOutput,
+                manage = { actions.entityEditor.open(CatalogEntity(source.recordingId, "recording", source.track.title, source.track.artist)) },
+                manageRelease = source.releaseId?.let { id -> {
+                    actions.entityEditor.open(CatalogEntity(id, "release", source.track.album.ifBlank { "专辑发行版" }, source.track.artist))
+                } },
+                play = { actions.playSource(source, revision) }, playTo = data.sources?.scope?.let { captured -> { actions.playSourceTo(source, revision, captured) } })
         }
         item { data.sources?.let { LibraryPageControls(it.offset, it.items.size, it.total, data.detailLoading, actions.sourcePage) } }
     }
@@ -346,7 +354,8 @@ private fun FactTable(facts: List<MetadataFact>) {
 }
 
 @Composable
-private fun SourceRow(number: Int, source: CatalogSource, revision: Long, enabled: Boolean, desktopOutput: Boolean, play: () -> Unit) {
+private fun SourceRow(number: Int, source: CatalogSource, revision: Long, enabled: Boolean, desktopOutput: Boolean,
+    manage: () -> Unit, manageRelease: (() -> Unit)?, play: () -> Unit, playTo: (() -> Unit)?) {
     val alpha = if (enabled) 1f else 0.5f
     val trackView = remember(source, revision, enabled) {
         val t = source.track
@@ -380,6 +389,16 @@ private fun SourceRow(number: Int, source: CatalogSource, revision: Long, enable
         if (source.track.duration > 0) Text(formatDurationSeconds(source.track.duration),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 8.dp))
+        var menuOpen by remember(source.id) { mutableStateOf(false) }
+        Box {
+            IconButton(onClick = { menuOpen = true }) { Icon(TwilightIcons.More, "整理 ${source.track.title}", Modifier.size(20.dp)) }
+            DropdownMenu(menuOpen, { menuOpen = false }) {
+                DropdownMenuItem(text = { Text("播放到声区…") }, enabled = source.availability != "missing" && playTo != null,
+                    onClick = { menuOpen = false; playTo?.invoke() })
+                DropdownMenuItem(text = { Text("整理这首歌曲") }, onClick = { menuOpen = false; manage() })
+                if (manageRelease != null) DropdownMenuItem(text = { Text("整理这个发行版") }, onClick = { menuOpen = false; manageRelease() })
+            }
+        }
         val playInteraction = remember { MutableInteractionSource() }
         Box(Modifier.tactilePress(playInteraction, pressedScale = 0.88f, enabled = enabled)
             .size(48.dp).clip(CircleShape)

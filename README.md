@@ -30,6 +30,8 @@
 
 ## 核心亮点
 
+- **离线、外网与车载**：长按电脑歌曲下载到手机，在“音乐库 → 离线音乐”管理断点续传、空间与计费网络策略；已配对电脑可保存外网／VPN 地址。Android Auto 支持曲库浏览、搜索和手机播放。见[移动曲库使用说明](./MOBILE_LIBRARY.md)。
+
 - **与桌面端同源的体验与内核**：内置与[桌面端主仓库](https://github.com/Px-asen/Twilight_Echo)一致的共享 Music Core（QuickJS 运行时）与 C++ 原生音频引擎（`FFmpeg → C++ DSP → AAudio`），本机音乐、在线流媒体和局域网电脑串流共用同一条解码与调音链路。
 - **Roon 式电脑 Core 局域网互联**：同一 Wi-Fi 下自动发现运行 Twilight Echo 的电脑，在电脑端一键允许即可连接。在手机上直接浏览电脑整理的曲库、歌手简介、专辑详情与封面，并自由选择由 **此手机**（无损 FLAC / MP3 串流解码）或 **电脑**（远程遥控桌面播放器）发声。
 - **沉浸式流光播放页与波浪弹簧歌词**：Apple Music 风格的中性深灰底色与莫奈封面取色，配合流动渐变背景、逐行缩放与景深模糊（Android 12+）以及波浪弹簧换行动效；点击空白处或无操作自动收起控件进入全屏沉浸歌词。
@@ -53,7 +55,7 @@
 **发现在线音乐与流媒体** — 无需先建立本地曲库。点击首页「网易云音乐 → 接入」或打开「设置 → 插件与音源」启用内置网易云音源，扫码或使用账号登录后：
 - **首页**直接呈现每日推荐、私人漫游与私人雷达卡片，点击即可播放或「换一批」；
 - **音乐库 → 流媒体**汇总我喜欢的音乐、创建与收藏的歌单、收藏的专辑与歌手、最近播放和一周听歌排行；
-- **搜索 → 网易云**可按歌曲、专辑、歌手、歌单分类搜索；
+- **搜索**可选择本地音乐库或已启用的音源，按歌曲、歌手、专辑分类查看结果；网易云还支持歌单搜索，其他插件未提供的分类会明确提示；
 - **设置 → 网易云音质**可选择自动、高解析无损、无损、极高或标准音质。更多支持移动端的第三方音源可在「设置 → 插件与音源」中按需安装。
 
 **连上家里的电脑曲库（电脑 Core）** — 手机与电脑连入同一局域网，在桌面端开启「局域网远程控制」，然后在手机打开「设置 → 电脑 Core」。点选自动发现的电脑并在电脑弹窗中点击「允许连接」，即可免输 IP 与配对码完成绑定。连接后可在手机浏览电脑上的完整曲库，并在顶部切换 **「此手机」**（串流到手机听）或 **「电脑」**（遥控电脑放歌）。
@@ -72,7 +74,7 @@
   <tr>
     <td width="50%" valign="top">
       <h3>🎵 本地曲库与整轨分曲</h3>
-      <p>扫描手机存储与指定音乐文件夹，按歌曲、专辑、艺术家、歌单整理收藏。支持 CUE 整轨镜像自动分曲、歌单内独立搜索与稳定排序、音频头部精确探测及播放书签。</p>
+      <p>扫描经系统文件夹选择器授权的音乐文件夹，按歌曲、专辑、艺术家、歌单整理收藏。支持 CUE 整轨镜像自动分曲、歌单内独立搜索与稳定排序、音频头部精确探测及播放书签。</p>
     </td>
     <td width="50%" valign="top">
       <h3>🔎 在线流媒体与沙箱插件</h3>
@@ -132,10 +134,11 @@ Twilight Echo Android 将 **「曲库来源」**（正在浏览哪套音乐目�
 | **无损与高解析音频** | FLAC、ALAC（`.m4a`）、WAV / PCM、APE、WavPack（`.wv`） |
 | **常见有损音频** | MP3、AAC（`.m4a` / `.aac`）、OGG Vorbis、Opus |
 | **分轨与歌词** | `.cue` 整轨自动分曲、`.lrc` 本地双语同步歌词、在线 YRC / LRC 同步歌词 |
-| **音频输出后端** | Android AAudio 原生输出（共享 / 独占模式请求），自动跟踪有线耳机、蓝牙音频与 USB DAC 路由 |
+| **DSD 音源** | DSF、DFF / DST、SACD ISO 分轨；WavPack DSD 识别并转 PCM 播放 |
+| **音频输出后端** | Android AAudio（共享 / 独占请求），以及需明确选择并授权的 USB Host + libusb 直连独占 |
 
 > [!NOTE]
-> 当前 Android 端默认通过共享 `FFmpeg → C++ DSP → AAudio` 原生链路输出 PCM 音频，并在音频设置中如实区分「引擎请求格式」「AAudio 播放流格式」与「系统硬件格式」。USB 独占驱动、DoP / Native DSD 与完整桌面级 AutoMix 界面正在按阶段演进中，详见 [演进路线说明](./POWERAMP_HIFI_COMPARISON.md)。
+> 默认通过 `FFmpeg → C++ DSP → AAudio` 输出 PCM。连接 DAC 后可在「设置 → 音频与 DSP → 输出方式」选择「USB 独占」，授权后播放；暂停时归还接口。DSF / DFF / SACD 可明确选择 DoP 或受支持设备的 Native DSD，WavPack DSD 当前只转 PCM。USB、DSD 和 AutoMix 的软件实现已接通，目标手机 / DAC 的实际输出、兼容性和听感仍待统一验收，详见 [演进路线说明](./POWERAMP_HIFI_COMPARISON.md)。
 
 ## 常见问题
 
@@ -224,13 +227,15 @@ Twilight_Echo_Android/
 ├── playback-host/          # 播放宿主单例、音频焦点协调、局域网 mDNS 发现与会话持久化
 ├── plugin-host/            # 独立 UID 隔离沙箱进程、移动端插件仓库与网易云网关
 ├── media-session/          # AndroidX Media3 会话服务与系统媒体卡片封面投影
-├── adapters/               # MediaStore/文件夹扫描、音频路由探测、SAF 与网络适配
+├── adapters/               # SAF 音乐文件夹扫描、音频路由与元数据探测、网络适配
 └── native-integration/     # FFmpeg + C++ DSP + AAudio JNI 桥接与随机读取数据源
 ```
 
 ### 构建步骤
 
 环境要求：**JDK 17+**（推荐 JDK 21）、**Android SDK 35**、**Android NDK r27+**（构建原生 FFmpeg / JNI 时需要）。
+
+将 `JAVA_HOME` 指向本机 JDK 安装目录；仓库不固定个人机器的 JDK 路径。
 
 1. **构建 Android FFmpeg 依赖**（首次构建原生音频链路时，在相邻的 `Twilight_Echo` 主仓库执行）：
    ```powershell
@@ -248,7 +253,7 @@ Twilight_Echo_Android/
    ```
 3. **运行单元测试与构建 Debug APK**：
    ```powershell
-   .\gradlew.bat verifyPortableCore testDebugUnitTest :app:assembleDebug
+   .\gradlew.bat verifyPortableCore :core-client:test testDebugUnitTest :app:assembleDebug
    ```
    生成的安装包位于 `app/build/outputs/apk/debug/app-debug.apk`。
 

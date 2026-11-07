@@ -26,7 +26,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class AndroidAudioDeviceAdapter(
     context: Context,
-    private val onPhysicalDisconnectBrake: (() -> Unit)? = null
+    private val onPhysicalDisconnectBrake: (() -> Unit)? = null,
+    private val ownsUsbOutput: () -> Boolean = { false }
 ) : AudioDevicePort {
 
     private val appContext = context.applicationContext
@@ -47,10 +48,13 @@ class AndroidAudioDeviceAdapter(
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
-            refreshAndNotify(wasRemoved = true, removedDevices = removedDevices?.toList().orEmpty())
+            // libusb detaching the system driver is not a physical disconnect.
+            // UsbManager/libusb report genuine detach while direct ownership is selected.
+            val removed = removedDevices.orEmpty().filterNot { ownsUsbOutput() && classifyRouteType(it.type) == "usb_dac" }
+            refreshAndNotify(wasRemoved = true, removedDevices = removed)
             // An output still listed under the same identity (another profile of one headset) stays connected.
             val present = outputDevices().mapTo(HashSet()) { identityOf(it) }
-            val gone = removedDevices.orEmpty().map { identityOf(it) }.distinct().filterNot { it in present }
+            val gone = removed.map { identityOf(it) }.distinct().filterNot { it in present }
             if (gone.isNotEmpty() && !closed.get()) removalListeners.forEach { runCatching { it(gone) } }
         }
     }
@@ -94,6 +98,7 @@ class AndroidAudioDeviceAdapter(
      * product names stay on the phone; null while nothing plays or once the device is gone.
      */
     fun outputIdentity(route: AudioDeviceRouteInfo): OutputDeviceIdentity? {
+        if (route.outputBackend == "usb-direct") return OutputDeviceIdentity("usb_dac", route.deviceName)
         if (route.deviceId <= 0 && route.outputBackend.isEmpty()) return null
         val devices = outputDevices()
         val device = if (route.deviceId > 0) devices.firstOrNull { it.id == route.deviceId } else mediaRouteDevice(devices)

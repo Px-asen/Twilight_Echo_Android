@@ -56,6 +56,10 @@ data class CoreDspConfig(
     val bufferFrames: Int = 0,
     val continuitySampleRate: Int = 48000,
     val playbackRate: Double = 1.0,
+    val dsdOutputMode: String = "pcm",
+    val dsdRatePolicy: String = "pcm-fallback",
+    /** Explicit DoP consent for a USB VID/PID/device-version, never supplied by a scene. */
+    val dopConfirmedDeviceKey: String = "",
     val usbPcmPassthrough: Boolean = false,
     val sampleRateFamilySync: Boolean = false,
     /** Empty follows the existing request policy; nonempty constrains PCM requests, not system hardware. */

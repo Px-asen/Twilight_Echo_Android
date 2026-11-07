@@ -11,6 +11,7 @@ import com.twilightecho.android.adapters.AndroidResourceAccessAdapter
 import com.twilightecho.android.adapters.AndroidSessionStoreAdapter
 import com.twilightecho.android.adapters.AndroidTrackMetadataProbe
 import com.twilightecho.android.coreclient.CoreClient
+import com.twilightecho.android.coreclient.copyImpulseResponse
 import com.twilightecho.android.coreclient.CoreClientIdentity
 import com.twilightecho.android.coreclient.CoreOperatingMode
 import com.twilightecho.android.coreclient.CoreQueueEdits
@@ -35,6 +36,9 @@ import com.twilightecho.android.coreclient.DesktopMediaReference
 import com.twilightecho.android.coreclient.DesktopMediaRangeReader
 import com.twilightecho.android.coreclient.AuthorizedDesktopMedia
 import com.twilightecho.android.coreclient.CoreTrackView
+import com.twilightecho.android.coreclient.migrateLocalTrackExclusions
+import com.twilightecho.android.coreclient.excludesLocalTrack
+import com.twilightecho.android.coreclient.ambiguousLocalExclusions
 import com.twilightecho.android.coreclient.DesktopCapabilities
 import com.twilightecho.android.coreclient.TrackArtworkPage
 import com.twilightecho.android.coreclient.TrackArtworkPreview
@@ -128,20 +132,39 @@ class AndroidPlaybackHost private constructor(
         storageDirectory = File(appContext.filesDir, "twilight_core_state")
     )
     val resourceAccessAdapter = AndroidResourceAccessAdapter(appContext)
-    private val musicFolderScanner = AndroidMusicFolderScanner(appContext)
-    private val trackMetadataProbe = AndroidTrackMetadataProbe(appContext)
+    private val nativeMetadataReader = com.twilightecho.android.nativeintegration.NativeAudioMetadataReader(appContext)
+    private val musicFolderScanner = AndroidMusicFolderScanner(appContext, nativeMetadataReader::read)
+    private val trackMetadataProbe = AndroidTrackMetadataProbe(appContext, nativeMetadataReader::read)
     private val localLibraryMutex = Mutex()
     private val mutableMusicFolders = MutableStateFlow(musicFolderScanner.folders())
     /** The music folders the user picked, oldest first. */
     val musicFolders: StateFlow<List<MusicFolder>> = mutableMusicFolders.asStateFlow()
     val networkAdapter = AndroidNetworkAdapter()
     val userPreferences = UserPreferencesStore(appContext)
+    private fun authorizeMobileNetwork(download: Boolean) {
+        val connectivity = appContext.getSystemService(android.net.ConnectivityManager::class.java)
+        val policy = userPreferences.state.value.mobileNetwork
+        check(!connectivity.isActiveNetworkMetered || if (download) policy.allowMeteredDownloads else policy.allowMeteredStreaming) {
+            if (download) "已暂停：等待非计费网络，或在离线音乐中允许计费网络下载" else "计费网络串流已关闭，可在离线音乐中调整"
+        }
+    }
+    val offlineDownloads = OfflineDownloads(File(appContext.filesDir, "offline-music"), open = { reference ->
+        val reader = DesktopMediaRangeReader(reference, ::resolveDesktopMedia) { authorizeMobileNetwork(true) }
+        object : OfflineDownloadReader {
+            override fun size() = reader.size()
+            override fun version() = reader.sourceVersion()
+            override fun readAt(position: Long, data: ByteArray) = reader.readAt(position, data, 0, data.size)
+            override fun close() = reader.close()
+        }
+    }, quota = { userPreferences.state.value.mobileNetwork.offlineQuotaBytes }, authorize = { authorizeMobileNetwork(true) })
+    val personalArtworkImporter = PersonalArtworkImporter(appContext.contentResolver)
     val plugins = com.twilightecho.android.plugins.AndroidPluginRepository(appContext)
     val audioDeviceAdapter = AndroidAudioDeviceAdapter(
         context = appContext,
         onPhysicalDisconnectBrake = {
             handlePlatformInterruption(PlatformInterruptionReason.AUDIO_BECOMING_NOISY)
-        }
+        },
+        ownsUsbOutput = { nativeAudioEngine.isUsbDirectOutputSelected }
     )
     private val mutableOutputRoute = MutableStateFlow(com.twilightecho.android.runtimehost.AudioDeviceRouteInfo())
     /** The output the phone's own playback goes to; the default route while it plays nothing. */
@@ -154,7 +177,7 @@ class AndroidPlaybackHost private constructor(
         onUserPause = { if (platformPauses.get() == 0) noteUserPlaybackChange() },
         desktopStream = { resourceId ->
             val reference = DesktopMediaReference.parse(resourceId) ?: error("电脑音源引用无效")
-            DesktopStreamDataSource(DesktopMediaRangeReader(reference, ::resolveDesktopMedia))
+            DesktopStreamDataSource(DesktopMediaRangeReader(reference, ::resolveDesktopMedia) { authorizeMobileNetwork(false) })
         },
         providerStream = { source ->
             // Plugins-repository providers (QQ, Kugou, Jellyfin, ...) resolve through the plugin that queued the song.
@@ -288,6 +311,24 @@ class AndroidPlaybackHost private constructor(
     val desktopLibrary = DesktopLibraryClient(libraryTransport) {
         libraryCoreClient.snapshot.value?.epoch ?: "epoch-boot"
     }
+    val desktopLibraryManagement = com.twilightecho.android.coreclient.DesktopLibraryManagementClient(libraryTransport) {
+        libraryCoreClient.snapshot.value?.epoch ?: "epoch-boot"
+    }
+    val desktopPlugins = com.twilightecho.android.coreclient.DesktopPluginsClient(libraryTransport) {
+        libraryCoreClient.snapshot.value?.epoch ?: "epoch-boot"
+    }
+    val desktopAudio = com.twilightecho.android.coreclient.DesktopAudioClient(switchableTransport) {
+        primaryCoreClient.snapshot.value?.epoch ?: "epoch-boot"
+    }
+    val desktopQueues = com.twilightecho.android.coreclient.DesktopSessionQueueClient(switchableTransport) {
+        primaryCoreClient.snapshot.value?.epoch ?: "epoch-boot"
+    }
+    val desktopDspLibrary = com.twilightecho.android.coreclient.DesktopDspLibraryClient(switchableTransport) {
+        primaryCoreClient.snapshot.value?.epoch ?: "epoch-boot"
+    }
+    val desktopLibraryQueues = com.twilightecho.android.coreclient.DesktopSessionQueueClient(libraryTransport) {
+        libraryCoreClient.snapshot.value?.epoch ?: "epoch-boot"
+    }
     /** The phone's own library, whichever computer the catalog browser currently reads. */
     val phoneLibraryClient: CoreClient get() = localCoreClient
 
@@ -338,6 +379,9 @@ class AndroidPlaybackHost private constructor(
                 startup.complete(Unit)
                 audioDeviceAdapter.subscribeRouteChanges { route -> outputPresets.outputChanged { audioDeviceAdapter.outputIdentity(route) } }
                 audioDeviceAdapter.subscribeRemovedOutputs(outputPresets::outputsRemoved)
+                nativeAudioEngine.subscribeUsbDirectRemovals { device ->
+                    outputPresets.outputsRemoved(listOf(com.twilightecho.android.coreclient.OutputDeviceIdentity("usb_dac", device.name)))
+                }
                 val route = audioDeviceAdapter.getActiveRoute()
                 outputPresets.outputChanged { audioDeviceAdapter.outputIdentity(route) }
                 outputPresets.start()
@@ -355,6 +399,15 @@ class AndroidPlaybackHost private constructor(
             hostScope.launch { localCoreClient.snapshot.collect { refreshSystemMediaRoute() } }
             hostScope.launch { operatingMode.collect { refreshSystemMediaRoute() } }
             hostScope.launch { observeOfflineFallbackAutoSkip() }
+            hostScope.launch {
+                startup.await()
+                offlineDownloads.state.map { data -> data.items.filter { it.status == OfflineDownloadStatus.READY }.map { it.id } }
+                    .distinctUntilChanged().collect {
+                        try { syncOfflineLibrary() }
+                        catch (cancel: CancellationException) { throw cancel }
+                        catch (error: Exception) { mutablePlaybackNotices.emit("离线曲库更新失败：${error.message}") }
+                    }
+            }
         }
     }
 
@@ -387,19 +440,9 @@ class AndroidPlaybackHost private constructor(
 
     /** IRs become app-owned files so native loading and saved scenes survive SAF grants/restarts. */
     suspend fun importImpulseResponse(uri: String): File = withContext(Dispatchers.IO) {
-        val directory = File(appContext.filesDir, "dsp-impulses").apply { mkdirs() }
-        val file = File(directory, "${UUID.randomUUID()}.wav")
-        try {
-            appContext.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use { input ->
-                file.outputStream().use { output -> input.copyTo(output) }
-            } ?: error("无法读取脉冲响应文件")
-            val header = ByteArray(12)
-            file.inputStream().use { require(it.read(header) == 12) { "WAV 文件不完整" } }
-            require(String(header, 0, 4, Charsets.US_ASCII) == "RIFF" && String(header, 8, 4, Charsets.US_ASCII) == "WAVE") {
-                "请选择 PCM 或 Float WAV 脉冲响应"
-            }
-            file
-        } catch (error: Throwable) { file.delete(); throw error }
+        appContext.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use { input ->
+            copyImpulseResponse(input, File(appContext.filesDir, "dsp-impulses"))
+        } ?: error("无法读取脉冲响应文件")
     }
 
     /**
@@ -662,6 +705,58 @@ class AndroidPlaybackHost private constructor(
         }
     }
 
+    fun offlineTrack(serverId: String, track: CoreTrackView): CoreTrackView? {
+        val libraryId = desktopLibraries.value.firstOrNull { it.serverId == serverId }?.libraryId
+        return track.catalog?.sourceId?.let { offlineDownloads.find(serverId, libraryId, it) }
+    }
+    suspend fun downloadDesktopTrack(serverId: String, track: CoreTrackView) = withContext(Dispatchers.IO) {
+        val source = connections[serverId]?.source ?: error("电脑尚未连接")
+        val reference = DesktopMediaReference(serverId, source.libraryId ?: error("请更新电脑曲库"), track.catalog?.sourceId ?: error("歌曲缺少音源引用"))
+        offlineDownloads.enqueue(reference, track.copy(cover = cachedDesktopArtworkMemory(track.id) ?: track.cover), source.hostLabel)
+        androidx.core.content.ContextCompat.startForegroundService(appContext, android.content.Intent(appContext, OfflineDownloadService::class.java))
+    }
+    fun resumeOfflineDownload(id: String) {
+        offlineDownloads.resume(id)
+        androidx.core.content.ContextCompat.startForegroundService(appContext, android.content.Intent(appContext, OfflineDownloadService::class.java))
+    }
+    fun removeOfflineDownload(id: String) {
+        val row = offlineDownloads.state.value.items.firstOrNull { it.id == id } ?: return
+        val source = offlineDownloads.track(row)?.source
+        check(source == null || localCoreClient.snapshot.value?.track?.source != source || localCoreClient.snapshot.value?.playback?.state == "stopped") { "请先停止这首歌曲，再移除下载" }
+        offlineDownloads.remove(id)
+    }
+
+    private suspend fun syncOfflineLibrary() = localLibraryMutex.withLock {
+        if (offlineDownloads.state.value.error != null) return@withLock
+        val existing = mutableListOf<CoreTrackView>()
+        var offset = 0
+        do {
+            val page = localCoreClient.searchTracksPage("", offset, 500).getOrThrow()
+            existing += page.items; offset += page.items.size
+        } while (page.items.isNotEmpty() && offset < page.total)
+        if (existing.none { it.id.startsWith("offline-download:") } && offlineDownloads.tracks().isEmpty()) return@withLock
+        val available = offlineDownloads.tracks().filterNot(userPreferences.state.value::excludesLocalTrack)
+        val removed = existing.filter { it.id.startsWith("offline-download:") && available.none { ready -> ready.id == it.id } }.map { it.id }.toSet()
+        if (removed.isNotEmpty()) {
+            for (playlist in localCoreClient.snapshot.value?.playlists.orEmpty()) {
+                for (trackId in playlist.trackIds.filter { it in removed }) localCoreClient.removeTrackFromPlaylist(playlist.id, trackId)
+            }
+            val queue = localCoreClient.snapshot.value?.queue
+            if (queue != null && queue.total > 0) {
+                val entryIds = collectLocalQueueEntryIds(queue.total) { it.track?.id in removed }
+                if (entryIds.isNotEmpty()) {
+                    if (entryIds.size == queue.total) {
+                        localCoreClient.executeCommand(CoreTypedCommand.Stop)
+                        val current = localCoreClient.snapshot.value?.queue ?: queue
+                        localCoreClient.executeCommand(CoreTypedCommand.QueueEdit(current.id, current.revision, CoreQueueEdits.clear()))
+                    } else localCoreClient.executeCommand(CoreTypedCommand.QueueEdit(queue.id, queue.revision, CoreQueueEdits.remove(entryIds)))
+                }
+            }
+        }
+        val tracks = existing.filterNot { it.id.startsWith("offline-download:") } + available
+        localCoreClient.syncLocalTracks(tracks).getOrThrow()
+    }
+
     /** Synchronous memory-cached desktop cover lookup (supports both `remote-track:` and `desktop-stream:`). */
     fun cachedDesktopArtworkMemory(id: String): String? {
         val (serverId, durableKey) = resolveArtworkTarget(null, id) ?: return null
@@ -920,16 +1015,9 @@ class AndroidPlaybackHost private constructor(
     /** Exact source membership joins a merged phone collection to the computer's curated artist. */
     suspend fun desktopArtistMetadata(serverId: String, sourceIds: Set<String>, name: String): Result<EntityMetadataDetail?> {
         val connection = connections[serverId] ?: return Result.failure(IllegalStateException("电脑未连接"))
-        return try {
-            // Stored indexes intentionally omit entity references. A bounded fresh read supplies them.
-            val page = connection.client.searchTracksPage(name, 0, 100).getOrThrow()
-            val candidates = page.items.filter { it.catalog?.sourceId in sourceIds }
-                .flatMap { it.catalog?.items.orEmpty() }.filter { it.kind == "artist" && it.title.trim().equals(name.trim(), true) }
-                .distinctBy { it.id }
-            if (candidates.size != 1) Result.success(null)
-            else connection.library.metadata(candidates.single().id).map { it }
-        } catch (e: CancellationException) { throw e }
-        catch (e: Exception) { Result.failure(e) }
+        val tracks = desktopLibraries.value.firstOrNull { it.serverId == serverId }?.tracks.orEmpty()
+        val entities = withContext(Dispatchers.Default) { desktopArtistEntities(tracks, sourceIds, name) }
+        return connection.library.artistMetadata(entities)
     }
 
     /** The computer the playback controls currently drive, or null while the phone plays. */
@@ -959,7 +1047,7 @@ class AndroidPlaybackHost private constructor(
             }
             // A restarted desktop issues new session references; a changed library needs a new list.
             launch {
-                connection.client.snapshot.map { it?.epoch to it?.libraryRevision }.distinctUntilChanged().drop(1)
+                connection.client.snapshot.map { Triple(it?.epoch, it?.libraryRevision, it?.catalogRevision) }.distinctUntilChanged().drop(1)
                     .collectLatest { delay(INDEX_RESYNC_DELAY_MS); startIndexSync(serverId, restart = true) }
             }
             // Updated desktop covers refresh missing cached previews gently in the background.
@@ -987,6 +1075,7 @@ class AndroidPlaybackHost private constructor(
         indexLoaded.await()
         val connection = connections[serverId] ?: return
         val epoch = connection.client.snapshot.value?.epoch
+        val catalogRevision = connection.client.snapshot.value?.catalogRevision
         val existing = desktopLibraries.value.find { it.serverId == serverId }
         val tracks = ArrayList<CoreTrackView>()
         var offset = 0
@@ -1005,8 +1094,8 @@ class AndroidPlaybackHost private constructor(
                 tracks.clear(); offset = 0; revision = null; delay(INDEX_REQUEST_SPACING_MS); continue
             }
             revision = page.revision
-            if (offset == 0 && !force && existing != null && existing.complete && existing.epoch == epoch &&
-                existing.revision == page.revision && existing.tracks.size == page.total) {
+            val pageRevision = page.revision
+            if (offset == 0 && !force && pageRevision != null && existing?.isCurrent(epoch, pageRevision, catalogRevision, page.total) == true) {
                 val labelled = existing.labelled(connection.source)
                 publishIndex(labelled, persist = labelled != existing)
                 startArtworkSync(serverId)
@@ -1020,7 +1109,8 @@ class AndroidPlaybackHost private constructor(
                 val persist = done || ++pagesSinceSave >= INDEX_PAGES_PER_SAVE
                 if (persist) pagesSinceSave = 0
                 publishIndex(DesktopLibraryIndex(serverId, connection.source.libraryId, connection.source.hostLabel,
-                    connection.source.baseUrl, epoch, revision, System.currentTimeMillis(), done, tracks.toList()), persist)
+                    connection.source.baseUrl, epoch, revision, System.currentTimeMillis(), done, tracks.toList(),
+                    artistReferencesIncluded = true, catalogRevision = catalogRevision), persist)
             }
             if (done) {
                 startArtworkSync(serverId)
@@ -1180,19 +1270,19 @@ class AndroidPlaybackHost private constructor(
         for (wait in RECONNECT_DELAYS_MS) {
             delay(wait)
             if (userChoseConnection.get() || connections.containsKey(serverId)) return
-            val address = desktopDiscovery.state.value.devices.firstOrNull { it.id == serverId }?.baseUrl ?: saved.baseUrl
-            val result = openDesktop(address, null, serverId, requestApproval = false, waitingForApproval = {},
-                selectLibrary = session.libraryOnDesktop)
-            if (result.isSuccess) {
-                restoreOutput(serverId)
-                return
-            }
-            val error = result.exceptionOrNull()
-            val causes = generateSequence(error) { it.cause }.take(8).toList()
-            val unreachable = causes.any { it is java.io.IOException } && causes.none { it is javax.net.ssl.SSLException }
-            if (!unreachable) {
-                mutableReconnectNotice.value = "无法自动连接 ${saved.serverName ?: saved.baseUrl}：${error?.message ?: "请重新连接"}"
-                return
+            val addresses = listOfNotNull(desktopDiscovery.state.value.devices.firstOrNull { it.id == serverId }?.baseUrl,
+                saved.baseUrl, userPreferences.state.value.desktopExternalUrls[serverId]).distinct()
+            for (address in addresses) {
+                val result = openDesktop(address, null, serverId, requestApproval = false, waitingForApproval = {},
+                    selectLibrary = session.libraryOnDesktop)
+                if (result.isSuccess) { restoreOutput(serverId); return }
+                val error = result.exceptionOrNull()
+                val causes = generateSequence(error) { it.cause }.take(8).toList()
+                val unreachable = causes.any { it is java.io.IOException } && causes.none { it is javax.net.ssl.SSLException }
+                if (!unreachable) {
+                    mutableReconnectNotice.value = "无法自动连接 ${saved.serverName ?: saved.baseUrl}：${error?.message ?: "请重新连接"}"
+                    return
+                }
             }
         }
     }
@@ -1229,6 +1319,7 @@ class AndroidPlaybackHost private constructor(
             }
             val saved = loadRemoteCredentials().lastOrNull { it.serverId == serverId }
             trustedDesktops.forget(serverId)
+            userPreferences.update { it.copy(desktopExternalUrls = it.desktopExternalUrls - serverId) }
             rememberSession { it.forgetting(serverId) }
             indexMutex.withLock {
                 mutableDesktopLibraries.update { list -> list.filterNot { it.serverId == serverId } }
@@ -1286,8 +1377,10 @@ class AndroidPlaybackHost private constructor(
         val folders = musicFolderScanner.scan()
         val activeFolders = musicFolderScanner.folders()
         mutableMusicFolders.value = activeFolders
-        val excluded = userPreferences.state.value.excludedLocalTrackIds
-        val library = folders.songs.tracks.distinctBy { it.id }.filterNot { it.id in excluded }
+        userPreferences.update { it.migrateLocalTrackExclusions() }
+        val preferences = userPreferences.state.value
+        val scanned = (folders.songs.tracks + offlineDownloads.tracks()).distinctBy { it.id }
+        val library = scanned.filterNot(preferences::excludesLocalTrack)
         localCoreClient.reconcileState()
         localCoreClient.syncLocalTracks(library).getOrThrow()
         LibraryScanSummary(
@@ -1296,7 +1389,10 @@ class AndroidPlaybackHost private constructor(
             skipped = folders.songs.skipped,
             unreadableFolders = folders.unreadable,
             withDeviceMusic = false,
-            folderCount = activeFolders.size
+            folderCount = activeFolders.size,
+            sacdSongs = library.count { it.id.startsWith("local:sacd:") },
+            skippedFiles = folders.songs.skippedFiles,
+            ambiguousExclusions = preferences.ambiguousLocalExclusions(scanned)
         )
     }
 
@@ -1308,9 +1404,13 @@ class AndroidPlaybackHost private constructor(
         ensureStarted()
         return localLibraryMutex.withLock {
             runCatching {
-                userPreferences.update { it.copy(excludedLocalTrackIds = it.excludedLocalTrackIds + trackId) }
                 localCoreClient.reconcileState()
-                val remaining = localCoreClient.searchTracks("").getOrThrow().items.filterNot { it.id == trackId }
+                val tracks = localCoreClient.searchTracks("").getOrThrow().items
+                val source = tracks.find { it.id == trackId }?.source
+                userPreferences.update { it.copy(excludedLocalTrackIds = it.excludedLocalTrackIds + trackId,
+                    excludedLocalTrackSources = if (source == null) it.excludedLocalTrackSources
+                        else it.excludedLocalTrackSources + (trackId to source)) }
+                val remaining = tracks.filterNot { it.id == trackId }
                 localCoreClient.syncLocalTracks(remaining).getOrThrow()
 
                 val playlistsContaining = localCoreClient.snapshot.value?.playlists
@@ -1350,7 +1450,7 @@ class AndroidPlaybackHost private constructor(
     suspend fun restoreExcludedLocalTracks(): Result<LibraryScanSummary> {
         ensureStarted()
         return localLibraryMutex.withLock {
-            userPreferences.update { it.copy(excludedLocalTrackIds = emptySet()) }
+            userPreferences.update { it.copy(excludedLocalTrackIds = emptySet(), excludedLocalTrackSources = emptyMap()) }
             scanAndSyncDeviceMusicLocked()
         }
     }
@@ -1363,7 +1463,7 @@ class AndroidPlaybackHost private constructor(
         ensureStarted()
         return localLibraryMutex.withLock {
             runCatching {
-                userPreferences.update { it.copy(excludedLocalTrackIds = emptySet()) }
+                userPreferences.update { it.copy(excludedLocalTrackIds = emptySet(), excludedLocalTrackSources = emptyMap()) }
                 if (clearMusicFolders) {
                     musicFolderScanner.folders().forEach { folder -> musicFolderScanner.remove(folder.uri) }
                     mutableMusicFolders.value = musicFolderScanner.folders()
@@ -1459,6 +1559,9 @@ class AndroidPlaybackHost private constructor(
      * 2. Reports the interruption reason and transient flag back to the local Music Core.
      */
     private fun handlePlatformInterruption(reason: PlatformInterruptionReason) {
+        // Taking the USB audio driver away from AudioManager can emit NOISY.
+        // Direct-output loss is reported by libusb, independently of system routes.
+        if (reason == PlatformInterruptionReason.AUDIO_BECOMING_NOISY && nativeAudioEngine.isUsbDirectOutputSelected) return
         if (!reason.isTransient) noteUserPlaybackChange()
         if (reason.shouldImmediateBrakePause) {
             nativeAudioEngine.emergencyBrakePause()
@@ -1521,6 +1624,7 @@ class AndroidPlaybackHost private constructor(
             audioDeviceAdapter.close()
             runtimeHost.close()
             nativeAudioEngine.close()
+            nativeMetadataReader.close()
             plugins.close()
             resourceAccessAdapter.close()
             hostScope.cancel()

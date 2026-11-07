@@ -22,7 +22,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class DesktopArtistInteropTest {
     @get:Rule val rule = createAndroidComposeRule<MainActivity>()
-    @Test fun computerProfilesAppearInAllDevicesAndExactCatalogAlbumsOpen() {
+    @Test fun computerProfilesAppearInAllDevicesAndComputerArtistCollections() {
         val address = InstrumentationRegistry.getArguments().getString("desktopHost")
         assumeTrue("Requires tools/desktop-bridge-fixture.ts", !address.isNullOrBlank())
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -53,18 +53,19 @@ class DesktopArtistInteropTest {
             rule.onNodeWithText("共享专辑", substring = false).performScrollTo().performClick()
             rule.onNodeWithContentDescription("返回音乐库").performScrollTo().performClick()
             rule.onNodeWithTag("artistAlbumsTab").performScrollTo().assertIsSelected()
+            rule.onNodeWithContentDescription("返回音乐库").performScrollTo().performClick()
 
             rule.runOnUiThread { vm.onSelectLibraryDevice(desktop.serverId) }
-            rule.waitUntil(10_000) { rule.onAllNodesWithTag("catalog-artist-1").fetchSemanticsNodes().isNotEmpty() }
-            rule.onNodeWithTag("catalog-artist-1").performClick()
-            rule.waitUntil(15_000) { vm.uiState.value.desktopLibrary.metadata != null }
+            rule.waitUntil(15_000) { rule.onAllNodesWithTag("libraryArtistPortrait-artist:共享艺术家").fetchSemanticsNodes().isNotEmpty() }
+            rule.onAllNodes(artistTile).assertCountEquals(1)
+            rule.onNode(artistTile).performClick()
+            rule.waitUntil(15_000) { vm.uiState.value.libraryArtist.metadata?.entityId == "artist-1" }
+            assertEquals(125, vm.uiState.value.artists.single().trackCount)
             rule.onNodeWithTag("artistAlbumsTab").performScrollTo().performClick()
-            rule.waitUntil(15_000) { vm.uiState.value.desktopLibrary.albumsLoaded }
-            assertEquals(listOf("release-1"), vm.uiState.value.desktopLibrary.albums.map { it.id })
-            rule.onNodeWithTag("catalog-release-1").performScrollTo().performClick()
-            rule.waitUntil(10_000) { vm.uiState.value.desktopLibrary.selected?.id == "release-1" }
-            rule.onNodeWithContentDescription("返回电脑曲库").performScrollTo().performClick()
+            rule.onNodeWithText("共享专辑", substring = false).performScrollTo().performClick()
+            rule.onNodeWithContentDescription("返回音乐库").performScrollTo().performClick()
             rule.onNodeWithTag("artistAlbumsTab").performScrollTo().assertIsSelected()
+            rule.waitUntil(10_000) { rule.onAllNodesWithTag("artistPortrait", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
             val folder = File(context.getExternalFilesDir(null), "collection-artist-qa").apply { mkdirs() }
             File(folder, "desktop-artist-production-bridge.png").outputStream().use {
                 check(rule.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it))

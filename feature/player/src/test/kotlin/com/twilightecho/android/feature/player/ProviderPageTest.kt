@@ -101,4 +101,88 @@ class ProviderPageTest {
         assertEquals("设置已保存", commandMessage(JsonPrimitive(1), "设置已保存"))
         assertEquals("设置已保存", commandMessage(null, "设置已保存"))
     }
+
+    @Test fun homeMetaAndSectionsIncludeMetadataAndRecommendPlaylistsTab() {
+        val ui = """{"color":"#31c27c","streamingHome":{"requiresLogin":false,"subtitle":"榜单与个性化推荐"},
+            "streamingSections":[
+                {"id":"daily","title":"每日 30 首","eyebrow":"为你挑选","description":"按你的听歌偏好刷新","icon":"sparkles","method":"fetchRecommendSongs","args":["daily"],"requiresLogin":true},
+                {"id":"up","title":"巅峰 · 飙升榜","eyebrow":"QQ 音乐榜","description":"近期热度上升最快","icon":"trending","method":"fetchRecommendSongs","args":["toplist:62"]}
+            ]}"""
+        val qq = provider(ui, listOf("fetchRecommendSongs", "fetchRecommendPlaylists", "fetchUserLibrary"))
+        val meta = qq.homeMeta()
+        assertFalse(meta.requiresLogin)
+        assertEquals("榜单与个性化推荐", meta.subtitle)
+        assertEquals("#31c27c", meta.colorHex)
+        assertTrue(qq.homeEligible())
+
+        val sections = qq.sections()
+        assertEquals(2, sections.size)
+        assertEquals("为你挑选", sections[0].eyebrow)
+        assertEquals("按你的听歌偏好刷新", sections[0].description)
+        assertEquals("sparkles", sections[0].icon)
+
+        assertEquals(
+            listOf("section:up" to "巅峰 · 飙升榜", "recommend" to "推荐歌单"),
+            qq.tabs(loggedIn = false)
+        )
+        assertEquals(
+            listOf("section:daily" to "每日 30 首", "section:up" to "巅峰 · 飙升榜", "recommend" to "推荐歌单", "library" to "我的歌单"),
+            qq.tabs(loggedIn = true)
+        )
+    }
+
+    @Test fun playlistsKeepCoverCreatorAndFormattedPlayCount() {
+        val raw = json("""{"items":[
+            {"id":"pl-1","name":"华语热歌","trackCount":30,"cover":"https://y.gtimg.cn/1.jpg","creatorName":"QQ音乐官方","playCount":125000},
+            {"id":"pl-2","title":"深夜电台","trackCount":15,"picUrl":"https://y.gtimg.cn/2.jpg","creator":{"nickname":"晚风"},"playCount":230000000}
+        ]}""")
+        val lists = providerPlaylists(raw)
+        assertEquals(2, lists.size)
+        assertEquals("https://y.gtimg.cn/1.jpg", lists[0].cover)
+        assertEquals("QQ音乐官方 · 12.5 万次播放", lists[0].subtitle)
+        assertEquals("深夜电台", lists[1].title)
+        assertEquals("https://y.gtimg.cn/2.jpg", lists[1].cover)
+        assertEquals("晚风 · 2.3 亿次播放", lists[1].subtitle)
+    }
+
+    @Test fun disclaimerExtractsRequiredConsentAndPreservesSiblingFieldsOnSubmit() {
+        val panel = com.twilightecho.android.plugins.ProviderPanel(id = "qqmusic-settings", title = "音源设置", command = "qqmusic.settings")
+        val unacceptedForm = providerForm(json("""{"kind":"settings-form","submitCommand":"qqmusic.saveSettings",
+            "notice":"本插件仅用于学习交流，请在 24 小时内删除。",
+            "fields":[
+                {"key":"disclaimer","label":"免责声明确认","type":"select","required":true,"value":"",
+                 "options":[{"label":"请选择","value":""},{"label":"我已阅读并同意免责声明","value":"2026-04-v1"}]},
+                {"key":"quality","label":"默认音质","type":"select","value":"auto",
+                 "options":[{"label":"自动","value":"auto"},{"label":"无损","value":"flac"}]}
+            ]}"""))!!
+        val gate = providerDisclaimer(panel, unacceptedForm)!!
+        assertFalse(gate.accepted)
+        assertEquals("disclaimer", gate.fieldKey)
+        assertEquals("2026-04-v1", gate.acceptValue)
+        assertEquals("我已阅读并同意免责声明", gate.acceptLabel)
+        assertEquals("本插件仅用于学习交流，请在 24 小时内删除。", gate.notice)
+
+        val payload = gate.acceptedSubmission()
+        assertEquals("2026-04-v1", payload["disclaimer"]?.jsonPrimitive?.content)
+        assertEquals("auto", payload["quality"]?.jsonPrimitive?.content)
+
+        val acceptedForm = unacceptedForm.copy(
+            fields = unacceptedForm.fields.map { if (it.key == "disclaimer") it.copy(value = "2026-04-v1") else it }
+        )
+        assertTrue(providerDisclaimer(panel, acceptedForm)!!.accepted)
+
+        val qishuiForm = providerForm(json("""{"kind":"settings-form","submitCommand":"qishui.noop",
+            "fields":[{"key":"state","label":"登录状态","type":"text","readonly":true,"value":"未登录"}]}"""))!!
+        assertNull(providerDisclaimer(panel, qishuiForm))
+    }
+
+    @Test fun desktopDisclaimerErrorIsRewrittenForMobileLoginFlow() {
+        val desktopMsg = "首次使用 QQ 音乐音源前，请在设置中阅读并确认免责声明。打开“设置 → 插件设置 → QQ 音乐音源”完成确认。"
+        assertTrue(isDisclaimerError(desktopMsg))
+        assertEquals(
+            "首次使用QQ 音乐前，请在登录页阅读并确认免责声明。",
+            friendlyProviderError(desktopMsg, "QQ 音乐")
+        )
+        assertEquals("网络连接超时", friendlyProviderError("网络连接超时", "QQ 音乐"))
+    }
 }

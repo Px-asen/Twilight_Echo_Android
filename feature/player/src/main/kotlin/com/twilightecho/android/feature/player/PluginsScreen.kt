@@ -17,6 +17,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -49,7 +50,7 @@ private data class PluginSubpage(val pluginId: String?, val loginOpen: Boolean) 
 @Composable
 internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
     onPlay: (List<CoreTrackView>, CoreTrackView) -> Unit, modifier: Modifier = Modifier,
-    accountOnly: Boolean = false, backEnabled: Boolean = true) {
+    accountOnly: Boolean = false, backEnabled: Boolean = true, immersiveMode: Boolean = false) {
     val repository by presenter.repository.state.collectAsStateWithLifecycle()
     val provider by presenter.state.collectAsStateWithLifecycle()
     val motionEnabled = rememberMotionEnabled()
@@ -58,19 +59,21 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
     var remove by remember { mutableStateOf<PluginEntry?>(null) }
     var sourceDialog by remember { mutableStateOf(false) }
     var sourceDraft by rememberSaveable { mutableStateOf(repository.indexUrl) }
-    var loginOpen by rememberSaveable { mutableStateOf(accountOnly) }
+    var loginOpen by rememberSaveable(accountOnly, provider.plugin?.id) { mutableStateOf(accountOnly) }
     // The CDN index is shared with Desktop and lists every plugin; only audio sources with an Android build install here.
     val sources = remember(repository.entries) {
         repository.entries.sortedWith(compareBy({ it.installedVersion == null }, { it.unsupportedReason != null }))
     }
     LaunchedEffect(Unit) { if (!accountOnly) presenter.revalidate() }
-    fun back() { if (accountOnly) onBack() else if (loginOpen) loginOpen = false else if (provider.plugin != null) presenter.close() else onBack() }
+    fun back() { if (accountOnly) onBack() else if (loginOpen) loginOpen = false
+        else if (provider.collection != null) presenter.backToResults()
+        else if (provider.plugin != null) presenter.close() else onBack() }
     BackHandler(enabled = backEnabled) { back() }
     var lastProviderState by remember { mutableStateOf(provider) }
     if (provider.plugin != null) lastProviderState = provider
     val subpage = PluginSubpage(provider.plugin?.id, provider.plugin != null && loginOpen)
     AmbientBackground(modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
+    Column(Modifier.fillMaxSize().appStatusBarPadding(immersiveMode).navigationBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             GlassIconButton(TwilightIcons.ArrowBack, "返回", ::back)
             AnimatedContent(
@@ -180,31 +183,68 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
         } else {
             if (page.loginOpen) { if (pageProvider.generic) ProviderAccountPanel(pageProvider, presenter) else ProviderLoginPanel(pageProvider, presenter) }
             else Column(Modifier.fillMaxSize()) {
+                val showSearchCategories = rememberSearchCategoriesVisible(pageProvider.query,
+                    completed = pageProvider.submittedQuery == pageProvider.query.trim() && !pageProvider.busy,
+                    session = pageProvider.plugin?.id.orEmpty())
+                val submitSearch = {
+                    if (pageProvider.requiresDisclaimer) loginOpen = true else presenter.search()
+                }
                 // Plugins-repository providers show search only when they declare it, as on Desktop.
-                if (!pageProvider.generic || pageProvider.provider?.searchable() == true)
-                OutlinedTextField(pageProvider.query, presenter::query, placeholder = { Text("歌曲、歌手、专辑") },
-                    label = { Text(if (pageProvider.generic) "搜索${pageProvider.plugin?.name.orEmpty()}" else "搜索网易云音乐") },
-                    singleLine = true, shape = RoundedCornerShape(50), colors = twilightFieldColors(),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).testTag("providerSearch"),
-                    leadingIcon = { Icon(TwilightIcons.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { presenter.search() }),
-                    trailingIcon = { IconButton(enabled = !pageProvider.busy, onClick = { presenter.search() }) { Icon(TwilightIcons.ArrowRight, "搜索音源") } })
-                val sections = if (pageProvider.generic) pageProvider.tabs
-                    else listOf("discovery" to "发现歌单", "daily" to "每日推荐", "liked" to "我喜欢", "library" to "我的歌单")
+                if (!pageProvider.generic || pageProvider.provider?.searchable() == true) {
+                    OutlinedTextField(pageProvider.query, presenter::query, placeholder = { Text("歌曲、歌手、专辑") },
+                        label = { Text(if (pageProvider.generic) "搜索${pageProvider.plugin?.name.orEmpty()}" else "搜索网易云音乐") },
+                        singleLine = true, shape = RoundedCornerShape(50), colors = twilightFieldColors(),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).testTag("providerSearch"),
+                        leadingIcon = { Icon(TwilightIcons.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
+                        trailingIcon = { IconButton(enabled = !pageProvider.busy, onClick = { submitSearch() }) { Icon(TwilightIcons.ArrowRight, "搜索音源") } })
+                    if (pageProvider.pageKind == "search" && showSearchCategories) SearchTabs(SearchCategory.entries, pageProvider.searchCategory, { it.label },
+                        { if (pageProvider.requiresDisclaimer) loginOpen = true else presenter.searchCategory(it) },
+                        Modifier.padding(vertical = 6.dp), tag = { "plugin-search-category-$it" })
+                }
+                val sections = if (pageProvider.generic) {
+                    if (pageProvider.requiresDisclaimer) emptyList() else pageProvider.tabs
+                } else listOf("discovery" to "发现歌单", "daily" to "每日推荐", "liked" to "我喜欢", "library" to "我的歌单")
                 if (sections.isNotEmpty()) PillTabs(sections.map { it.first }, pageProvider.pageKind, { kind -> sections.first { it.first == kind }.second },
                     { if (!pageProvider.busy) presenter.section(it) }, Modifier.padding(vertical = 8.dp))
                 pageProvider.notice?.let { ProviderNotice(it, Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) }
                 pageProvider.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) }
                 LazyColumn(Modifier.weight(1f).testTag("providerResults"), contentPadding = PaddingValues(bottom = 24.dp)) {
-                    item {
+                    if (pageProvider.collection != null) item {
+                        TextButton(onClick = presenter::backToResults, modifier = Modifier.padding(horizontal = 12.dp)) {
+                            Icon(TwilightIcons.ArrowBack, null); Spacer(Modifier.width(8.dp)); Text("返回搜索结果")
+                        }
+                    }
+                    if (!pageProvider.requiresDisclaimer) item {
                         SectionHeading(pageProvider.title, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
-                        if (pageProvider.tracks.isNotEmpty()) SupportingText("点击歌曲，在此手机播放", Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp))
+                        val hint = pageProvider.sectionDescription.ifBlank { if (pageProvider.tracks.isNotEmpty()) "点击歌曲，在此手机播放" else "" }
+                        if (hint.isNotBlank()) SupportingText(hint, Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp))
+                    }
+                    items(pageProvider.collections, key = { "${it.kind}:${it.id}" }) { item ->
+                        SearchCollectionRow(item.title, listOf(item.subtitle, item.count.takeIf { it > 0 }?.let { "$it 首歌曲" }.orEmpty())
+                            .filter { it.isNotBlank() }.joinToString(" · "), Modifier.testTag("plugin-search-${item.kind}-${item.id}"),
+                            artwork = { StreamingArtwork(item, Modifier.size(56.dp).clip(
+                                if (item.kind == "artist") CircleShape else RoundedCornerShape(12.dp))) }) {
+                            if (!pageProvider.busy) {
+                                // NCM's artist-song reader requires an account; its album reader is public.
+                                if (!pageProvider.generic && item.kind == "artist" && pageProvider.profile == null) loginOpen = true
+                                else presenter.collection(item)
+                            }
+                        }
                     }
                     items(pageProvider.playlists, key = { it.id }) { playlist ->
+                        val meta = listOfNotNull(playlist.subtitle.takeIf { it.isNotBlank() }, "${playlist.count} 首".takeIf { playlist.count > 0 || playlist.subtitle.isBlank() })
+                            .joinToString(" · ")
                         ListItem(headlineContent = { Text(playlist.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                            supportingContent = { Text("${playlist.count} 首歌曲") },
-                            leadingContent = { IconTile(TwilightIcons.Queue, size = 48.dp) },
+                            supportingContent = { Text(meta, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            leadingContent = {
+                                if (playlist.cover != null) {
+                                    StreamingArtwork(playlist.toStreamingCollection(), Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)), size = 128)
+                                } else {
+                                    IconTile(TwilightIcons.Queue, size = 48.dp)
+                                }
+                            },
                             trailingContent = { Icon(TwilightIcons.ArrowRight, null, Modifier.size(18.dp)) },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent, supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                 trailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant),
@@ -226,10 +266,10 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                                     if (!pageProvider.generic && pageProvider.nickname.isNullOrBlank()) loginOpen = true else onPlay(pageProvider.tracks, track)
                                 })
                     }
-                    if (!pageProvider.generic && pageProvider.total > maxOf(pageProvider.tracks.size, pageProvider.playlists.size) && pageProvider.pageKind in listOf("search", "playlist", "liked", "discovery")) item {
+                    if (!pageProvider.generic && pageProvider.total > pageProvider.resultCount && pageProvider.pageKind in listOf("search", "playlist", "liked", "discovery")) item {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             val size = if (pageProvider.pageKind in listOf("playlist", "liked")) 100 else 30
-                            val count = maxOf(pageProvider.tracks.size, pageProvider.playlists.size)
+                            val count = pageProvider.resultCount
                             PillButton("上一页", { presenter.nextPage((pageProvider.offset - size).coerceAtLeast(0)) },
                                 enabled = pageProvider.offset > 0 && !pageProvider.busy, tonal = true)
                             Text("${pageProvider.offset + 1}–${pageProvider.offset + count} / ${pageProvider.total}", modifier = Modifier.weight(1f),
@@ -244,7 +284,8 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             PillButton("上一页", { presenter.nextPage((pageProvider.offset - pageProvider.pageSize.coerceAtLeast(1)).coerceAtLeast(0)) },
                                 enabled = pageProvider.offset > 0 && !pageProvider.busy, tonal = true)
-                            Text("${pageProvider.offset + 1}–${pageProvider.offset + pageProvider.tracks.size}" +
+                            Text((if (pageProvider.resultCount > 0) "${pageProvider.offset + 1}–${pageProvider.offset + pageProvider.resultCount}"
+                                else "第 ${pageProvider.offset / pageProvider.pageSize.coerceAtLeast(1) + 1} 页") +
                                 if (pageProvider.pageKind == "playlist" && pageProvider.total >= pageProvider.offset + pageProvider.tracks.size) " / ${pageProvider.total}" else "",
                                 modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -252,13 +293,25 @@ internal fun PluginsScreen(presenter: PluginPresenter, onBack: () -> Unit,
                                 enabled = pageProvider.nextOffset != null && !pageProvider.busy, tonal = true)
                         }
                     }
-                    if (!pageProvider.busy && pageProvider.tracks.isEmpty() && pageProvider.playlists.isEmpty()) item {
-                        EmptyState("从一首歌开始", when {
-                            pageProvider.query.isNotBlank() -> "没有找到结果。试试其他关键词，或查看上方的错误提示。"
-                            !pageProvider.generic -> "搜索喜欢的音乐，或探索歌单。登录后可读取你的收藏和推荐。"
-                            pageProvider.profile == null -> "登录后可读取你的歌单和推荐；点右上角的“登录”。"
-                            else -> "从上方选择推荐或歌单。"
-                        }, TwilightIcons.Search)
+                    if (!pageProvider.busy && pageProvider.resultCount == 0 && pageProvider.error == null) item {
+                        if (pageProvider.requiresDisclaimer) {
+                            EmptyState(
+                                "使用前请确认免责声明",
+                                "首次使用${pageProvider.plugin?.name.orEmpty()}前，请在扫码登录前阅读并确认免责声明。",
+                                TwilightIcons.SignalWave,
+                                actionLabel = "阅读声明并登录",
+                                onAction = { loginOpen = true }
+                            )
+                        } else {
+                            EmptyState("从一首歌开始", when {
+                                pageProvider.query.isNotBlank() -> "没有找到结果。试试其他关键词，或查看上方的错误提示。"
+                                !pageProvider.generic -> "搜索喜欢的音乐，或探索歌单。登录后可读取你的收藏和推荐。"
+                                pageProvider.profile == null -> "登录后可读取你的歌单和推荐；点右上角的“登录”。"
+                                else -> "从上方选择推荐或歌单。"
+                            }, TwilightIcons.Search,
+                                actionLabel = if (pageProvider.generic && pageProvider.profile == null) "登录" else null,
+                                onAction = { loginOpen = true })
+                        }
                     }
                 }
             }

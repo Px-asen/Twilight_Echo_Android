@@ -33,7 +33,7 @@ object ScenePackageFiles {
     }
 
     /**
-     * Converts a package's scenes against [base]. Impulse responses count only when they are WAV files whose
+     * Converts a package's scenes against [base]. WAV/FLAC/AIFF impulse responses count when their content
      * hash matches the manifest; the ones accepted scenes use are copied to phone storage by content.
      */
     fun import(context: Context, uri: Uri, base: CoreEqConfigView): DspPackageImport {
@@ -41,21 +41,7 @@ object ScenePackageFiles {
         try {
             val input = context.contentResolver.openInputStream(uri) ?: throw DspPackageException("无法读取文件")
             val contents = input.use { DspPackageArchive.read(it, temporary) }
-            val directory = File(context.filesDir, IMPULSE_DIRECTORY)
-            val verified = DspScenePackage.assets(contents.root).mapNotNull { asset ->
-                val file = contents.files[asset.archivePath]
-                if (file == null || asset.kind != "impulseResponse" || asset.id != "impulseResponse:${asset.sha256}") return@mapNotNull null
-                describeImpulseFile(file)?.takeIf { it.sha256 == asset.sha256 } ?: return@mapNotNull null
-                Triple(asset.id, file, File(directory, "${asset.sha256}.wav"))
-            }
-            val imported = DspScenePackage.import(contents.root, base, verified.associate { (id, _, target) -> id to target.absolutePath },
-                ::moduleTitle)
-            val used = imported.scenes.flatMapTo(HashSet()) { it.impulseAssetIds }
-            directory.mkdirs()
-            verified.filter { it.first in used }.forEach { (_, file, target) ->
-                if (!target.isFile || target.length() != file.length()) file.copyTo(target, overwrite = true)
-            }
-            return imported
+            return DspPackageArchive.importScenes(contents, base, File(context.filesDir, IMPULSE_DIRECTORY), ::moduleTitle)
         } finally {
             temporary.deleteRecursively()
         }
@@ -77,32 +63,34 @@ internal fun ScenePackageTransfer(config: CoreEqConfigView, actions: PlayerActio
     var record by remember { mutableStateOf<ScenePackageRecord?>(null) }
     var expanded by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<String?>(null) }
 
     fun show(next: ScenePackageRecord) {
         record = next
         expanded = false
+        notice = null
     }
-    fun accept(imported: DspPackageImport) {
+    suspend fun accept(imported: DspPackageImport) {
         val scenes = imported.scenes.map { it.scene }
         if (scenes.isEmpty()) return show(ScenePackageRecord("没有可导入的场景", importDetails(imported, null)))
-        // The merge runs on the newest scene list, inside the same edit that saves it.
-        actions.editAudio { latest ->
-            val merge = DspScenePackage.merge(latest.scenes, scenes)
-            show(ScenePackageRecord(importSummary(imported, merge), importDetails(imported, merge), merge))
-            latest.copy(scenes = merge.scenes)
-        }
+        actions.commitAudioEdit { latest -> latest.copy(scenes = DspScenePackage.merge(latest.scenes, scenes).scenes) }
+            .fold({ receipt ->
+                val merge = DspScenePackage.merge(receipt.before.scenes, scenes)
+                show(ScenePackageRecord(importSummary(imported, merge), importDetails(imported, merge), merge))
+            }, { error -> notice = "未能确认导入：${error.message ?: "未收到提交结果"}" })
     }
     val open = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
             busy = true
+            notice = null
             try {
                 accept(withContext(Dispatchers.IO) { ScenePackageFiles.import(context, uri, current) })
             } catch (error: CancellationException) {
                 throw error
             } catch (error: DspPackageException) {
-                show(ScenePackageRecord("无法导入：${error.message}", emptyList()))
+                notice = "无法导入：${error.message}"
             } catch (_: Exception) {
-                show(ScenePackageRecord("无法导入：文件读取失败", emptyList()))
+                notice = "无法导入：文件读取失败"
             } finally {
                 busy = false
             }
@@ -128,6 +116,8 @@ internal fun ScenePackageTransfer(config: CoreEqConfigView, actions: PlayerActio
             save.launch("Twilight Echo 场景.${DspScenePackage.FILE_EXTENSION}")
         }
     }
+    if (busy) SupportingText("正在处理配置包…", Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("scene-package-pending"))
+    notice?.let { SupportingText(it, Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("scene-package-notice")) }
     val shown = record
     if (shown == null) {
         SupportingText("配置包与电脑版通用。", Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
@@ -138,9 +128,16 @@ internal fun ScenePackageTransfer(config: CoreEqConfigView, actions: PlayerActio
     val undoable = shown.merge?.takeIf { it.added.isNotEmpty() || it.replaced.isNotEmpty() }
     if (undoable != null || shown.details.isNotEmpty()) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (undoable != null) MiniAction("撤销导入", Modifier.testTag("scene-package-undo")) {
-                actions.editAudio { latest -> latest.copy(scenes = undoable.undo(latest.scenes)) }
-                show(ScenePackageRecord("已撤销导入", emptyList()))
+            if (undoable != null) MiniAction("撤销导入", Modifier.testTag("scene-package-undo"), enabled = !busy) {
+                scope.launch {
+                    busy = true
+                    notice = null
+                    try {
+                        actions.commitAudioEdit { latest -> latest.copy(scenes = undoable.undo(latest.scenes)) }
+                            .fold({ show(ScenePackageRecord("已撤销导入", emptyList())) },
+                                { error -> notice = "未能确认撤销：${error.message ?: "未收到提交结果"}" })
+                    } finally { busy = false }
+                }
             }
             if (shown.details.isNotEmpty()) MiniAction(if (expanded) "收起" else "详情（${shown.details.size}）",
                 Modifier.testTag("scene-package-details")) { expanded = !expanded }

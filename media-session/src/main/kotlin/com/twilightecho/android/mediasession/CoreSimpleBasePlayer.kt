@@ -27,6 +27,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
 
 /**
  * Custom Media3 `SimpleBasePlayer` projecting `CoreSnapshot` and `CoreQueueWindowView` as the
@@ -44,7 +47,8 @@ class CoreSimpleBasePlayer(
     private val coreClient: CoreClient = playbackHost.mediaSessionCoreClient,
     applicationLooper: Looper = Looper.getMainLooper(),
     private val artworkLoader: suspend (CoreTrackView) -> ByteArray? = { null },
-    private val playRequest: suspend () -> Unit = { playbackHost.requestSystemFocusAndPlay() }
+    private val playRequest: suspend () -> Unit = { playbackHost.requestSystemFocusAndPlay() },
+    private val selectMediaItems: (suspend (List<MediaItem>, Int, Long) -> Unit)? = null
 ) : SimpleBasePlayer(applicationLooper) {
 
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -65,6 +69,7 @@ class CoreSimpleBasePlayer(
     private var timelineKey: TimelineKey? = null
     private var timelineItems: List<MediaItemData> = emptyList()
     private var playRequestVersion = 0L
+    private var pendingSelection: Deferred<Long>? = null
 
     init {
         mainScope.launch {
@@ -110,7 +115,7 @@ class CoreSimpleBasePlayer(
             else -> if (queueItems.isNotEmpty()) Player.STATE_READY else Player.STATE_IDLE
         }
 
-        val isPlaying = playback?.state == "playing"
+        val playWhenReady = playback?.state in setOf("playing", "buffering")
         val currentQueueIndex = entries.indexOfFirst {
             it.occurrenceId == snap?.queue?.occurrenceId || it.index == (snap?.queue?.index ?: playback?.queueIndex)
         }.coerceAtLeast(0)
@@ -141,11 +146,12 @@ class CoreSimpleBasePlayer(
                 Player.COMMAND_SET_SHUFFLE_MODE,
                 Player.COMMAND_SET_VOLUME
             )
+            .apply { if (selectMediaItems != null) addAll(Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_CHANGE_MEDIA_ITEMS, Player.COMMAND_PREPARE) }
             .build()
 
         val stateBuilder = State.Builder()
             .setAvailableCommands(availableCommands)
-            .setPlayWhenReady(isPlaying, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+            .setPlayWhenReady(playWhenReady, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
             .setPlaybackState(playbackState)
             .setPlaylist(queueItems)
             .setRepeatMode(repeatMode)
@@ -163,16 +169,39 @@ class CoreSimpleBasePlayer(
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
         val version = ++playRequestVersion
         val origin = playbackHost.systemMediaTransport.generation
-        return sourceFuture {
+        val selection = pendingSelection
+        return mainScope.future {
+            val selectedOrigin = selection?.await() ?: origin
+            if (selectedOrigin != playbackHost.systemMediaTransport.generation) return@future null
             if (playWhenReady) {
                 if (!playbackHost.systemMediaTransport.isRemote) playbackHost.awaitStarted()
-                if (version == playRequestVersion && origin == playbackHost.systemMediaTransport.generation) playRequest()
+                if (version == playRequestVersion && selectedOrigin == playbackHost.systemMediaTransport.generation) playRequest()
             } else {
                 coreClient.executeCommand(CoreTypedCommand.Pause)
             }
             null
         }
     }
+
+    override fun handleSetMediaItems(mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
+        val previous = pendingSelection
+        val selection = mainScope.async(start = CoroutineStart.LAZY) {
+            try { previous?.await() } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) { }
+            checkNotNull(selectMediaItems) { "曲库选歌不可用" }(mediaItems, startIndex, startPositionMs)
+            coreClient.reconcileState()
+            latestSnapshot = coreClient.snapshot.value
+            latestQueueWindow = coreClient.queueWindow.value
+            invalidateState()
+            playbackHost.systemMediaTransport.generation
+        }
+        pendingSelection = selection
+        return mainScope.future {
+            try { selection.await() }
+            finally { if (pendingSelection === selection) pendingSelection = null }
+        }
+    }
+
+    override fun handlePrepare(): ListenableFuture<*> = Futures.immediateVoidFuture()
 
     override fun handleStop(): ListenableFuture<*> {
         playRequestVersion++

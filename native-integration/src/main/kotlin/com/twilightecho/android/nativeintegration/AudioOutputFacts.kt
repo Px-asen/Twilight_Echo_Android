@@ -8,6 +8,8 @@ internal fun AudioSnapshot.withoutOutputFacts() = copy(
     usbPcmFormatMatched = false,
     requestedSampleRate = null, requestedSampleFormat = null,
     hardwareSampleRate = null, hardwareBitDepth = null, hardwareChannels = null, hardwareSampleFormat = null,
+    dsdMode = null, actualDsdRate = null, dsdRatePolicy = null, dsdConversion = null, dsdConversionReason = null,
+    transportSampleRate = null, semanticSampleRate = null,
     actualDeviceId = null, actualDeviceName = null, exclusive = false,
     outputPerfect = false, perfectReason = null, perfectReasonCode = null,
     latencyMs = 0.0, bufferSizeFrames = 0, dspActive = false, eqActive = false,

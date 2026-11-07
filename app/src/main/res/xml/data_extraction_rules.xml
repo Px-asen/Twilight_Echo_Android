@@ -1,5 +1,6 @@
 <data-extraction-rules>
     <cloud-backup>
+        <exclude domain="file" path="offline-music/" />
         <exclude domain="file" path="plugins-v1/" />
         <!-- Paired-computer tokens and pinned certificates stay on this device. -->
         <exclude domain="file" path="twilight_core_state/remote_desktops.bin" />
@@ -7,6 +8,7 @@
         <exclude domain="file" path="twilight_core_state/remote_desktop_core.json" />
     </cloud-backup>
     <device-transfer>
+        <exclude domain="file" path="offline-music/" />
         <exclude domain="file" path="plugins-v1/" />
         <exclude domain="file" path="twilight_core_state/remote_desktops.bin" />
         <exclude domain="file" path="twilight_core_state/remote_desktops.json" />

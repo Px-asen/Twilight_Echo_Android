@@ -14,6 +14,30 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 class DspScenePackageTest {
+    @Test fun `DSD mode and policy round trip but scenes cannot grant DoP consent`() {
+        val config = CoreEqConfigView(dsp = CoreDspConfig(outputDeviceId = "usb-direct:/dev/bus/usb/001/002",
+            dsdOutputMode = "dop", dsdRatePolicy = "exact", dopConfirmedDeviceKey = "8369:1:1.00"))
+        val original = scene("dsd", "DSD", config)
+        val exported = DspScenePackage.export(config.copy(scenes = listOf(original)), { null }).manifest
+        assertFalse("dopConfirmedDeviceKey" in exported.toString())
+        val imported = DspScenePackage.import(exported, CoreEqConfigView())
+        assertTrue(imported.rejected.isEmpty())
+        assertTrue(imported.scenes.single().notes.any { "DoP" in it })
+        val restored = saved(imported.scenes.single().scene)
+        assertEquals("dop", restored.dsp.dsdOutputMode)
+        assertEquals("exact", restored.dsp.dsdRatePolicy)
+        assertEquals("", restored.dsp.dopConfirmedDeviceKey)
+        val current = CoreEqConfigView(dsp = CoreDspConfig(outputDeviceId = "auto", dopConfirmedDeviceKey = "another-dac"))
+        assertEquals("another-dac", current.withScene(original).dsp.dopConfirmedDeviceKey)
+        assertEquals("auto", current.withScene(original).dsp.outputDeviceId)
+        for (bad in listOf("\"guess\"", "true", "null")) {
+            val result = DspScenePackage.import(parse("""{"id":"bad","graph":{"nodes":[]},"android":{"dsdOutputMode":$bad}}"""), current)
+            assertEquals(1, result.rejected.size)
+        }
+        val legacy = DspScenePackage.import(parse("""{"id":"old","graph":{"nodes":[]}}"""), current)
+        assertEquals("pcm", saved(legacy.scenes.single().scene).dsp.dsdOutputMode)
+    }
+
     @get:Rule val folder = TemporaryFolder()
 
     private val json = DefaultCoreClient.DefaultJson
@@ -180,7 +204,7 @@ class DspScenePackageTest {
         assertEquals("tpdf", config.dsp.outputStage.dither)
         assertTrue(config.dsp.enabled)
         assertEquals(listOf(
-            "卷积校正没有随文件提供的 WAV 脉冲响应，已关闭",
+            "卷积校正没有随文件提供的可读取脉冲响应，已关闭",
             "手机不支持，未导入：VST3 插件",
             "同类模块只保留第一个，未导入：均衡器",
             "电脑上的自动匹配条件未导入，可在“设备预设”中绑定输出",

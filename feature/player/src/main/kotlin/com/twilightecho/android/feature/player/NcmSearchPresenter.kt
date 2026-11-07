@@ -5,10 +5,10 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 
-enum class SearchSource(val label: String) { LIBRARY("音乐库"), NETEASE("网易云") }
+enum class SearchSource(val label: String) { LIBRARY("音乐库"), NETEASE("网易云"), PROVIDER("其他音源") }
 enum class NcmSearchCategory(val label: String, internal val method: String, internal val kind: String) {
-    SONGS("歌曲", "searchSongs", "song"), ALBUMS("专辑", "searchAlbums", "album"),
-    ARTISTS("歌手", "searchArtists", "artist"), PLAYLISTS("歌单", "searchPlaylists", "playlist")
+    SONGS("歌曲", "searchSongs", "song"), ARTISTS("歌手", "searchArtists", "artist"),
+    ALBUMS("专辑", "searchAlbums", "album"), PLAYLISTS("歌单", "searchPlaylists", "playlist")
 }
 const val NCM_SEARCH_PAGE_SIZE = 30
 data class NcmSearchState(
@@ -54,7 +54,7 @@ internal class NcmSearchPresenter(private val scope: CoroutineScope,
 
     fun query(value: String) {
         if (state.value.query == value.trim()) return
-        reset(query = value.trim())
+        reset(query = value.trim(), category = if (value.isBlank()) NcmSearchCategory.SONGS else state.value.category)
         search(debounce = true)
     }
 

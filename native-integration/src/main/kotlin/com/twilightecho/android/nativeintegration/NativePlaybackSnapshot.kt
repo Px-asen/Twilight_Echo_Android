@@ -6,12 +6,14 @@ import kotlinx.serialization.json.*
 internal fun parseNativePlaybackSnapshot(payloadJson: String, current: AudioSnapshot, userVolume: Double, json: Json): AudioSnapshot? = runCatching {
     val obj = json.parseToJsonElement(payloadJson) as? JsonObject ?: return null
     val output = obj["outputInfo"] as? JsonObject
+    val diagnostics = output?.get("diagnostics") as? JsonObject
     fun positive(name: String) = output?.get(name)?.jsonPrimitive?.intOrNull?.takeIf { it > 0 }
     fun text(name: String) = output?.get(name)?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
     val released = output?.get("outputReleased")?.jsonPrimitive?.booleanOrNull == true
     val state = when (val nativeState = obj["state"]?.jsonPrimitive?.contentOrNull) {
         "stopped" -> "idle"
         null -> current.state
+        "playing" -> if (obj["buffering"]?.jsonPrimitive?.booleanOrNull == true) "buffering" else "playing"
         else -> nativeState
     }
     val posSec = obj["position"]?.jsonPrimitive?.doubleOrNull
@@ -25,7 +27,7 @@ internal fun parseNativePlaybackSnapshot(payloadJson: String, current: AudioSnap
 
     current.copy(
         state = state,
-        errorMessage = if (state == "playing") null else current.errorMessage,
+        errorMessage = if (state in setOf("playing", "buffering")) null else current.errorMessage,
         positionMs = posMs,
         durationMs = durMs,
         volume = userVolume,
@@ -76,6 +78,14 @@ internal fun parseNativePlaybackSnapshot(payloadJson: String, current: AudioSnap
         crossfadeBlockedReason = obj["crossfadeBlockedReason"]?.jsonPrimitive?.contentOrNull,
         upcomingQueueIndex = obj["upcomingQueueIndex"]?.jsonPrimitive?.intOrNull ?: -1,
         isDsd = obj["isDsd"]?.jsonPrimitive?.booleanOrNull == true,
+        dsdMode = obj["dsdMode"]?.jsonPrimitive?.contentOrNull,
+        dsdRate = obj["dsdRate"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 },
+        actualDsdRate = obj["actualDsdRate"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 },
+        dsdRatePolicy = obj["dsdRatePolicy"]?.jsonPrimitive?.contentOrNull,
+        dsdConversion = obj["dsdConversion"]?.jsonPrimitive?.contentOrNull,
+        dsdConversionReason = obj["dsdConversionReason"]?.jsonPrimitive?.contentOrNull,
+        transportSampleRate = diagnostics?.get("transportSampleRate")?.jsonPrimitive?.intOrNull?.takeIf { it > 0 },
+        semanticSampleRate = diagnostics?.get("semanticSampleRate")?.jsonPrimitive?.intOrNull?.takeIf { it > 0 },
         autoMixMode = obj["autoMixMode"]?.jsonPrimitive?.contentOrNull ?: "off",
         autoMixState = obj["autoMixState"]?.jsonPrimitive?.contentOrNull ?: "off",
         autoMixReason = obj["autoMixReason"]?.jsonPrimitive?.contentOrNull.orEmpty(),
@@ -84,5 +94,5 @@ internal fun parseNativePlaybackSnapshot(payloadJson: String, current: AudioSnap
         autoMixDurationSeconds = obj["autoMixDurationSeconds"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
         autoMixDecodeMs = obj["autoMixDecodeMs"]?.jsonPrimitive?.longOrNull ?: 0,
         autoMixPrepareMs = obj["autoMixPrepareMs"]?.jsonPrimitive?.longOrNull ?: 0
-    ).let { if (released || state !in setOf("playing", "paused")) it.withoutOutputFacts() else it }
+    ).let { if (released || state !in setOf("playing", "paused", "buffering")) it.withoutOutputFacts() else it }
 }.getOrNull()

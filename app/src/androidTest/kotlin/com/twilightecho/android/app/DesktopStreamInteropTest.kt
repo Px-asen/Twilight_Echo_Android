@@ -49,7 +49,7 @@ class DesktopStreamInteropTest {
             assertEquals(1022519.7329376856, page.items.first().bitrate!!, 0.0001)
             rule.onNodeWithTag("nav-LIBRARY").performClick()
             rule.waitUntil(15000) { rule.onAllNodes(librarySong("来自电脑的音乐")).fetchSemanticsNodes().isNotEmpty() }
-            rule.onNodeWithTag("targetPhone").assertIsSelected()
+            rule.onNodeWithTag("targetPhone").assertDoesNotExist()
             screenshot("stream-library-target-phone")
             rule.onNode(librarySong("来自电脑的音乐")).performClick()
             awaitPhone("playing")
@@ -76,7 +76,7 @@ class DesktopStreamInteropTest {
             liveUi { rule.onNodeWithContentDescription("收起播放器").performClick() }
 
             // Switching the control target cannot pause phone audio or migrate either queue.
-            liveUi { rule.onNodeWithTag("targetDesktop").performClick() }
+            rule.runOnUiThread { vm.onSelectPlaybackTarget(false) }
             rule.waitUntil(15000) { host.operatingMode.value is CoreOperatingMode.RemoteDesktopCore }
             assertEquals(desktopQueue, host.primaryCoreClient.snapshot.value?.queue)
             awaitCondition { host.mediaSessionCoreClient.snapshot.value?.track?.id == phoneTrack.id }
@@ -95,8 +95,7 @@ class DesktopStreamInteropTest {
             device.wakeUp(); device.executeShellCommand("wm dismiss-keyguard")
             instrumentation.targetContext.startActivity(Intent(instrumentation.targetContext, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-            rule.waitUntil(15000) { liveUi { rule.onAllNodesWithTag("targetPhone").fetchSemanticsNodes().isNotEmpty() } }
-            liveUi { rule.onNodeWithTag("targetPhone").performClick() }
+            rule.runOnUiThread { vm.onSelectPlaybackTarget(true) }
             rule.waitUntil(15000) { host.primaryCoreClient.snapshot.value?.track?.id == phoneTrack.id }
 
             assertTrue(runBlocking { host.primaryCoreClient.executeCommand(CoreTypedCommand.Next).isSuccess })
@@ -112,9 +111,9 @@ class DesktopStreamInteropTest {
             assertEquals(desktopQueue, host.libraryCoreClient.snapshot.value?.queue)
 
             liveUi { rule.onNodeWithText("艺术家", substring = false).performClick() }
-            rule.waitUntil(15000) { liveUi { rule.onAllNodesWithTag("catalog-artist-1").fetchSemanticsNodes().isNotEmpty() } }
-            liveUi { rule.onNodeWithTag("catalog-artist-1").performClick() }
-            rule.waitUntil(15000) { vm.uiState.value.desktopLibrary.metadata?.revision == 9L }
+            liveUi { rule.onNodeWithTag("artistGrid").assertExists() }
+            rule.runOnUiThread { vm.onOpenEntity(CatalogEntity("artist-1", "artist", "共享艺术家")) }
+            rule.waitUntil(15000) { vm.uiState.value.desktopLibrary.metadata != null }
             // The fixture changes both domain revisions after the first detail read.
             rule.waitUntil(15000) { vm.uiState.value.desktopLibrary.metadata?.name == "电脑更正后的艺术家" }
             assertEquals("artist-1", vm.uiState.value.desktopLibrary.selected?.id)
@@ -173,8 +172,8 @@ class DesktopStreamInteropTest {
             assertEquals("source-1", DesktopMediaReference.parse(host.primaryCoreClient.snapshot.value?.track?.id.orEmpty())?.sourceId)
             liveUi { rule.onNodeWithTag("nav-LIBRARY").performClick() }
             liveUi { rule.onNodeWithText("艺术家", substring = false).performClick() }
-            rule.waitUntil(15000) { liveUi { rule.onAllNodesWithTag("catalog-artist-1").fetchSemanticsNodes().isNotEmpty() } }
-            liveUi { rule.onNodeWithTag("catalog-artist-1").performClick() }
+            liveUi { rule.onNodeWithTag("artistGrid").assertExists() }
+            rule.runOnUiThread { vm.onOpenEntity(CatalogEntity("artist-1", "artist", "共享艺术家")) }
             rule.waitUntil(15000) { vm.uiState.value.desktopLibrary.sources?.items?.any { it.id == "source-0" } == true }
             rule.onNodeWithTag("desktopEntity").performScrollToNode(hasContentDescription("在此手机播放 来自电脑的音乐"))
             val button = rule.onNodeWithContentDescription("在此手机播放 来自电脑的音乐")

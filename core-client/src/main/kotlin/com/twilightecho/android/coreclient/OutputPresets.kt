@@ -93,7 +93,8 @@ data class OutputPresetPreferences(
  */
 fun CoreEqConfigView.withScene(scene: CoreDspScene): CoreEqConfigView {
     val saved = DefaultCoreClient.DefaultJson.decodeFromJsonElement(CoreEqConfigView.serializer(), scene.config)
-    return saved.copy(scenes = scenes, dsp = saved.dsp.copy(outputDeviceId = dsp.outputDeviceId))
+    return saved.copy(scenes = scenes, dsp = saved.dsp.copy(outputDeviceId = dsp.outputDeviceId,
+        dopConfirmedDeviceKey = dsp.dopConfirmedDeviceKey))
 }
 
 /** Whether the sound equals the scene's, ignoring the scene list and output device choice. */
@@ -102,7 +103,7 @@ fun CoreEqConfigView.matchesScene(scene: CoreDspScene): Boolean = try {
 } catch (_: IllegalArgumentException) { false }
 
 private fun soundSettings(config: CoreEqConfigView): Any? = canonical(DefaultCoreClient.DefaultJson.encodeToJsonElement(
-    CoreEqConfigView.serializer(), config.copy(scenes = emptyList(), dsp = config.dsp.copy(outputDeviceId = ""))))
+    CoreEqConfigView.serializer(), config.copy(scenes = emptyList(), dsp = config.dsp.copy(outputDeviceId = "", dopConfirmedDeviceKey = ""))))
 
 /** Numbers compare by value: Core may print a stored 2.0 as 2. */
 private fun canonical(element: JsonElement): Any? = when (element) {

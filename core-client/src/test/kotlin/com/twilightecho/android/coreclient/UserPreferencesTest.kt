@@ -6,6 +6,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class UserPreferencesTest {
+    @Test fun mobilePolicyAndExternalAddressPersistWithoutChangingOldPlaybackDefault() {
+        val defaults = Json.decodeFromString<UserPreferences>("{}")
+        assertTrue(defaults.mobileNetwork.allowMeteredStreaming)
+        assertFalse(defaults.mobileNetwork.allowMeteredDownloads)
+        val preferences = defaults.copy(mobileNetwork = MobileNetworkPreferences(false, true, 10L * 1024 * 1024 * 1024),
+            desktopExternalUrls = mapOf("server" to "https://music.example.com:18492"))
+        assertEquals(preferences, Json.decodeFromString<UserPreferences>(Json.encodeToString(preferences)))
+        assertEquals(1024L * 1024 * 1024, preferences.copy(mobileNetwork = MobileNetworkPreferences(offlineQuotaBytes = -1)).normalized().mobileNetwork.offlineQuotaBytes)
+    }
     @Test fun collectionSortsRoundTripWithoutChangingExistingCustomization() {
         val preferences = UserPreferences(collectionSorts = mapOf(
             "ncm:42:group:LIKED" to CollectionSort(descending = true),
@@ -19,8 +28,20 @@ class UserPreferencesTest {
         val partial = Json.decodeFromString<UserPreferences>("""{"appearance":{"accentSource":"CUSTOM","accentArgb":-14647299}}""")
         assertEquals(1f, partial.appearance.densityScale)
         assertEquals(0.86f, partial.appearance.contentOpacity)
+        assertFalse(partial.appearance.immersiveMode)
         assertEquals(LyricsPreferences(), partial.lyrics)
         assertEquals(NcmPlaybackQuality.AUTO, partial.ncmQuality)
+    }
+
+    @Test fun immersiveModeRoundTripsAndKeepsOtherAppearanceChoices() {
+        val appearance = AppearancePreferences(accentSource = AccentSource.CUSTOM,
+            densityScale = 1.2f, contentOpacity = 0.5f, immersiveMode = true)
+        val preferences = UserPreferences(appearance = appearance)
+        val decoded = Json.decodeFromString<UserPreferences>(Json.encodeToString(preferences)).normalized()
+        assertEquals(preferences, decoded)
+        assertTrue(decoded.appearance.immersiveMode)
+        assertEquals(appearance.copy(immersiveMode = false), decoded.appearance.copy(immersiveMode = false))
+        assertFalse(AppearancePreferences().immersiveMode)
     }
 
     @Test fun allChoicesRoundTripIndependently() {

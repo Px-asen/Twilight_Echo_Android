@@ -10,6 +10,28 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PlayerProgressTest {
+    @Test fun bufferingKeepsPauseAvailableWithoutAdvancingThePlayingClock() {
+        val buffering = PlayerUiState(isPlaying = false, playbackState = "buffering", displayedPositionSeconds = 12.5)
+        assertTrue(buffering.playbackButtonPlaying)
+        assertFalse(buffering.isPlaying)
+        assertFalse(buffering.copy(requestedPlaying = false).playbackButtonPlaying)
+        assertFalse(buffering.copy(playbackState = "paused").playbackButtonPlaying)
+    }
+
+    @Test fun bufferingNeverRollsBackTheDisplayedFractionButSeeksAndNewOccurrencesStillCan() {
+        val before = PlayerUiState(anchorPositionSeconds = 12.0, displayedPositionSeconds = 12.25, isPlaying = true)
+        val floor = bufferingProgressFloor(before, 12.05, "buffering", null, sameTimeline = true, seeking = false)
+        assertEquals(12.25, floor!!, 0.0)
+        val waiting = before.copy(anchorPositionSeconds = 12.05, displayedPositionSeconds = floor, isPlaying = false)
+        assertEquals(floor, bufferingProgressFloor(waiting, 12.05, "buffering", floor, true, false))
+        assertEquals(floor, bufferingProgressFloor(waiting, 12.15, "playing", floor, true, false))
+        assertNull(bufferingProgressFloor(waiting, 12.3, "playing", floor, true, false))
+        assertNull(bufferingProgressFloor(waiting, 2.0, "buffering", floor, true, false))
+        assertNull(bufferingProgressFloor(waiting, 12.05, "buffering", floor, false, false))
+        assertNull(bufferingProgressFloor(waiting, 12.05, "buffering", floor, true, true))
+        assertNull(bufferingProgressFloor(waiting, 12.05, "paused", floor, true, false))
+    }
+
     private val track = CoreTrackView("song", title = "暮色里的旋律", duration = 180.0)
     private val state = PlayerUiState(currentTrack = track, libraryTracks = listOf(track),
         currentLyrics = CoreLyricsView(track.id, lines = listOf(CoreLyricLine(0L, "第一句"), CoreLyricLine(1000L, "第二句"))))

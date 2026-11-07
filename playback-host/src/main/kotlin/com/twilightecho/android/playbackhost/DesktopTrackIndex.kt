@@ -3,6 +3,8 @@ package com.twilightecho.android.playbackhost
 import android.util.AtomicFile
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.DefaultCoreClient
+import com.twilightecho.android.coreclient.CatalogEntity
+import com.twilightecho.android.coreclient.artistNameKey
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import java.io.File
@@ -23,7 +25,10 @@ data class DesktopLibraryIndex(
     val revision: Long? = null,
     val syncedAt: Long = 0L,
     val complete: Boolean = false,
-    val tracks: List<CoreTrackView> = emptyList()
+    val tracks: List<CoreTrackView> = emptyList(),
+    /** Old indexes discarded artist references and must be copied once more on reconnect. */
+    val artistReferencesIncluded: Boolean = false,
+    val catalogRevision: Long? = null
 )
 
 /** One AtomicFile per computer under `twilight_core_state/desktop-libraries`. Never holds tickets or tokens. */
@@ -62,6 +67,17 @@ internal class DesktopTrackIndexStore(stateDirectory: File) {
     private companion object { const val PREFIX = "desktop-library-" }
 }
 
-/** Keeps what the list and streaming need; drops per-queue and per-page data. */
+/** Keep catalog membership for artist metadata; never store song bitmap previews or queue occurrences. */
 internal fun indexedDesktopTrack(track: CoreTrackView): CoreTrackView =
-    track.copy(queueEntryId = null, cover = null, catalog = track.catalog?.copy(items = emptyList()))
+    track.copy(queueEntryId = null, cover = null)
+
+internal fun DesktopLibraryIndex.isCurrent(epoch: String?, revision: Long, catalogRevision: Long?, total: Int): Boolean =
+    complete && artistReferencesIncluded && this.epoch == epoch && this.revision == revision &&
+        this.catalogRevision == catalogRevision && tracks.size == total
+
+internal fun desktopArtistEntities(tracks: List<CoreTrackView>, sourceIds: Set<String>, name: String): List<CatalogEntity> {
+    val key = artistNameKey(name)
+    return tracks.asSequence().filter { it.catalog?.sourceId in sourceIds }
+        .flatMap { it.catalog?.items.orEmpty().asSequence() }
+        .filter { it.kind == "artist" && artistNameKey(it.title) == key }.distinctBy { it.id }.toList()
+}

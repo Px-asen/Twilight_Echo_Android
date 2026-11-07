@@ -22,6 +22,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.composed
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
@@ -66,6 +67,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -77,6 +79,7 @@ import com.twilightecho.android.ui.components.*
 import com.twilightecho.android.ui.theme.LocalTwilightAccents
 import com.twilightecho.android.ui.theme.Monet
 import com.twilightecho.android.ui.theme.TwilightTokens
+import kotlin.math.abs
 
 /** Cover backgrounds use near-white ink; user images and solid canvases inherit their configured contrast. */
 @Composable
@@ -133,7 +136,7 @@ internal fun ImmersiveNowPlayingScreen(state: PlayerUiState, actions: PlayerActi
             else FlowingCoverBackdrop(artwork, Modifier.fillMaxSize()
                 .testTag(if (state.isLyricsMode) "lyricsBlurredBackdrop" else "immersiveCoverBackdrop"),
                 motionEnabled && state.isPlaying && !lyricsViewport.list.isScrollInProgress, dim)
-            Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            Column(Modifier.fillMaxSize().appStatusBarPadding(state.preferences.appearance.immersiveMode).navigationBarsPadding()) {
                 AnimatedVisibility(!immersive, enter = chromeEnter, exit = chromeExit) {
                     Column {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
@@ -148,7 +151,8 @@ internal fun ImmersiveNowPlayingScreen(state: PlayerUiState, actions: PlayerActi
                 }
                 AnimatedContent(
                     targetState = state.isLyricsMode,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                        .coverLyricsSwipes(state.isLyricsMode, actions.setLyricsMode),
                     transitionSpec = {
                         if (!motionEnabled) {
                             EnterTransition.None togetherWith ExitTransition.None
@@ -218,6 +222,28 @@ internal fun ImmersiveNowPlayingScreen(state: PlayerUiState, actions: PlayerActi
                     }
                 }
             }
+        }
+    }
+}
+
+/** Horizontal page swipes yield to child controls (notably seeking) and vertical lyric browsing. */
+private fun Modifier.coverLyricsSwipes(lyricsMode: Boolean, select: (Boolean) -> Unit): Modifier = composed {
+    val currentMode by rememberUpdatedState(lyricsMode)
+    val onSelect by rememberUpdatedState(select)
+    val minimumDistance = with(LocalDensity.current) { 56.dp.toPx() }
+    pointerInput(minimumDistance) {
+        var travel = Offset.Zero
+        detectHorizontalDragGestures(
+            onDragStart = { travel = Offset.Zero },
+            onDragCancel = { travel = Offset.Zero },
+            onDragEnd = {
+                if (abs(travel.x) >= maxOf(minimumDistance, size.width * 0.18f) && abs(travel.x) > abs(travel.y)) {
+                    val lyrics = travel.x < 0f
+                    if (lyrics != currentMode) onSelect(lyrics)
+                }
+            }
+        ) { change, distance ->
+            travel += Offset(distance, change.position.y - change.previousPosition.y)
         }
     }
 }
@@ -465,8 +491,13 @@ private fun PlayPauseButton(state: PlayerUiState, actions: PlayerActions, size: 
             label = "playPauseState"
         ) { isLoading ->
             if (isLoading) {
-                Box(Modifier.size(size), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(size * 0.42f), strokeWidth = 3.dp, color = colors.onSurface)
+                val buffering = state.playbackState == "buffering"
+                Box(Modifier.size(size).semantics { stateDescription = if (buffering) "正在缓冲" else "正在加载" },
+                    contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(size * if (buffering) 0.84f else 0.42f),
+                        strokeWidth = if (buffering) 2.dp else 3.dp, color = colors.onSurface)
+                    if (buffering) PressableIcon(TwilightIcons.Pause, "暂停播放", actions.togglePlayback,
+                        size = size, iconSize = size * 0.53f)
                 }
             } else {
                 PressableIcon(

@@ -9,11 +9,17 @@ import android.net.Uri
 import com.twilightecho.android.coreclient.CoreErrorCode
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.CueSource
+import com.twilightecho.android.coreclient.SacdTrackSource
 import com.twilightecho.android.coreclient.DefaultCoreClient
 import com.twilightecho.android.coreclient.PlayMode
 import com.twilightecho.android.coreclient.CoreEqConfigView
 import com.twilightecho.android.coreclient.CoreDspStatus
 import com.twilightecho.android.coreclient.DesktopMediaReference
+import com.twilightecho.android.nativeintegration.usb.AndroidUsbDirectHost
+import com.twilightecho.android.nativeintegration.usb.UsbDirectOutputDevice
+import com.twilightecho.android.nativeintegration.usb.UsbAudioVolumeSnapshot
+import com.twilightecho.android.nativeintegration.usb.UsbHardwareControlId
+import com.twilightecho.android.nativeintegration.usb.UsbHardwareVolumeSnapshot
 import com.twilightecho.android.runtimehost.AudioEnginePort
 import com.twilightecho.android.runtimehost.AudioEvent
 import com.twilightecho.android.runtimehost.AudioSnapshot
@@ -123,7 +129,7 @@ class NativeAudioEngineAdapter(
     /** Core generation of [queuedTracks]; stamped on every snapshot this adapter reports. */
     @Volatile private var queueGeneration = 0L
     private val gain = PlaybackGain()
-    val isPlaying: Boolean get() = cachedSnapshot.state == "playing"
+    val isPlaying: Boolean get() = cachedSnapshot.state in setOf("playing", "buffering")
     private var activeResourceId: String? = null
     private var lastResolvedNativePath: String? = null
     private var lastDspConfigJson: String = "{}"
@@ -135,6 +141,43 @@ class NativeAudioEngineAdapter(
     private var nativeSourceLoaded = false
     private var nativePlayMode = "sequential"
     private val usbPcmPolicy = appContext?.let(::AndroidUsbPcmPolicy)
+    private val usbRemovalListeners = CopyOnWriteArraySet<(UsbDirectOutputDevice) -> Unit>()
+    private val usbDirectHost = appContext?.let { context -> AndroidUsbDirectHost(context) { device ->
+        usbRemovalListeners.forEach { it(device) }
+    } }
+    @Volatile var isUsbDirectOutputSelected: Boolean = false
+        private set
+
+    fun usbDirectOutputs(): List<UsbDirectOutputDevice> =
+        if (engineHandle == 0L) emptyList() else usbDirectHost?.devices().orEmpty()
+
+    fun subscribeUsbDirectRemovals(listener: (UsbDirectOutputDevice) -> Unit): CancelHandle {
+        usbRemovalListeners.add(listener)
+        return CancelHandle { usbRemovalListeners.remove(listener) }
+    }
+
+    private fun declaredSampleRates(deviceId: String): List<Int> =
+        if (AndroidUsbDirectHost.isDirect(deviceId)) emptyList() else deviceSampleRates(deviceId)
+
+    /** Only explicit user output selection calls this; restoring settings never opens a permission dialog. */
+    suspend fun authorizeUsbDirectOutput(deviceId: String): Boolean {
+        if (!AndroidUsbDirectHost.isDirect(deviceId)) return true
+        check(engineHandle != 0L) { "USB 直连需要包含共享原生引擎的版本" }
+        return checkNotNull(usbDirectHost).requestPermission(deviceId)
+    }
+
+    /** On-demand controls use the existing lease; opening settings never acquires or claims a DAC. */
+    suspend fun readUsbHardwareVolume(deviceId: String): UsbHardwareVolumeSnapshot = withContext(controlDispatcher) {
+        checkNotNull(usbDirectHost) { "USB 直连不可用" }.readHardwareVolume(deviceId)
+    }
+
+    suspend fun setUsbHardwareVolume(id: UsbHardwareControlId, db256: Int): UsbAudioVolumeSnapshot = withContext(controlDispatcher) {
+        checkNotNull(usbDirectHost) { "USB 直连不可用" }.setHardwareVolume(id, db256)
+    }
+
+    suspend fun setUsbHardwareMute(id: UsbHardwareControlId, muted: Boolean): Boolean = withContext(controlDispatcher) {
+        checkNotNull(usbDirectHost) { "USB 直连不可用" }.setHardwareMute(id, muted)
+    }
     private val autoMixWorker = AutoMixAnalysisWorker(object : AutoMixCancellationTokens {
         override fun create() = jni.nativeCreateAutoMixCancel(120_000)
         override fun cancel(token: Long) = jni.nativeCancelAutoMixAnalysis(token)
@@ -208,6 +251,7 @@ class NativeAudioEngineAdapter(
             if (engineHandle != 0L) {
                 check(jni.nativeSetInputProvider(engineHandle, inputProvider) == 0)
                 usbPcmPolicy?.let { check(jni.nativeSetUsbPcmPolicy(engineHandle, it) == 0) }
+                usbDirectHost?.let { check(jni.nativeSetUsbDirectHost(engineHandle, it) == 0) }
                 jni.nativeSetEventListener(engineHandle, jniEventListener)
                 jni.nativeSetStateEventsEnabled(engineHandle, true)
             }
@@ -279,7 +323,7 @@ class NativeAudioEngineAdapter(
         // decoder, stream connection and lookahead on every pause/play tap.
         if (nativeSourceLoaded && jni.isNativeLibraryLoaded && handle != 0L) {
             val prepared = nativeSnapshot()
-            if (prepared?.state == "paused" || prepared?.state == "playing") {
+            if (prepared != null && prepared.state in setOf("paused", "playing", "buffering")) {
                 if (startTimeSeconds != null) {
                     val targetMs = (startTimeSeconds * 1000.0).toLong().coerceAtLeast(0L)
                     if (targetMs != prepared.positionMs) {
@@ -498,7 +542,7 @@ class NativeAudioEngineAdapter(
     override suspend fun selectQueueIndex(index: Int) = withContext(controlDispatcher) {
         if (index !in queuedTracks.indices) return@withContext
         onUserPause()
-        val wasPlaying = cachedSnapshot.state == "playing"
+        val wasPlaying = isPlaying
         val selected = queuedTracks[index]
         val rawUri = CueSource.audio(selected.source ?: selected.id)
         resolveAndLeasePlayablePath(rawUri)
@@ -533,7 +577,7 @@ class NativeAudioEngineAdapter(
         val phoneConfig = if ("bandsDb" in obj || "bitPerfect" in obj || "dsp" in obj)
             json.decodeFromJsonElement<CoreEqConfigView>(obj) else null
         // Validate request constraints before applying DSP or replacing the current output.
-        val outputConfig = phoneConfig?.let { nativeOutputConfig(it, deviceSampleRates(it.dsp.outputDeviceId)) }
+        val outputConfig = phoneConfig?.let { nativeOutputConfig(it, declaredSampleRates(it.dsp.outputDeviceId)) }
         if (phoneConfig != null && lastAppliedConfig?.copy(scenes = emptyList()) == phoneConfig.copy(scenes = emptyList()) &&
             lastOutputConfigJson == outputConfig) {
             lastDspConfigJson = configJson
@@ -553,17 +597,50 @@ class NativeAudioEngineAdapter(
                 }
             }
             if (phoneConfig != null && state != null) {
-                applied(jni.nativeApplyDspState(handle, ++dspRevision, state))
                 val previous = lastAppliedConfig
+                val route = nativeOutputRoute(phoneConfig)
+                val previousRoute = previous?.let(::nativeOutputRoute) ?: NativeOutputRoute("oboe", "auto")
+                val routeChanged = route != previousRoute
+                val previousDopKey = previous?.dsp?.dopConfirmedDeviceKey.orEmpty()
+                usbDirectHost?.dopConfirmedDeviceKey = phoneConfig.dsp.dopConfirmedDeviceKey
+                try {
+                    applyNativeOutputRoute(previousRoute, route,
+                        pause = { applied(jni.nativeSetPaused(handle, true)) },
+                        select = { selected ->
+                            applied(jni.nativeSetOutputBackend(handle, selected.backend))
+                            applied(jni.nativeSetOutputDevice(handle, selected.device))
+                            isUsbDirectOutputSelected = selected.backend == "usb-direct"
+                        },
+                        apply = {
+                            applied(jni.nativeApplyDspState(handle, ++dspRevision, state))
+                            if (previous == null || previous.dsp.playbackRate != phoneConfig.dsp.playbackRate)
+                                applied(jni.nativeSetPlaybackRate(handle, phoneConfig.dsp.playbackRate))
+                            // Device/backend setters prepare a route; commit even when the graph/policy was unchanged.
+                            if (routeChanged && outputConfig != null) applied(jni.nativeSetOutputConfig(handle, outputConfig))
+                        },
+                        restore = {
+                            usbDirectHost?.dopConfirmedDeviceKey = previousDopKey
+                            if (previous != null) {
+                                val revision = ++dspRevision
+                                applied(jni.nativeApplyDspState(handle, revision,
+                                    nativeDspState(previous, json, revision, lastOutputConfigJson)))
+                            } else applied(jni.nativeSetDspConfig(handle, lastDspConfigJson))
+                            applied(jni.nativeSetPlaybackRate(handle, previous?.dsp?.playbackRate ?: cachedSnapshot.playbackRate))
+                            applied(jni.nativeSetOutputConfig(handle, lastOutputConfigJson ?: "{}"))
+                        })
+                } catch (error: Exception) {
+                    usbDirectHost?.dopConfirmedDeviceKey = previousDopKey
+                    nativeSnapshot()?.let { cachedSnapshot = it }
+                    broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
+                    throw error
+                }
                 lastOutputConfigJson = outputConfig
-                if (previous == null || previous.dsp.outputDeviceId != phoneConfig.dsp.outputDeviceId || previous.dsp.exclusive != phoneConfig.dsp.exclusive)
-                    applied(jni.nativeSetOutputDevice(handle, phoneConfig.dsp.outputDeviceId + if (phoneConfig.dsp.exclusive) ":exclusive" else ""))
-                if (previous == null || previous.dsp.playbackRate != phoneConfig.dsp.playbackRate)
-                    applied(jni.nativeSetPlaybackRate(handle, phoneConfig.dsp.playbackRate))
             } else applied(jni.nativeSetDspConfig(handle, configJson))
         } else if (phoneConfig != null && (phoneConfig.dsp.nodes.any { it.enabled } || phoneConfig.dsp.eqMode != "graphic" ||
                 phoneConfig.dsp.playbackRate != 1.0 || phoneConfig.dsp.outputStage.targetSampleRate != 0 || phoneConfig.dsp.crossfadeSeconds > 0 ||
-                phoneConfig.dsp.usbPcmPassthrough || phoneConfig.dsp.sampleRateFamilySync || phoneConfig.dsp.allowedSampleRates.isNotEmpty())) {
+                phoneConfig.dsp.usbPcmPassthrough || phoneConfig.dsp.sampleRateFamilySync || phoneConfig.dsp.allowedSampleRates.isNotEmpty() ||
+                phoneConfig.dsp.dsdOutputMode != "pcm" ||
+                AndroidUsbDirectHost.isDirect(phoneConfig.dsp.outputDeviceId))) {
             throw java.io.IOException("这些 DSP 功能需要包含共享原生引擎的版本")
         }
         lastDspConfigJson = configJson
@@ -645,7 +722,7 @@ class NativeAudioEngineAdapter(
     /** Route capabilities are live host facts, never saved into an EQ scene or session. */
     suspend fun refreshOutputCapabilities() = withContext(controlDispatcher) {
         val config = lastAppliedConfig ?: return@withContext
-        val output = try { nativeOutputConfig(config, deviceSampleRates(config.dsp.outputDeviceId)) }
+        val output = try { nativeOutputConfig(config, declaredSampleRates(config.dsp.outputDeviceId)) }
         catch (error: IllegalArgumentException) {
             // A new route cannot silently drop a saved constraint. Keep its clock
             // paused and give the user a way to repair the set in audio settings.
@@ -674,7 +751,7 @@ class NativeAudioEngineAdapter(
     suspend fun getVisualization(): JsonObject = withContext(controlDispatcher) {
         if (engineHandle == 0L) JsonObject(emptyMap()) else json.parseToJsonElement(
             jni.nativeGetVisualizationDataJson(engineHandle,
-                """{"spectrumPoints":48,"waveformPoints":0,"spectrogramFrames":0,"oscilloscopePoints":0}""")
+                AUDIO_MONITOR_VISUALIZATION_OPTIONS)
         ).jsonObject
     }
 
@@ -735,6 +812,9 @@ class NativeAudioEngineAdapter(
         // MediaPlayer cannot stop at a CUE song's end; playing the whole file instead would be wrong.
         if (track?.cueRange != null || track?.source?.let { CueSource.decode(it).second } != null) {
             throw java.io.IOException("这个版本没有原生音频引擎，无法播放 CUE 分轨")
+        }
+        if (SacdTrackSource.decode(rawUri) != null) {
+            throw java.io.IOException("这个版本没有原生音频引擎，无法播放 SACD 音轨")
         }
         val sourceKey = "${track?.id ?: rawUri}|$playablePath"
         val existing = platformMediaPlayer
@@ -980,7 +1060,7 @@ class NativeAudioEngineAdapter(
                 // A successful platform fallback supersedes the native decoder's availability error.
                 // If fallback setup failed, keep reporting the native failure to the caller.
                 if (platformMediaPlayer != null && code == "TAE_RESULT_BACKEND_UNAVAILABLE") return
-                val usbPaused = obj?.get("context")?.jsonPrimitive?.contentOrNull == "usb-pcm"
+                val usbPaused = obj?.get("context")?.jsonPrimitive?.contentOrNull in setOf("usb-pcm", "usb-direct")
                 cachedSnapshot = (if (usbPaused) nativeSnapshot() ?: cachedSnapshot else cachedSnapshot)
                     .withoutOutputFacts().copy(state = if (usbPaused) "paused" else "error", errorMessage = message)
                 broadcastEvent(AudioEvent.SnapshotUpdated(cachedSnapshot))
@@ -1026,7 +1106,7 @@ class NativeAudioEngineAdapter(
         val source = if (error?.get("context")?.jsonPrimitive?.contentOrNull == "seek") currentInputSource() else activeResourceId
         val message = inputFailure(error, source)?.message
             ?: error?.get("message")?.jsonPrimitive?.contentOrNull ?: "原生音频操作失败 ($result)"
-        val usbPaused = error?.get("context")?.jsonPrimitive?.contentOrNull == "usb-pcm"
+        val usbPaused = error?.get("context")?.jsonPrimitive?.contentOrNull in setOf("usb-pcm", "usb-direct")
         if (usbPaused) nativeSourceLoaded = true
         cachedSnapshot = (if (usbPaused) nativeSnapshot() ?: cachedSnapshot else cachedSnapshot)
             .withoutOutputFacts().copy(state = if (usbPaused) "paused" else "error", errorMessage = message)
@@ -1073,6 +1153,8 @@ class NativeAudioEngineAdapter(
                         usbPcmPolicy?.close()
                     }
                 }
+                usbDirectHost?.close()
+                usbRemovalListeners.clear()
             }; controlExecutor.shutdown() }
         }
     }

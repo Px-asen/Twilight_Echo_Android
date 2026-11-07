@@ -1,0 +1,409 @@
+{
+  "zones.dsp.upload.begin": {
+    "uploadId": "a16a840f-8ad5-4d58-9e88-cf5ed428af5a",
+    "chunkBytes": 786432
+  },
+  "zones.dsp.upload.chunk": {
+    "offset": 810957
+  },
+  "zones.dsp.library": {
+    "revision": 14,
+    "assets": {
+      "total": 2,
+      "offset": 0,
+      "items": [
+        {
+          "id": "vst3State:434b26042aff3fb844a4c4c6be0d81a079b0ce84cfb8190679024404e5dc4822",
+          "kind": "vst3State",
+          "name": "one-second.vststate",
+          "fileName": "one-second.vststate",
+          "sha256": "434b26042aff3fb844a4c4c6be0d81a079b0ce84cfb8190679024404e5dc4822",
+          "byteSize": 8,
+          "mediaType": "application/octet-stream",
+          "createdAt": "2026-11-04T14:34:46.273Z",
+          "referenceCount": 1
+        },
+        {
+          "id": "impulseResponse:30abceda2a0f8d0ac3b57235380bf01e08c3d7871f8d15a4ab2dbceb10eb566c",
+          "kind": "impulseResponse",
+          "name": "Room impulse.wav",
+          "fileName": "Room impulse.wav",
+          "sha256": "30abceda2a0f8d0ac3b57235380bf01e08c3d7871f8d15a4ab2dbceb10eb566c",
+          "byteSize": 800056,
+          "mediaType": "audio/wav",
+          "createdAt": "2026-11-04T14:34:45.439Z",
+          "referenceCount": 1
+        }
+      ]
+    },
+    "plugins": {
+      "total": 1,
+      "offset": 0,
+      "items": [
+        {
+          "id": "vst3:adbc9049e7331e0e86c591444e5f0ee777b139d6fbbd254e22b5ce3691ea2891",
+          "name": "ADelay",
+          "vendor": "Steinberg Media Technologies",
+          "version": "3.8.0.0",
+          "status": "available",
+          "parameterCount": 2
+        }
+      ]
+    },
+    "scenes": [
+      {
+        "id": "default",
+        "name": "Default",
+        "active": false,
+        "pinned": false,
+        "nodes": [
+          {
+            "id": "replay-gain",
+            "type": "replayGain",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "equalizer",
+            "type": "equalizer",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "convolver",
+            "type": "convolver",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "crossfeed",
+            "type": "crossfeed",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "channel-strip",
+            "type": "channelStrip",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "bass-management",
+            "type": "bassManagement",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "gate",
+            "type": "gate",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "compressor",
+            "type": "compressor",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "dynamic-equalizer",
+            "type": "dynamicEqualizer",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "multiband-compressor",
+            "type": "multibandCompressor",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "stereo-field",
+            "type": "stereoField",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "loudness-contour",
+            "type": "loudnessContour",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "true-peak-limiter",
+            "type": "truePeakLimiter",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "meter",
+            "type": "meter",
+            "enabled": true,
+            "assetId": null,
+            "catalogId": null
+          }
+        ]
+      },
+      {
+        "id": "managed-e137d728-64b6-4ea6-bf55-ecd466f44d5f",
+        "name": "Remote room",
+        "active": true,
+        "pinned": true,
+        "nodes": [
+          {
+            "id": "ir-a6b3dd24-88fd-4320-82cd-84bdba6efb7a",
+            "type": "convolver",
+            "enabled": true,
+            "assetId": "impulseResponse:30abceda2a0f8d0ac3b57235380bf01e08c3d7871f8d15a4ab2dbceb10eb566c",
+            "catalogId": null
+          },
+          {
+            "id": "vst3-341b89fc-a8de-4bc2-be91-0222c3c29163",
+            "type": "vst3Plugin",
+            "enabled": true,
+            "assetId": "vst3State:434b26042aff3fb844a4c4c6be0d81a079b0ce84cfb8190679024404e5dc4822",
+            "catalogId": "vst3:adbc9049e7331e0e86c591444e5f0ee777b139d6fbbd254e22b5ce3691ea2891"
+          },
+          {
+            "id": "meter",
+            "type": "meter",
+            "enabled": true,
+            "assetId": null,
+            "catalogId": null
+          }
+        ]
+      },
+      {
+        "id": "imported-19fcbc17-1f11-4e80-a11b-ca558ae207ca",
+        "name": "Default",
+        "active": false,
+        "pinned": false,
+        "nodes": [
+          {
+            "id": "replay-gain",
+            "type": "replayGain",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "equalizer",
+            "type": "equalizer",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "convolver",
+            "type": "convolver",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "crossfeed",
+            "type": "crossfeed",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "channel-strip",
+            "type": "channelStrip",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "bass-management",
+            "type": "bassManagement",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "gate",
+            "type": "gate",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "compressor",
+            "type": "compressor",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "dynamic-equalizer",
+            "type": "dynamicEqualizer",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "multiband-compressor",
+            "type": "multibandCompressor",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "stereo-field",
+            "type": "stereoField",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "loudness-contour",
+            "type": "loudnessContour",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "true-peak-limiter",
+            "type": "truePeakLimiter",
+            "enabled": false,
+            "assetId": null,
+            "catalogId": null
+          },
+          {
+            "id": "meter",
+            "type": "meter",
+            "enabled": true,
+            "assetId": null,
+            "catalogId": null
+          }
+        ]
+      },
+      {
+        "id": "imported-d13c0307-8649-4bd6-a61f-eee4bd6b75e4",
+        "name": "Remote room",
+        "active": false,
+        "pinned": false,
+        "nodes": [
+          {
+            "id": "ir-a6b3dd24-88fd-4320-82cd-84bdba6efb7a",
+            "type": "convolver",
+            "enabled": true,
+            "assetId": "impulseResponse:30abceda2a0f8d0ac3b57235380bf01e08c3d7871f8d15a4ab2dbceb10eb566c",
+            "catalogId": null
+          },
+          {
+            "id": "vst3-341b89fc-a8de-4bc2-be91-0222c3c29163",
+            "type": "vst3Plugin",
+            "enabled": true,
+            "assetId": "vst3State:434b26042aff3fb844a4c4c6be0d81a079b0ce84cfb8190679024404e5dc4822",
+            "catalogId": "vst3:adbc9049e7331e0e86c591444e5f0ee777b139d6fbbd254e22b5ce3691ea2891"
+          },
+          {
+            "id": "meter",
+            "type": "meter",
+            "enabled": true,
+            "assetId": null,
+            "catalogId": null
+          }
+        ]
+      }
+    ],
+    "vst3Enabled": true,
+    "scanning": false,
+    "scanFailed": false,
+    "searchRootCount": 1,
+    "helpers": {
+      "platformSupported": true,
+      "scannerPresent": true,
+      "hostPresent": true
+    },
+    "maxUploadBytes": 67108864
+  },
+  "zones.dsp.upload.commit": {
+    "id": "impulseResponse:30abceda2a0f8d0ac3b57235380bf01e08c3d7871f8d15a4ab2dbceb10eb566c",
+    "kind": "impulseResponse",
+    "name": "Room impulse.wav",
+    "fileName": "Room impulse.wav",
+    "sha256": "30abceda2a0f8d0ac3b57235380bf01e08c3d7871f8d15a4ab2dbceb10eb566c",
+    "byteSize": 800056,
+    "mediaType": "audio/wav",
+    "createdAt": "2026-11-04T14:34:45.439Z",
+    "referenceCount": 0
+  },
+  "zones.dsp.library.edit": null,
+  "zones.dsp.parameters": {
+    "revision": 11,
+    "sceneId": "managed-e137d728-64b6-4ea6-bf55-ecd466f44d5f",
+    "nodeId": "vst3-341b89fc-a8de-4bc2-be91-0222c3c29163",
+    "name": "ADelay",
+    "total": 2,
+    "offset": 0,
+    "items": [
+      {
+        "id": 101,
+        "title": "Bypass",
+        "unit": "",
+        "defaultNormalizedValue": 0,
+        "stepCount": 1,
+        "flags": 65537,
+        "overridden": false,
+        "value": null
+      },
+      {
+        "id": 100,
+        "title": "Delay",
+        "unit": "sec",
+        "defaultNormalizedValue": 1,
+        "stepCount": 0,
+        "flags": 1,
+        "overridden": true,
+        "value": 0
+      }
+    ]
+  },
+  "zones.dsp.profile.export": {
+    "downloadId": "b3b7d0ad-daba-4bb7-85e9-acbbf4d6164d",
+    "fileName": "Remote room backup.tedsp",
+    "byteSize": 810957,
+    "chunkBytes": 786432
+  },
+  "zones.dsp.profile.release": null,
+  "zones.dsp.profile.preview": {
+    "previewId": "a08d8bbc-9290-4266-ba6d-e7cddd80834e",
+    "revision": 13,
+    "name": "Remote room backup",
+    "scenes": [
+      {
+        "name": "Default",
+        "nodeCount": 14
+      },
+      {
+        "name": "Remote room",
+        "nodeCount": 3
+      }
+    ],
+    "assetCount": 2,
+    "assetBytes": 800064,
+    "issues": []
+  },
+  "zones.dsp.profile.import": {
+    "sceneIds": [
+      "imported-19fcbc17-1f11-4e80-a11b-ca558ae207ca",
+      "imported-d13c0307-8649-4bd6-a61f-eee4bd6b75e4"
+    ]
+  }
+}

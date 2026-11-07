@@ -27,12 +27,14 @@ class DesktopLibraryStabilityTest {
         desktopLibrary = DesktopBrowseState(page = CatalogPage(1, 1, items = listOf(artist)),
             selected = artist.takeIf { detail }, metadata = EntityMetadataDetail("artist", 1, artist.title,
                 MetadataIntroduction("这段简介来自电脑已整理的音乐资料。"),
-                facts = List(8) { MetadataFact("资料 $it", "已整理的歌手资料 $it") })))
+                facts = List(20) { MetadataFact("资料 $it", "已整理的歌手资料 $it") })))
 
     @Test fun refreshingTheCatalogDoesNotMoveItsRows() {
-        val ui = mutableStateOf(state(false))
+        val ui = mutableStateOf(state(false).copy(activeLibraryTab = LibrarySectionTab.ALBUMS,
+            desktopLibrary = DesktopBrowseState(kind = "release",
+                page = CatalogPage(1, 1, items = listOf(CatalogEntity("release", "release", "夜航", "北岸"))))))
         rule.setContent { PlayerAppContent(ui.value, PlayerActions()) }
-        val row = rule.onNodeWithTag("catalog-artist")
+        val row = rule.onNodeWithTag("catalog-release")
         val bounds = row.fetchSemanticsNode().boundsInRoot
         repeat(3) {
             rule.runOnIdle { ui.value = ui.value.copy(desktopLibrary = ui.value.desktopLibrary.copy(loading = true)) }

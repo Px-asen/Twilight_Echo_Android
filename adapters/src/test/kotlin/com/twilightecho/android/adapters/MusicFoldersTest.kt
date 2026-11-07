@@ -4,12 +4,30 @@ import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.CueRange
 import com.twilightecho.android.coreclient.CueSkip
 import com.twilightecho.android.coreclient.cueTrackId
+import com.twilightecho.android.coreclient.SafTrackIds
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MusicFoldersTest {
+    @Test fun `regular and CUE IDs distinguish providers and survive overlapping folder grants`() {
+        val reader = FakeReader(mapOf("Album.cue" to "FILE Album.flac WAVE\nTRACK 01 AUDIO\nINDEX 01 00:00:00"),
+            mapOf("Album.flac" to AudioHeader(60.0, 44100, 16), "Song.mp3" to AudioHeader(30.0, 44100, 16)))
+        val folder = ListedFolder("Music", listOf(file("Album.flac"), file("Album.cue"), file("Song.mp3")))
+        val legacy = MusicFolders.songs(folder, reader = reader).tracks
+        val external = MusicFolders.songs(folder.copy(authority = SafTrackIds.EXTERNAL_STORAGE), reader = reader).tracks
+        val alpha = MusicFolders.songs(folder.copy(authority = "alpha.documents"), reader = reader).tracks
+        val beta = MusicFolders.songs(folder.copy(authority = "beta.documents"), reader = reader).tracks
+        val overlap = MusicFolders.songs(folder.copy(path = "Selected/Subfolder", authority = "alpha.documents"), reader = reader).tracks
+        assertEquals(legacy.map { it.id }, external.map { it.id })
+        assertEquals(legacy.map { it.id + "@alpha.documents" }, alpha.map { it.id })
+        assertEquals(alpha.map { it.id }, overlap.map { it.id })
+        assertEquals(6, (external + alpha + beta).distinctBy { it.id }.size)
+        assertEquals(legacy.map { it.source }, alpha.map { it.source })
+        assertEquals(legacy.map { it.cueRange }, alpha.map { it.cueRange })
+    }
+
     private class FakeReader(
         val texts: Map<String, String>,
         val headers: Map<String, AudioHeader>,

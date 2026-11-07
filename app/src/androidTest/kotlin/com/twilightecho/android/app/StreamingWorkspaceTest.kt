@@ -137,6 +137,41 @@ class StreamingWorkspaceTest {
         screenshot("streaming-login-library.png")
     }
 
+    @Test fun restrictedPlaylistStillShowsItsSongsAndPlaysTheSelectedAvailableOccurrence() {
+        val unavailable = track.copy(id = "provider://ncm/43", ncmSongId = "43", title = "版权受限歌曲",
+            queueEntryId = "restricted", unavailableReason = "原平台版权受限")
+        val detail = StreamingDetail("playlist:11", "国漫 · 版权夹具", collection = owned,
+            tracks = listOf(track, unavailable, track.copy(queueEntryId = "second")),
+            total = 3, reportedTotal = 4, loading = false)
+        start(PlayerUiState(activeMainTab = MainDestinationTab.LIBRARY, activeLibraryTab = LibrarySectionTab.STREAMING,
+            streaming = StreamingUiState(access = StreamingAccess.READY, detail = detail)))
+        rule.onNodeWithTag("streamingDetail").assertIsDisplayed()
+        rule.onNodeWithTag("streamingDetailList").performScrollToNode(hasTestTag("streaming-playlist-availability"))
+        rule.onNodeWithText("网易云返回 3 首，歌单标记为 4 首；部分条目可能已下架或无权访问。").assertIsDisplayed()
+        screenshot("streaming-restricted-playlist-overview-fixture.png")
+        rule.onNodeWithTag("streamingDetailList").performScrollToNode(hasTestTag("streaming-track-2"))
+        // Unavailable rows retain their context menu, but a normal tap must not start playback.
+        rule.onNodeWithTag("streaming-track-1").performClick()
+        assertNull(played)
+        rule.onNodeWithTag("streaming-track-2").assertIsEnabled().performClick()
+        assertEquals("second", played!!.queueEntryId)
+        rule.onNodeWithText("内容未载入").assertDoesNotExist()
+        screenshot("streaming-restricted-playlist-fixture.png")
+    }
+
+    @Test fun completelyRestrictedPlaylistKeepsItsReportedCountInsteadOfLookingEmpty() {
+        val detail = StreamingDetail("playlist:11", "暂无可读取条目的歌单", collection = owned,
+            total = 0, reportedTotal = 4, loading = false)
+        start(PlayerUiState(activeMainTab = MainDestinationTab.LIBRARY, activeLibraryTab = LibrarySectionTab.STREAMING,
+            streaming = StreamingUiState(access = StreamingAccess.READY, detail = detail)))
+        rule.onNodeWithText("4 首歌曲").assertIsDisplayed()
+        rule.onNodeWithTag("streamingDetailList").performScrollToNode(hasText("暂无可读取的歌曲"))
+        rule.onNodeWithText("暂无可读取的歌曲").assertIsDisplayed()
+        rule.onNodeWithText("这里还没有音乐").assertDoesNotExist()
+        rule.onNodeWithText("内容未载入").assertDoesNotExist()
+        screenshot("streaming-fully-restricted-playlist-fixture.png")
+    }
+
     private fun screenshot(name: String) {
         rule.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()

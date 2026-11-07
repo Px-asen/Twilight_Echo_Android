@@ -29,7 +29,7 @@ class StreamingPresenterTest {
                 val offset = args[0].jsonPrimitive.int
                 parse("""{"tracks":[${song(offset + 1)}],"total":206,"nextOffset":${offset + 100},"hasMore":${offset < 200}}""")
             }
-            "readPlaylistImportPage" -> parse("""{"songs":[{"platformId":"9","title":"重复"},{"platformId":"9","title":"重复"},
+            "fetchPlaylistTracksPage" -> parse("""{"tracks":[{"platformId":"9","title":"重复"},{"platformId":"9","title":"重复"},
                 {"platformId":"8","unavailableReason":"已下架"}],"total":103,"nextOffset":100,"hasMore":true}""")
             "createPlaylist" -> parse("""{"id":99,"name":"${args[0].jsonPrimitive.content}","trackCount":0}""")
             else -> parse("[${song()}]")
@@ -214,6 +214,37 @@ class StreamingPresenterTest {
         assertTrue(presenter.state.value.sections.isEmpty())
     }
 
+    @Test fun restrictedPlaylistCountsDoNotHideReturnedSongsOrPermitPartialSearch() = runTest {
+        var restricted = true
+        val presenter = StreamingPresenter(backgroundScope) { method, args ->
+            if (method == "fetchPlaylistTracksPage") parse("""{"tracks":[${song(1)},
+                {"ncmSongId":2,"title":"版权受限的歌","unavailableReason":"原平台版权受限"},
+                {"ncmSongId":3,"title":"未知歌曲","unavailableReason":"缺少元数据"},${song(1)}],
+                "total":4,"reportedTotal":${if (restricted) 5 else 4},"nextOffset":4,"hasMore":false}""")
+            else respond(method, args)
+        }
+        presenter.availability(true, true); runCurrent()
+        presenter.openCollection(StreamingCollection("11", "playlist", "国漫", count = 5, owned = true)); runCurrent()
+        val detail = presenter.state.value.detail!!
+        assertNull(detail.error)
+        assertEquals(4, detail.total)
+        assertEquals(5, detail.reportedTotal)
+        assertEquals(listOf("1", "2", "3", "1"), detail.tracks.map { it.ncmSongId })
+        assertNull(detail.tracks.first().unavailableReason)
+        assertEquals("原平台版权受限", detail.tracks[1].unavailableReason)
+        assertNotEquals(detail.tracks.first().queueEntryId, detail.tracks.last().queueEntryId)
+        assertTrue(playlistAvailabilityNotice(detail.total, detail.reportedTotal)!!.contains("4 首"))
+        presenter.playlistQuery("歌曲"); runCurrent()
+        assertTrue(presenter.state.value.detail!!.error!!.contains("无法搜索或排序"))
+        assertTrue(presenter.state.value.detail!!.tracks.isEmpty())
+        assertNull(presenter.state.value.detail!!.playlistTracks)
+        restricted = false
+        presenter.retryDetail(); runCurrent()
+        assertNull(presenter.state.value.detail!!.error)
+        assertEquals(listOf("1", "3", "1"), presenter.state.value.detail!!.tracks.map { it.ncmSongId })
+        assertNull(playlistAvailabilityNotice(4, 4))
+    }
+
     @Test fun staleDetailAndRefreshCannotReplaceTheNewSelection() = runTest {
         val gate = CompletableDeferred<Unit>()
         val presenter = StreamingPresenter(backgroundScope) { method, args ->
@@ -317,7 +348,7 @@ class StreamingPresenterTest {
 
     @Test fun removingASongTakesItOutOfTheOpenPlaylistAtOnce() = runTest {
         val presenter = StreamingPresenter(backgroundScope) { method, args ->
-            if (method == "readPlaylistImportPage") parse("""{"songs":[${song(7)},${song(8)}],"total":2,"hasMore":false}""")
+            if (method == "fetchPlaylistTracksPage") parse("""{"tracks":[${song(7)},${song(8)}],"total":2,"reportedTotal":2,"hasMore":false}""")
             else respond(method, args)
         }
         presenter.availability(true, true); runCurrent()
@@ -330,6 +361,7 @@ class StreamingPresenterTest {
         assertEquals(listOf(7L), write[1].jsonArray.map { it.jsonPrimitive.long })
         assertEquals(listOf("8"), presenter.state.value.detail!!.tracks.map { it.ncmSongId })
         assertEquals(1, presenter.state.value.detail!!.total)
+        assertEquals(1, presenter.state.value.detail!!.reportedTotal)
     }
 
     @Test fun deletingRereadsTheLibraryFirstAndClosesTheDeletedPlaylist() = runTest {

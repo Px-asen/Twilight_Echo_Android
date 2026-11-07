@@ -1,5 +1,7 @@
 package com.twilightecho.android.nativeintegration
 
+import com.twilightecho.android.nativeintegration.usb.AndroidUsbDirectHost
+
 /**
  * JNI bridge matching `sdk/android/jni/twilight_audio_jni.cpp` and `twilight_audio_engine.h`.
  *
@@ -15,6 +17,7 @@ class TwilightAudioEngineJni {
     external fun nativeSetEventListener(handle: Long, listener: TwilightAudioEventListener?)
     external fun nativeSetStateEventsEnabled(handle: Long, enabled: Boolean): Int
     external fun nativeSetUsbPcmPolicy(handle: Long, policy: AndroidUsbPcmPolicy): Int
+    external fun nativeSetUsbDirectHost(handle: Long, host: AndroidUsbDirectHost): Int
     external fun nativeSetInputProvider(handle: Long, provider: NativeAudioInputProvider): Int
 
     external fun nativePlay(handle: Long, source: String, startTimeSeconds: Double): Int
@@ -44,6 +47,7 @@ class TwilightAudioEngineJni {
     external fun nativeSetOutputBackend(handle: Long, backendId: String): Int
 
     external fun nativeGetPlaybackInfoJson(handle: Long): String
+    external fun nativeGetMetadataJson(handle: Long, source: String): String
     external fun nativeGetQueueStateJson(handle: Long): String
     external fun nativeGetEngineCapabilitiesJson(handle: Long): String
     external fun nativeGetLastErrorJson(handle: Long): String

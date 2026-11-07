@@ -365,11 +365,7 @@ class AndroidResourceAccessAdapter(
         }
     }
 
-    private fun parseResourceUri(resourceId: ResourceId): Uri = runCatching {
-        Uri.parse(resourceId)
-    }.getOrElse {
-        Uri.fromFile(File(resourceId))
-    }
+    private fun parseResourceUri(resourceId: ResourceId): Uri = Uri.parse(resourceUriString(resourceId))
 
     private fun guessAudioMimeType(extension: String): String = when (extension.lowercase()) {
         "flac" -> "audio/flac"

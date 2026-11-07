@@ -1,0 +1,712 @@
+{
+  "format": "twilight-remote-library-software-fixture",
+  "version": 1,
+  "samples": {
+    "catalog.query": {
+      "revision": 8,
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "id": "music_2b9a6150-289a-4e21-917c-76ef9b3e1c52",
+          "kind": "artist",
+          "title": "Unknown Artist",
+          "artist": "",
+          "identity": "source",
+          "sourceCount": 1
+        }
+      ]
+    },
+    "catalog.query.first": {
+      "revision": 3,
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "id": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+          "kind": "recording",
+          "title": "静默测试",
+          "artist": "Unknown Artist",
+          "identity": "source",
+          "sourceCount": 1
+        }
+      ]
+    },
+    "ratings.detail": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "value": null,
+      "token": {
+        "ratingsRevision": 0,
+        "linkRevision": 0,
+        "targetKey": "[\"entity\",\"recording\",\"music_9ed95cff-09f0-488e-a64e-acf84ee30994\"]"
+      },
+      "external": {
+        "status": "unavailable",
+        "reason": "no_approved_source",
+        "items": []
+      }
+    },
+    "ratings.detail.first": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "value": null,
+      "token": {
+        "ratingsRevision": 0,
+        "linkRevision": 0,
+        "targetKey": "[\"entity\",\"recording\",\"music_9ed95cff-09f0-488e-a64e-acf84ee30994\"]"
+      },
+      "external": {
+        "status": "unavailable",
+        "reason": "no_approved_source",
+        "items": []
+      }
+    },
+    "ratings.set": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "value": {
+        "steps": 9,
+        "revision": 1,
+        "updatedAt": 1793681072653
+      },
+      "token": {
+        "ratingsRevision": 1,
+        "linkRevision": 0,
+        "targetKey": "[\"entity\",\"recording\",\"music_9ed95cff-09f0-488e-a64e-acf84ee30994\"]"
+      },
+      "external": {
+        "status": "unavailable",
+        "reason": "no_approved_source",
+        "items": []
+      }
+    },
+    "preferences.detail": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "value": null,
+      "token": {
+        "preferencesRevision": 0,
+        "linkRevision": 0,
+        "targetKey": "[\"entity\",\"recording\",\"music_9ed95cff-09f0-488e-a64e-acf84ee30994\"]"
+      }
+    },
+    "preferences.detail.first": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "value": null,
+      "token": {
+        "preferencesRevision": 0,
+        "linkRevision": 0,
+        "targetKey": "[\"entity\",\"recording\",\"music_9ed95cff-09f0-488e-a64e-acf84ee30994\"]"
+      }
+    },
+    "preferences.set": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "value": {
+        "state": "favorite",
+        "revision": 1,
+        "updatedAt": 1793681072670
+      },
+      "token": {
+        "preferencesRevision": 1,
+        "linkRevision": 0,
+        "targetKey": "[\"entity\",\"recording\",\"music_9ed95cff-09f0-488e-a64e-acf84ee30994\"]"
+      }
+    },
+    "tags.list": {
+      "token": {
+        "tagsRevision": 0,
+        "linkRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1
+      },
+      "offset": 0,
+      "total": 0,
+      "items": []
+    },
+    "tags.list.first": {
+      "token": {
+        "tagsRevision": 0,
+        "linkRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1
+      },
+      "offset": 0,
+      "total": 0,
+      "items": []
+    },
+    "tags.create": {
+      "token": {
+        "tagsRevision": 1,
+        "linkRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1
+      },
+      "tag": {
+        "id": "tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18",
+        "name": "手机 · 夜航",
+        "nameRevision": 1,
+        "membersRevision": 0,
+        "memberCount": 0,
+        "updatedAt": 1793681072685
+      }
+    },
+    "tags.member.set": {
+      "token": {
+        "tagsRevision": 2,
+        "linkRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1
+      },
+      "tag": {
+        "id": "tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18",
+        "name": "手机 · 夜航",
+        "nameRevision": 1,
+        "membersRevision": 1,
+        "memberCount": 1,
+        "updatedAt": 1793681072690
+      }
+    },
+    "tags.entity": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "token": {
+        "tagsRevision": 2,
+        "linkRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1
+      },
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "id": "tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18",
+          "name": "手机 · 夜航",
+          "nameRevision": 1,
+          "membersRevision": 1,
+          "memberCount": 1,
+          "updatedAt": 1793681072690
+        }
+      ]
+    },
+    "tags.entity.first": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "token": {
+        "tagsRevision": 2,
+        "linkRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1
+      },
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "id": "tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18",
+          "name": "手机 · 夜航",
+          "nameRevision": 1,
+          "membersRevision": 1,
+          "memberCount": 1,
+          "updatedAt": 1793681072690
+        }
+      ]
+    },
+    "focus.query": {
+      "token": {
+        "savedRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1,
+        "genresRevision": 3,
+        "metadataRevision": 0,
+        "ratingsRevision": 1,
+        "preferencesRevision": 1,
+        "tagsRevision": 2,
+        "linkRevision": 0,
+        "historyRevision": 0,
+        "queryKey": "{\"entity\":\"recording\",\"scope\":\"library\",\"version\":1,\"where\":{\"all\":[{\"tag\":{\"id\":\"tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18\"}},{\"preference\":\"favorite\"},{\"rating\":{\"gteStars\":4.5,\"mode\":\"personal\",\"target\":\"self\"}}]}}",
+        "asOf": 1793681072699,
+        "contextKey": "7387c07f-2fed-47e4-a58d-57a112a7f10f",
+        "expiresAt": null
+      },
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "id": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+          "kind": "recording",
+          "title": "静默测试",
+          "artist": "Unknown Artist",
+          "sourceCount": 1,
+          "inLibrary": true,
+          "playable": true,
+          "sourceId": "source_5019886f-1207-4b64-80a1-c32460059d54",
+          "provider": "local",
+          "personalRating": 4.5,
+          "lastPlayed": null,
+          "releaseYear": null
+        }
+      ]
+    },
+    "focus.query.first": {
+      "token": {
+        "savedRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1,
+        "genresRevision": 3,
+        "metadataRevision": 0,
+        "ratingsRevision": 1,
+        "preferencesRevision": 1,
+        "tagsRevision": 2,
+        "linkRevision": 0,
+        "historyRevision": 0,
+        "queryKey": "{\"entity\":\"recording\",\"scope\":\"library\",\"version\":1,\"where\":{\"all\":[{\"tag\":{\"id\":\"tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18\"}},{\"preference\":\"favorite\"},{\"rating\":{\"gteStars\":4.5,\"mode\":\"personal\",\"target\":\"self\"}}]}}",
+        "asOf": 1793681072699,
+        "contextKey": "7387c07f-2fed-47e4-a58d-57a112a7f10f",
+        "expiresAt": null
+      },
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "id": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+          "kind": "recording",
+          "title": "静默测试",
+          "artist": "Unknown Artist",
+          "sourceCount": 1,
+          "inLibrary": true,
+          "playable": true,
+          "sourceId": "source_5019886f-1207-4b64-80a1-c32460059d54",
+          "provider": "local",
+          "personalRating": 4.5,
+          "lastPlayed": null,
+          "releaseYear": null
+        }
+      ]
+    },
+    "focus.facets": {
+      "token": {
+        "savedRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1,
+        "genresRevision": 3,
+        "metadataRevision": 0,
+        "ratingsRevision": 1,
+        "preferencesRevision": 1,
+        "tagsRevision": 2,
+        "linkRevision": 0,
+        "historyRevision": 0,
+        "queryKey": "{\"entity\":\"recording\",\"scope\":\"library\",\"version\":1,\"where\":{\"all\":[{\"tag\":{\"id\":\"tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18\"}},{\"preference\":\"favorite\"},{\"rating\":{\"gteStars\":4.5,\"mode\":\"personal\",\"target\":\"self\"}}]}}",
+        "asOf": 1793681072714,
+        "contextKey": "7387c07f-2fed-47e4-a58d-57a112a7f10f",
+        "expiresAt": null
+      },
+      "facet": "personalRating",
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "value": "4.5",
+          "label": "4.5",
+          "count": 1
+        }
+      ]
+    },
+    "focus.facets.first": {
+      "token": {
+        "savedRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1,
+        "genresRevision": 3,
+        "metadataRevision": 0,
+        "ratingsRevision": 1,
+        "preferencesRevision": 1,
+        "tagsRevision": 2,
+        "linkRevision": 0,
+        "historyRevision": 0,
+        "queryKey": "{\"entity\":\"recording\",\"scope\":\"library\",\"version\":1,\"where\":{\"all\":[{\"tag\":{\"id\":\"tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18\"}},{\"preference\":\"favorite\"},{\"rating\":{\"gteStars\":4.5,\"mode\":\"personal\",\"target\":\"self\"}}]}}",
+        "asOf": 1793681072714,
+        "contextKey": "7387c07f-2fed-47e4-a58d-57a112a7f10f",
+        "expiresAt": null
+      },
+      "facet": "personalRating",
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "value": "4.5",
+          "label": "4.5",
+          "count": 1
+        }
+      ]
+    },
+    "focus.saved.list": {
+      "savedRevision": 0,
+      "offset": 0,
+      "total": 0,
+      "items": []
+    },
+    "focus.saved.list.first": {
+      "savedRevision": 0,
+      "offset": 0,
+      "total": 0,
+      "items": []
+    },
+    "focus.saved.create": {
+      "savedRevision": 1,
+      "item": {
+        "id": "focus:bec88234-3ca5-4cdf-b226-15124e9f0091",
+        "name": "从手机保存",
+        "query": {
+          "version": 1,
+          "entity": "recording",
+          "scope": "library",
+          "where": {
+            "all": [
+              {
+                "tag": {
+                  "id": "tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18"
+                }
+              },
+              {
+                "preference": "favorite"
+              },
+              {
+                "rating": {
+                  "target": "self",
+                  "mode": "personal",
+                  "gteStars": 4.5
+                }
+              }
+            ]
+          }
+        },
+        "nameRevision": 1,
+        "queryRevision": 1,
+        "updatedAt": 1793681072726
+      }
+    },
+    "focus.saved.rename": {
+      "savedRevision": 2,
+      "item": {
+        "id": "focus:bec88234-3ca5-4cdf-b226-15124e9f0091",
+        "name": "夜航筛选",
+        "query": {
+          "version": 1,
+          "entity": "recording",
+          "scope": "library",
+          "where": {
+            "all": [
+              {
+                "tag": {
+                  "id": "tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18"
+                }
+              },
+              {
+                "preference": "favorite"
+              },
+              {
+                "rating": {
+                  "target": "self",
+                  "mode": "personal",
+                  "gteStars": 4.5
+                }
+              }
+            ]
+          }
+        },
+        "nameRevision": 2,
+        "queryRevision": 1,
+        "updatedAt": 1793681072731
+      }
+    },
+    "focus.saved.update": {
+      "savedRevision": 2,
+      "item": {
+        "id": "focus:bec88234-3ca5-4cdf-b226-15124e9f0091",
+        "name": "夜航筛选",
+        "query": {
+          "version": 1,
+          "entity": "recording",
+          "scope": "library",
+          "where": {
+            "all": [
+              {
+                "tag": {
+                  "id": "tag:a7bf3474-4d90-4a67-b181-7fbffe9d9d18"
+                }
+              },
+              {
+                "preference": "favorite"
+              },
+              {
+                "rating": {
+                  "target": "self",
+                  "mode": "personal",
+                  "gteStars": 4.5
+                }
+              }
+            ]
+          }
+        },
+        "nameRevision": 2,
+        "queryRevision": 1,
+        "updatedAt": 1793681072731
+      }
+    },
+    "playlists.catalog": {
+      "revision": 1,
+      "total": 1,
+      "offset": 0,
+      "items": [
+        {
+          "id": "pl_favorites",
+          "name": "我收藏的音乐",
+          "count": 1,
+          "isDefault": true,
+          "createdAt": "2026-11-03T04:44:27.800Z",
+          "imported": false,
+          "cover": null
+        }
+      ]
+    },
+    "playlists.catalog.first": {
+      "revision": 1,
+      "total": 1,
+      "offset": 0,
+      "items": [
+        {
+          "id": "pl_favorites",
+          "name": "我收藏的音乐",
+          "count": 1,
+          "isDefault": true,
+          "createdAt": "2026-11-03T04:44:27.800Z",
+          "imported": false,
+          "cover": null
+        }
+      ]
+    },
+    "playlists.edit": {
+      "revision": 5
+    },
+    "catalog.sources": {
+      "revision": 5,
+      "total": 1,
+      "offset": 0,
+      "items": [
+        {
+          "id": "source_5019886f-1207-4b64-80a1-c32460059d54",
+          "provider": "local",
+          "recordingId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+          "releaseId": "music_f866a8fc-0839-4aa3-9007-b374fe2b0001",
+          "availability": "indexed",
+          "inLibrary": true,
+          "preferred": false,
+          "track": {
+            "title": "静默测试",
+            "artist": "Unknown Artist",
+            "album": "Unknown Album",
+            "duration": 3,
+            "artists": [
+              "Unknown Artist"
+            ],
+            "source": "local",
+            "size": 48044,
+            "format": "WAVE",
+            "sampleRate": 8000,
+            "bitrate": 128000,
+            "bitDepth": 16,
+            "addedAt": 1793681068008
+          }
+        }
+      ]
+    },
+    "catalog.sources.first": {
+      "revision": 5,
+      "total": 1,
+      "offset": 0,
+      "items": [
+        {
+          "id": "source_5019886f-1207-4b64-80a1-c32460059d54",
+          "provider": "local",
+          "recordingId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+          "releaseId": "music_f866a8fc-0839-4aa3-9007-b374fe2b0001",
+          "availability": "indexed",
+          "inLibrary": true,
+          "preferred": false,
+          "track": {
+            "title": "静默测试",
+            "artist": "Unknown Artist",
+            "album": "Unknown Album",
+            "duration": 3,
+            "artists": [
+              "Unknown Artist"
+            ],
+            "source": "local",
+            "size": 48044,
+            "format": "WAVE",
+            "sampleRate": 8000,
+            "bitrate": 128000,
+            "bitDepth": 16,
+            "addedAt": 1793681068008
+          }
+        }
+      ]
+    },
+    "playlists.addSources": {
+      "revision": 3
+    },
+    "playlists.members": {
+      "revision": 5,
+      "total": 0,
+      "offset": 0,
+      "items": []
+    },
+    "playlists.members.first": {
+      "revision": 3,
+      "total": 1,
+      "offset": 0,
+      "items": [
+        {
+          "id": "remote-member:edbefce2-312c-4729-b53e-d30ce1693d38",
+          "position": 0,
+          "track": {
+            "id": "remote-track:cc41c1ac-4ca9-4a5b-8a97-b6955e6f4409",
+            "referenceScope": "session",
+            "title": "静默测试",
+            "artist": "Unknown Artist",
+            "album": "Unknown Album",
+            "duration": 3,
+            "artists": [
+              "Unknown Artist"
+            ],
+            "source": "local",
+            "size": 48044,
+            "format": "WAVE",
+            "sampleRate": 8000,
+            "bitrate": 128000,
+            "bitDepth": 16,
+            "addedAt": 1793681068008
+          },
+          "imported": false
+        }
+      ]
+    },
+    "metadata.entity.detail": {
+      "entityId": "music_2b9a6150-289a-4e21-917c-76ef9b3e1c52",
+      "targetId": null,
+      "revision": 1,
+      "name": "Unknown Artist",
+      "introduction": {
+        "value": "在手机整理，保存在 Server。",
+        "language": "zh-Hans",
+        "origin": "manual",
+        "attribution": null
+      },
+      "manualArtwork": null,
+      "facts": [],
+      "artwork": [],
+      "artworkOverride": null,
+      "override": {
+        "mode": "value",
+        "value": "在手机整理，保存在 Server。",
+        "language": "zh-Hans",
+        "updatedAt": 1793681072824
+      },
+      "sourcePreference": {
+        "provider": null,
+        "available": true
+      },
+      "sourceOptions": []
+    },
+    "metadata.entity.detail.first": {
+      "entityId": "music_2b9a6150-289a-4e21-917c-76ef9b3e1c52",
+      "targetId": null,
+      "revision": 0,
+      "name": "Unknown Artist",
+      "introduction": null,
+      "manualArtwork": null,
+      "facts": [],
+      "artwork": [],
+      "artworkOverride": null,
+      "override": null,
+      "sourcePreference": {
+        "provider": null,
+        "available": true
+      },
+      "sourceOptions": []
+    },
+    "metadata.entity.override": {
+      "entityId": "music_2b9a6150-289a-4e21-917c-76ef9b3e1c52"
+    },
+    "ratings.history": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "steps": 9,
+          "revision": 1,
+          "updatedAt": 1793681072653,
+          "seq": 1,
+          "reason": "set"
+        }
+      ]
+    },
+    "ratings.history.first": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "steps": 9,
+          "revision": 1,
+          "updatedAt": 1793681072653,
+          "seq": 1,
+          "reason": "set"
+        }
+      ]
+    },
+    "preferences.history": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "state": "favorite",
+          "revision": 1,
+          "updatedAt": 1793681072670,
+          "seq": 1,
+          "reason": "set"
+        }
+      ]
+    },
+    "preferences.history.first": {
+      "entityId": "music_9ed95cff-09f0-488e-a64e-acf84ee30994",
+      "kind": "recording",
+      "scope": "entity",
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "state": "favorite",
+          "revision": 1,
+          "updatedAt": 1793681072670,
+          "seq": 1,
+          "reason": "set"
+        }
+      ]
+    }
+  }
+}

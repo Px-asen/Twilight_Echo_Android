@@ -130,6 +130,9 @@ internal fun SongActionOverlays(
                 onDismissRequest()
                 actions.inspectTrack(target)
             },
+            onDownload = if (activeRequest.track.catalog != null && activeRequest.track.id !in state.phoneTrackIds) {
+                { val target = activeRequest.track; onDismissRequest(); actions.downloadTrack(target) }
+            } else null,
             onRemoveFromPlaylist = activeRequest.let { req ->
                 when {
                     req.localPlaylistId != null -> {
@@ -227,6 +230,7 @@ private fun SongContextBottomSheet(
     onPlayNext: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onInspectTrack: () -> Unit,
+    onDownload: (() -> Unit)?,
     onRemoveFromPlaylist: (() -> Unit)?,
     onRemoveFromQueue: (() -> Unit)?,
     onDeleteLocalTrack: (() -> Unit)?
@@ -318,6 +322,9 @@ private fun SongContextBottomSheet(
                 testTag = "songAction-addToPlaylist",
                 onClick = onAddToPlaylist
             )
+
+            if (onDownload != null) SongActionSheetItem(icon = TwilightIcons.Phone, title = "下载到手机", subtitle = "保存后可断网播放",
+                testTag = "songAction-download", onClick = onDownload)
 
             SongActionSheetItem(
                 icon = TwilightIcons.Info,

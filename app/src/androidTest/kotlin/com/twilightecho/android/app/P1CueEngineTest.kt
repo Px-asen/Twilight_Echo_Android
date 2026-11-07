@@ -1,8 +1,11 @@
 package com.twilightecho.android.app
 
 import android.util.Log
+import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.twilightecho.android.adapters.AndroidResourceAccessAdapter
+import com.twilightecho.android.adapters.AndroidTrackMetadataProbe
 import com.twilightecho.android.coreclient.CoreEqConfigView
 import com.twilightecho.android.coreclient.CoreTrackView
 import com.twilightecho.android.coreclient.CueRange
@@ -10,6 +13,7 @@ import com.twilightecho.android.coreclient.DefaultCoreClient
 import com.twilightecho.android.nativeintegration.NativeAudioEngineAdapter
 import com.twilightecho.android.runtimehost.AudioSnapshot
 import com.twilightecho.android.runtimehost.AudioSourceDescriptor
+import com.twilightecho.android.runtimehost.ResourceAccessResult
 import kotlinx.coroutines.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -23,6 +27,57 @@ class P1CueEngineTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     private data class Sample(val state: String, val index: Int, val positionMs: Long, val durationMs: Long?, val gapless: Boolean)
+
+    @Test fun literalFileNamesReachResourcesMetadataAndCuePlayback() = runBlocking {
+        val file = File(context.cacheDir, "p1-cue #1?100%+%23 中文.wav").apply { writeBytes(toneWave(CUE_ALBUM_PARTS)) }
+        val resources = AndroidResourceAccessAdapter(context)
+        val adapter = NativeAudioEngineAdapter(resourceAccess = resources, appContext = context)
+        try {
+            for (source in listOf(file.absolutePath, Uri.fromFile(file).toString())) {
+                val stat = resources.stat(source)
+                check(stat is ResourceAccessResult.Ok)
+                assertEquals(source, stat.value.resourceId)
+                assertEquals(file.name, stat.value.displayName)
+                assertEquals(file.length(), stat.value.sizeBytes)
+                val read = resources.openReadStream(source)
+                check(read is ResourceAccessResult.Ok)
+                read.value.use { assertArrayEquals(file.readBytes(), it.readBytes()) }
+                val lease = resources.acquirePlayableResource(source)
+                check(lease is ResourceAccessResult.Ok)
+                assertEquals(source, lease.value.resourceId)
+                assertEquals(file.absolutePath, lease.value.nativePath)
+                assertEquals(source, (resources.resolveNativeUri(source) as ResourceAccessResult.Ok).value)
+
+                val range = CUE_ALBUM_RANGES[1]
+                val track = CoreTrackView("cue-literal-path", title = "Part 2", source = source,
+                    cueRange = range, duration = range.durationSeconds)
+                val detail = AndroidTrackMetadataProbe(context).inspect(track)
+                assertEquals(file.name, detail.fileName)
+                assertEquals(file.absolutePath, detail.displayPath)
+                assertEquals(file.length(), detail.fileSize)
+                assertEquals(44100, detail.sampleRate)
+                assertEquals(16, detail.bitDepth)
+                assertEquals(2, detail.channels)
+                assertEquals(range.durationSeconds, detail.durationSeconds!!, 0.0)
+
+                adapter.loadQueue(listOf(track), 0)
+                adapter.load(AudioSourceDescriptor(source, source))
+                adapter.play(1.0)
+                withTimeout(15000) { while (adapter.getSnapshot().positionMs < 1100) delay(20) }
+                assertEquals("playing", adapter.getSnapshot().state)
+                assertEquals(file.absolutePath, adapter.currentResolvedNativePath)
+                assertEquals(range.durationSeconds * 1000, adapter.getSnapshot().durationMs!!.toDouble(), 30.0)
+                adapter.pause()
+                adapter.seek(2000)
+                assertEquals(2000.0, adapter.getSnapshot().positionMs.toDouble(), 2.0)
+                adapter.stop()
+            }
+        } finally {
+            adapter.close()
+            resources.close()
+            file.delete()
+        }
+    }
 
     @Test fun cueSongsKeepToTheirPartsAndRunOnWithoutAGap() = runBlocking<Unit> {
         val file = File(context.cacheDir, "p1-cue-engine.wav").apply { writeBytes(toneWave(CUE_ALBUM_PARTS)) }

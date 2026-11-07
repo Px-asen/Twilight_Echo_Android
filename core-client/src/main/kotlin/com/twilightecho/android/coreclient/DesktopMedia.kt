@@ -55,33 +55,38 @@ data class AuthorizedDesktopMedia(
 )
 
 /** Random-access network bytes go straight to Android's decoder, not through Music Core/JS.
- * A single bounded window supports probes and time seeks without downloading an entire file. */
+ * Sequential decoding reads ahead within a bounded cache; probes and seeks stay demand-driven. */
 class DesktopMediaRangeReader(
     private val reference: DesktopMediaReference,
-    private val resolve: suspend (DesktopMediaReference) -> AuthorizedDesktopMedia
+    private val resolve: suspend (DesktopMediaReference) -> AuthorizedDesktopMedia,
+    private val authorizeRead: () -> Unit
 ) : Closeable {
+    constructor(reference: DesktopMediaReference, resolve: suspend (DesktopMediaReference) -> AuthorizedDesktopMedia) :
+        this(reference, resolve, {})
     @Volatile private var closed = false
     private val connection = AtomicReference<Call?>(null)
     private val resolution = AtomicReference<Job?>(null)
-    private var access: AuthorizedDesktopMedia? = null
+    @Volatile private var access: AuthorizedDesktopMedia? = null
     private var pinnedVersion: String? = reference.sourceVersion
-    private var window = ByteArray(0)
-    private var windowStart = -1L
+    @Volatile private var buffered: BufferedRangeReader? = null
     private var acquiredAt = 0L
 
-    private fun plan(renew: Boolean = false): AuthorizedDesktopMedia {
+    private fun plan(renew: Boolean = false, request: RangeReadRequest? = null): AuthorizedDesktopMedia {
         if (closed) throw IOException("串流已取消")
+        request?.checkActive()
         val existing = access
         if (!renew && existing != null && System.nanoTime() - acquiredAt < 14L * 60 * 1_000_000_000) return existing
         val job = Job()
         resolution.set(job)
+        request?.onCancel { job.cancel() }
         if (closed) job.cancel()
         val next = try {
             runBlocking(Dispatchers.IO + job) { resolve(reference.copy(sourceVersion = pinnedVersion)) }
         } catch (error: CancellationException) {
             throw IOException("串流已取消", error)
-        } finally { resolution.compareAndSet(job, null); job.cancel() }
+        } finally { request?.clearCancellation(); resolution.compareAndSet(job, null); job.cancel() }
         if (closed) throw IOException("串流已取消")
+        request?.checkActive()
         val p = next.plan
         if (p.libraryId != reference.libraryId || p.sourceId != reference.sourceId ||
             p.size <= 0 || p.maxRangeBytes !in 1..262144 ||
@@ -97,42 +102,44 @@ class DesktopMediaRangeReader(
         return next
     }
 
-    @Synchronized fun size(): Long = plan().plan.size
+    @Synchronized fun size(): Long {
+        if (closed) throw IOException("串流已取消")
+        return buffered?.let { access!!.plan.size } ?: plan().plan.size
+    }
+    @Synchronized fun sourceVersion(): String = plan().plan.sourceVersion
 
     @Synchronized fun readAt(position: Long, bytes: ByteArray, offset: Int, size: Int): Int {
         require(position >= 0 && offset >= 0 && size >= 0 && offset <= bytes.size - size)
         if (closed) throw IOException("串流已取消")
         if (size == 0) return 0
-        val p = plan().plan
+        val p = access?.plan ?: plan().plan
         if (position >= p.size) return -1
-        if (windowStart < 0 || position < windowStart || position >= windowStart + window.size) {
-            fetchWindow(position, canRenew = true)
-        }
-        val start = (position - windowStart).toInt()
-        val count = minOf(size, window.size - start)
-        if (count <= 0) throw IOException("电脑未返回所需的音频数据")
-        window.copyInto(bytes, offset, start, start + count)
-        return count
+        val reader = buffered ?: BufferedRangeReader(p.size, p.maxRangeBytes, readRange = { start, count, request ->
+            fetchWindow(start, count, request, canRenew = true)
+        }).also { buffered = it; if (closed) it.close() }
+        return reader.readAt(position, bytes, offset, size)
     }
 
-    private fun fetchWindow(position: Long, canRenew: Boolean) {
-        val a = plan()
-        val end = minOf(a.plan.size - 1, position + a.plan.maxRangeBytes - 1)
+    private fun fetchWindow(position: Long, count: Int, range: RangeReadRequest, canRenew: Boolean): ByteArray {
+        authorizeRead()
+        val a = plan(request = range)
+        val end = position + count - 1
         val request = pinned(a.certificateSha256).newCall(Request.Builder().url(a.baseUrl + a.plan.contentPath)
             .header("Authorization", "Bearer ${a.bearer}")
             .header("Range", "bytes=$position-$end")
             .header("If-Match", "\"${a.plan.sourceVersion}\"")
             .header("Accept-Encoding", "identity").build())
         connection.set(request)
+        range.onCancel { request.cancel() }
         try {
             if (closed) throw IOException("串流已取消")
+            range.checkActive()
             request.execute().use { response ->
                 val status = response.code
                 if (status == 404 && canRenew) {
                     response.close(); connection.compareAndSet(request, null)
-                    plan(renew = true)
-                    fetchWindow(position, canRenew = false)
-                    return
+                    plan(renew = true, request = range)
+                    return fetchWindow(position, count, range, canRenew = false)
                 }
                 if (status in listOf(409, 412)) throw IOException("电脑上的音频文件已更换，请重新选择歌曲")
                 if (status == 401 || status == 403) throw IOException("电脑已撤销授权，请重新连接")
@@ -143,19 +150,22 @@ class DesktopMediaRangeReader(
                 (response.body?.byteStream() ?: throw IOException("电脑未返回音频数据")).use { input ->
                     var count = 0
                     while (count < data.size) {
+                        range.checkActive()
                         val read = input.read(data, count, data.size - count)
                         if (read < 0) throw IOException("电脑串流中断，请重试")
                         count += read
                     }
                 }
                 if (closed) throw IOException("串流已取消")
-                windowStart = position; window = data
+                range.checkActive()
+                return data
             }
-        } finally { connection.compareAndSet(request, null) }
+        } finally { range.clearCancellation(); connection.compareAndSet(request, null) }
     }
 
     override fun close() {
         closed = true
+        buffered?.close()
         resolution.getAndSet(null)?.cancel()
         connection.getAndSet(null)?.cancel()
     }

@@ -77,6 +77,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       # verifyPortableCore checks the shipped bundle, lock and scenario corpus against each other.
+      # Unit tests do not need FFmpeg binaries or the separately staged AutoMix models.
       - name: Verify the shipped Core and run unit tests
         working-directory: Twilight_Echo_Android
-        run: ./gradlew verifyPortableCore testDebugUnitTest
+        run: ./gradlew verifyPortableCore :core-client:test testDebugUnitTest -PenableNativeJni=false

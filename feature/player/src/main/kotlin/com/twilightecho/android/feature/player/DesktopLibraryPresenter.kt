@@ -122,8 +122,9 @@ internal class DesktopLibraryPresenter(private val scope: CoroutineScope, privat
         }
     }
 
-    fun closeDetail() {
+    fun closeDetail(clearHistory: Boolean = false) {
         detailRequest++; detailJob?.cancel(); albumRequest++; albumJob?.cancel()
+        if (clearHistory) { history.clear(); historyInvalidated = false }
         val previous = if (history.isEmpty()) null else history.removeLast()
         mutable.update { if (previous == null) it.copy(selected = null, detailLoading = false, albumsLoading = false) else it.copy(selected = previous.selected,
             metadata = previous.metadata, sources = previous.sources, detailLoading = false, detailError = previous.detailError,

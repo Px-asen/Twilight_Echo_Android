@@ -53,6 +53,7 @@ import com.twilightecho.android.adapters.AndroidMusicFolderScanner
 import com.twilightecho.android.coreclient.AccentSource
 import com.twilightecho.android.coreclient.BackgroundStyle
 import com.twilightecho.android.ui.theme.LocalContentSurfaceOpacity
+import com.twilightecho.android.feature.player.zones.ZonesTabScreen
 
 @Composable
 fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) {
@@ -72,6 +73,12 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
     val importBackground = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.onImportBackground(uri.toString())
     }
+    var artworkTicket by remember { mutableStateOf<DesktopEntityEditTicket?>(null) }
+    val importDesktopArtwork = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val ticket = artworkTicket
+        artworkTicket = null
+        if (uri != null && ticket != null) viewModel.onImportDesktopArtwork(ticket, uri.toString())
+    }
     // A picked folder is read at once, so its songs and CUE splits appear without another tap.
     val pickMusicFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null && viewModel.onAddMusicFolder(uri.toString())) viewModel.onScanDeviceMusic()
@@ -83,9 +90,34 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
     }
     val actions = remember(viewModel) {
         PlayerActions(
+            desktopDspLibrary = viewModel.desktopDspLibraryActions, openDesktopDspLibrary = viewModel::onOpenDesktopDspLibrary,
+            desktopPlugins = viewModel.desktopPluginsActions, openDesktopPlugins = viewModel::onOpenDesktopPlugins,
+            offlineDownloadsOpen = viewModel::onOfflineDownloadsOpen, downloadTrack = viewModel::onDownloadTrack,
+            offlineDownloadAction = viewModel::onOfflineDownloadAction, mobileNetworkPreferences = viewModel::onMobileNetworkPreferences,
+            desktopExternalUrl = viewModel::onDesktopExternalUrl, connectExternalDesktop = viewModel::onConnectExternalDesktop,
+            desktopQueue = viewModel.desktopQueueActions, desktopLibraryQueue = viewModel.desktopLibraryQueueActions,
+            openDesktopQueue = viewModel::onOpenDesktopQueue, playSourceTo = viewModel::onPlaySourceTo,
+            desktopWorkspace = viewModel.desktopWorkspaceActions, openDesktopWorkspace = viewModel::onOpenDesktopWorkspace,
+            entityEditor = viewModel.entityEditorActions.copy(pickArtwork = {
+                artworkTicket = it
+                importDesktopArtwork.launch(arrayOf("image/*"))
+            }),
             editPreferences = viewModel::onEditPreferences,
             pickBackground = { importBackground.launch(arrayOf("image/*")) },
             playbackTarget = viewModel::onSelectPlaybackTarget,
+            desktopAudioOpen = viewModel::onDesktopAudioOpen,
+            desktopOutput = viewModel::onDesktopOutput,
+            desktopDsp = viewModel::onDesktopDsp,
+            desktopScene = viewModel::onDesktopScene,
+            desktopZone = viewModel::onDesktopZone,
+            desktopZoneTransport = viewModel::onDesktopZoneTransport,
+            desktopZoneValue = viewModel::onDesktopZoneValue,
+            desktopHandoff = viewModel::onDesktopHandoff,
+            desktopCreateGroup = viewModel::onDesktopCreateGroup,
+            desktopRemoveGroup = viewModel::onDesktopRemoveGroup,
+            desktopGroupAutoMix = viewModel::onDesktopGroupAutoMix,
+            desktopZonesActive = viewModel::onDesktopZonesActive,
+            desktopZoneTransportFor = viewModel::onDesktopZoneTransportFor,
             startDiscovery = viewModel::onStartDesktopDiscovery, stopDiscovery = viewModel::onStopDesktopDiscovery,
             refreshDiscovery = viewModel::onRefreshDesktopDiscovery, selectDesktop = viewModel::onSelectDesktop,
             forgetDesktop = viewModel::onForgetDesktop,
@@ -100,6 +132,9 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
             refreshLibrary = viewModel::onRefreshLibrary, query = viewModel::onSearchQueryChanged,
             retrySearch = viewModel::onRetrySearch, selectFilter = viewModel::onSelectSearchFilter,
             searchSource = viewModel::onSelectSearchSource, searchCategory = viewModel::onSelectNcmSearchCategory,
+            librarySearchCategory = viewModel::onSelectLibrarySearchCategory,
+            searchProvider = viewModel::onSelectSearchProvider, providerSearchCategory = viewModel::onSelectProviderSearchCategory,
+            providerSearchPage = viewModel::onProviderSearchPage,
             searchPage = viewModel::onNcmSearchPage, submitSearch = viewModel::onSubmitSearch,
             playTracks = viewModel::onPlayTracks, togglePlayback = viewModel::onTogglePlayPause,
             previous = viewModel::onPreviousTrack, next = viewModel::onNextTrack,
@@ -124,8 +159,13 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
             band = viewModel::onSetEqBandGain, preamp = viewModel::onSetEqPreamp,
             toggleBitPerfect = viewModel::onToggleBitPerfect, toggleGapless = viewModel::onToggleGapless,
             autoMixMode = viewModel::onSetAutoMixMode,
+            selectOutputDevice = viewModel::onSelectOutputDevice,
+            usbHardwareVolume = UsbHardwareVolumeActions(viewModel::readUsbHardwareVolume,
+                viewModel::setUsbHardwareVolume, viewModel::setUsbHardwareMute),
             editDsp = viewModel::onEditDspConfig, editAudio = viewModel::onEditAudio, monitorAudio = viewModel::onMonitorAudio,
-            importImpulse = { impulseNodeId = it; importImpulse.launch(arrayOf("audio/wav", "audio/x-wav", "audio/wave", "application/octet-stream")) },
+            commitAudioEdit = viewModel::onCommitAudioEdit,
+            importImpulse = { impulseNodeId = it; importImpulse.launch(arrayOf("audio/wav", "audio/x-wav", "audio/wave",
+                "audio/flac", "audio/x-flac", "audio/aiff", "audio/x-aiff", "application/octet-stream")) },
             saveDspScene = viewModel::onSaveDspScene, applyDspScene = viewModel::onApplyDspScene,
             reapplyOutputPreset = viewModel::onReapplyOutputPreset,
             deleteDspScene = viewModel::onDeleteDspScene,
@@ -140,17 +180,21 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
             closeEntity = viewModel::onCloseEntity, sourcePage = viewModel::onSourcePage,
             artistAlbums = viewModel::onArtistAlbums, retryArtistAlbums = viewModel::onRetryArtistAlbums,
             loadLibraryArtist = viewModel::onLoadLibraryArtist,
+            requestLibraryArtist = viewModel::onRequestLibraryArtist,
             playSource = viewModel::onPlaySource, requestArtwork = viewModel::onRequestArtwork,
             lookupArtwork = viewModel::cachedDesktopArtwork
         )
     }
     val streaming = viewModel.streamingPresenter
-    val openStreamingAccount: () -> Unit = remember(viewModel) { {
-        val plugin = viewModel.pluginPresenter.repository.state.value.entries.find { it.id == NCM_PLUGIN_ID }
-        pluginsAccountOnly = plugin?.installedVersion != null && plugin.enabled
-        if (pluginsAccountOnly) viewModel.pluginPresenter.open(plugin!!) else viewModel.pluginPresenter.close()
+    val providerHome = viewModel.providerHomePresenter
+    val openPluginModal: (String, Boolean) -> Unit = remember(viewModel) { { pluginId, accountOnly ->
+        val plugin = viewModel.pluginPresenter.repository.state.value.entries.find { it.id == pluginId }
+        val ready = plugin?.installedVersion != null && plugin.enabled
+        pluginsAccountOnly = accountOnly && ready
+        if (ready) viewModel.pluginPresenter.open(plugin!!) else viewModel.pluginPresenter.close()
         pluginsOpen = true
     } }
+    val openStreamingAccount: () -> Unit = remember(openPluginModal) { { openPluginModal(NCM_PLUGIN_ID, true) } }
     val streamingActions = remember(viewModel, openStreamingAccount) { StreamingActions(account = openStreamingAccount, library = {
         streaming.libraryRoot()
         viewModel.onSelectLibraryTab(LibrarySectionTab.STREAMING)
@@ -166,17 +210,51 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
             if (latestState.value.streaming.access == StreamingAccess.READY) viewModel.onPlayProviderTracks(tracks, track) else openStreamingAccount()
         }, createPlaylist = viewModel::onCreateStreamingPlaylist, deletePlaylist = viewModel::onDeleteStreamingPlaylist,
         addToPlaylist = viewModel::onAddToStreamingPlaylist, removeFromPlaylist = viewModel::onRemoveFromStreamingPlaylist) }
-    val appActions = remember(actions, streamingActions, viewModel) { actions.copy(streaming = streamingActions, toggleFavorite = {
-        val current = latestState.value
-        if (current.currentTrack?.source?.startsWith("provider://ncm/") == true && current.streaming.access != StreamingAccess.READY)
-            openStreamingAccount() else viewModel.onToggleFavoriteCurrentTrack()
-    }, openPlugins = {
-        pluginsAccountOnly = false; viewModel.pluginPresenter.close(); pluginsOpen = true
-    }, importLyrics = {
-        lyricsTrackId = latestState.value.currentTrack?.id
-        lyricsSource = viewModel.currentLyricsSourceKey()
-        importLyrics.launch(arrayOf("text/*", "application/octet-stream", "application/x-lrc"))
-    }) }
+    val providerHomeActions = remember(viewModel, openPluginModal) {
+        ProviderHomeActions(
+            account = { openPluginModal(latestState.value.activeHomePluginId, true) },
+            openProviderPage = { openPluginModal(latestState.value.activeHomePluginId, false) },
+            refresh = { providerHome.refreshActive(force = true) },
+            openSection = providerHome::openSection,
+            openCollection = providerHome::openCollection,
+            openLiked = providerHome::openLiked,
+            openAllPlaylists = providerHome::openAllPlaylists,
+            play = viewModel::onPlayProviderTracks,
+            back = providerHome::closeDetail,
+            retryDetail = providerHome::retryDetail,
+            page = providerHome::page,
+            playlistQuery = providerHome::playlistQuery,
+            playlistSort = viewModel::onProviderHomePlaylistSort,
+            root = providerHome::root
+        )
+    }
+    val providerSearchActions = remember(viewModel, openPluginModal) {
+        val search = viewModel.providerSearchPresenter
+        StreamingActions(account = { latestState.value.providerSearch.provider?.pluginId?.let { openPluginModal(it, true) } },
+            collection = search::openCollection, back = search::back, retry = search::retryDetail,
+            artistTab = search::artistTab, play = viewModel::onPlayProviderTracks)
+    }
+    val appActions = remember(actions, streamingActions, providerHomeActions, providerSearchActions, viewModel) {
+        actions.copy(
+            streaming = streamingActions,
+            providerHome = providerHomeActions,
+            providerSearchActions = providerSearchActions,
+            selectHomeProvider = viewModel::onSelectHomeProvider,
+            toggleFavorite = {
+                val current = latestState.value
+                if (current.currentTrack?.source?.startsWith("provider://ncm/") == true && current.streaming.access != StreamingAccess.READY)
+                    openStreamingAccount() else viewModel.onToggleFavoriteCurrentTrack()
+            },
+            openPlugins = {
+                pluginsAccountOnly = false; viewModel.pluginPresenter.close(); pluginsOpen = true
+            },
+            importLyrics = {
+                lyricsTrackId = latestState.value.currentTrack?.id
+                lyricsSource = viewModel.currentLyricsSourceKey()
+                importLyrics.launch(arrayOf("text/*", "application/octet-stream", "application/x-lrc"))
+            }
+        )
+    }
     val pluginsVisibility = remember { MutableTransitionState(false) }
     pluginsVisibility.targetState = pluginsOpen
     val motionEnabled = rememberMotionEnabled()
@@ -201,13 +279,14 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
             PlayerAppearance(appearanceState, actions.requestArtwork, actions.lookupArtwork) {
                 PluginsScreen(
                     viewModel.pluginPresenter,
-                    onBack = { pluginsOpen = false; streaming.refreshAccount() },
+                    onBack = { pluginsOpen = false; viewModel.onPluginsClosed() },
                     onPlay = { tracks, selected ->
                         viewModel.onPlayProviderTracks(tracks, selected); pluginsOpen = false
                     },
                     modifier = Modifier.fillMaxSize(),
                     accountOnly = pluginsAccountOnly,
-                    backEnabled = pluginsOpen
+                    backEnabled = pluginsOpen,
+                    immersiveMode = state.preferences.appearance.immersiveMode
                 )
             }
         }
@@ -286,7 +365,9 @@ private data class WorkspaceRoute(
     val streamingDetailKey: String?,
     val streamingDepth: Int,
     val desktopEntityKind: String?,
-    val desktopEntityId: String?
+    val desktopEntityId: String?,
+    /** `zone:<id>` or `group:<id>` while a 声区 detail is open. */
+    val zoneDetail: String? = null
 ) {
     val pageKey: String
         get() = when {
@@ -295,6 +376,7 @@ private data class WorkspaceRoute(
             activeTab == MainDestinationTab.LIBRARY ->
                 if (collectionId != null) "collection:$collectionKind:$collectionId" else "library:$libraryTab"
             activeTab == MainDestinationTab.SETTINGS -> "settings:$settingsDestination"
+            activeTab == MainDestinationTab.ZONES && zoneDetail != null -> "zones:$zoneDetail"
             else -> activeTab.name
         }
 
@@ -304,6 +386,7 @@ private data class WorkspaceRoute(
             desktopEntityKind != null && desktopEntityId != null -> if (desktopEntityKind == "artist") 1 else 2
             activeTab == MainDestinationTab.LIBRARY && collectionId != null -> if (collectionKind == "artist") 1 else 2
             activeTab == MainDestinationTab.SETTINGS && settingsDestination != SettingsDestination.OVERVIEW -> 1
+            activeTab == MainDestinationTab.ZONES && zoneDetail != null -> 1
             else -> 0
         }
 }
@@ -321,6 +404,7 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
     var collectionKind by rememberSaveable { mutableStateOf<String?>(null) }
     var collectionId by rememberSaveable { mutableStateOf<String?>(null) }
     var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.OVERVIEW) }
+    var zoneDetail by rememberSaveable { mutableStateOf<String?>(null) }
     // A streaming page shows in the tab it was opened from, and nowhere else.
     var streamingOrigin by rememberSaveable { mutableStateOf<MainDestinationTab?>(null) }
     val savedPages = rememberSaveableStateHolder()
@@ -330,14 +414,27 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
     playerVisibility.targetState = playerOpen
     // Home is the streaming page: without a streaming provider the app starts in, and returns to, the library.
     val homeTab = if (state.homeAvailable == true) MainDestinationTab.HOME else MainDestinationTab.LIBRARY
-    val activeTab = if (state.activeMainTab == MainDestinationTab.HOME) homeTab else state.activeMainTab
+    val activeTab = when {
+        state.activeMainTab == MainDestinationTab.HOME -> homeTab
+        state.activeMainTab == MainDestinationTab.ZONES && !zonesTabAvailable(state.operatingMode) -> homeTab
+        else -> state.activeMainTab
+    }
+    val zoneDetailOpen = activeTab == MainDestinationTab.ZONES && zoneDetail != null
     val desktopDetailOpen = state.desktopCatalogMode && activeTab == MainDestinationTab.LIBRARY &&
         state.activeLibraryTab in DesktopCatalogTabs && state.desktopLibrary.selected != null
     val streamingTab = streamingOrigin
         ?: if (state.streaming.detail?.recommendation != null) MainDestinationTab.HOME else MainDestinationTab.LIBRARY
-    val streamingDetailOpen = state.streaming.detail != null && state.streaming.access == StreamingAccess.READY &&
-        streamingTab == activeTab && (activeTab == MainDestinationTab.HOME || activeTab == MainDestinationTab.SEARCH ||
+    val ncmDetailOpen = state.streaming.detail != null && state.streaming.access == StreamingAccess.READY &&
+        streamingTab == activeTab && (activeTab == MainDestinationTab.HOME && state.isNcmHomeActive ||
+            activeTab == MainDestinationTab.SEARCH ||
             activeTab == MainDestinationTab.LIBRARY && state.activeLibraryTab == LibrarySectionTab.STREAMING)
+    val providerHomeDetailOpen = activeTab == MainDestinationTab.HOME && !state.isNcmHomeActive && state.providerHome.detail != null
+    val streamingDetailOpen = ncmDetailOpen || providerHomeDetailOpen
+    val activeStreamingDetail = when {
+        providerHomeDetailOpen -> state.providerHome.detail
+        ncmDetailOpen -> state.streaming.detail
+        else -> null
+    }
     val lyricsIdentity = lyricsSceneIdentity(state)
     val lyricsViewport = rememberLyricsViewportState(lyricsIdentity)
     val snackbar = remember { SnackbarHostState() }
@@ -359,14 +456,16 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
     BackHandler(enabled = !imeVisible && (playerOpen || desktopDetailOpen || streamingDetailOpen ||
         (activeTab == MainDestinationTab.LIBRARY && collectionId != null) ||
         (activeTab == MainDestinationTab.SETTINGS && settingsDestination != SettingsDestination.OVERVIEW) ||
-        activeTab != homeTab)) {
+        zoneDetailOpen || activeTab != homeTab)) {
         when {
             playerOpen -> actions.setPlayerOpen(false)
-            streamingDetailOpen -> actions.streaming.back()
+            providerHomeDetailOpen -> actions.providerHome.back()
+            ncmDetailOpen -> actions.streaming.back()
             desktopDetailOpen -> actions.closeEntity()
             activeTab == MainDestinationTab.LIBRARY && collectionId != null -> collectionId = null
             activeTab == MainDestinationTab.SETTINGS && settingsDestination != SettingsDestination.OVERVIEW ->
                 settingsDestination = SettingsDestination.OVERVIEW
+            zoneDetailOpen -> zoneDetail = null
             else -> actions.selectTab(homeTab)
         }
     }
@@ -377,11 +476,28 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
         settingsDestination = it; actions.setPlayerOpen(false); actions.selectTab(MainDestinationTab.SETTINGS)
     }
     // Opening a streaming page from a tab's own page starts a new trail that belongs to that tab.
-    fun streamingFrom(tab: MainDestinationTab) = actions.streaming.copy(
-        recommendation = { streamingOrigin = tab; actions.streaming.recommendation(it) },
-        group = { streamingOrigin = tab; actions.streaming.group(it) },
-        collection = { streamingOrigin = tab; actions.streaming.root(); actions.streaming.collection(it) },
-        library = { collectionId = null; actions.streaming.library() })
+    @Composable
+    fun pageActions(tab: MainDestinationTab): PlayerActions = remember(actions, tab) {
+        actions.copy(streaming = actions.streaming.copy(
+            recommendation = { streamingOrigin = tab; actions.streaming.recommendation(it) },
+            group = { streamingOrigin = tab; actions.streaming.group(it) },
+            collection = { streamingOrigin = tab; actions.streaming.root(); actions.streaming.collection(it) },
+            library = { collectionId = null; actions.streaming.library() }))
+    }
+    val providerDetailActions = remember(actions.providerHome) {
+        StreamingActions(
+            account = actions.providerHome.account,
+            refresh = actions.providerHome.refresh,
+            collection = actions.providerHome.openCollection,
+            back = actions.providerHome.back,
+            retry = actions.providerHome.retryDetail,
+            page = actions.providerHome.page,
+            root = actions.providerHome.root,
+            playlistQuery = actions.providerHome.playlistQuery,
+            playlistSort = actions.providerHome.playlistSort,
+            play = actions.providerHome.play
+        )
+    }
     val dockInset = if (imeVisible) 0.dp else if (state.currentTrack != null) 136.dp else 68.dp
     val ambientArtwork = state.currentTrack?.let { rememberPlayerArtwork(it) }
     val motionEnabled = rememberMotionEnabled()
@@ -390,6 +506,10 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
     // Retain snapshots of active detail models so outgoing detail pages stay intact throughout their pop animation.
     val streamingCache = remember { mutableMapOf<String, StreamingDetail>() }
     state.streaming.detail?.let { detail ->
+        streamingCache[detail.key] = detail
+        if (streamingCache.size > 6) streamingCache.keys.firstOrNull { it != detail.key }?.let(streamingCache::remove)
+    }
+    state.providerHome.detail?.let { detail ->
         streamingCache[detail.key] = detail
         if (streamingCache.size > 6) streamingCache.keys.firstOrNull { it != detail.key }?.let(streamingCache::remove)
     }
@@ -413,15 +533,16 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
         collectionKind = collectionKind.takeIf { activeTab == MainDestinationTab.LIBRARY && collectionId != null },
         collectionId = collectionId.takeIf { activeTab == MainDestinationTab.LIBRARY },
         settingsDestination = if (activeTab == MainDestinationTab.SETTINGS) settingsDestination else SettingsDestination.OVERVIEW,
-        streamingDetailKey = state.streaming.detail?.key?.takeIf { streamingDetailOpen },
-        streamingDepth = state.streaming.detail?.takeIf { streamingDetailOpen }?.let(::streamingDetailDepth) ?: 0,
+        streamingDetailKey = activeStreamingDetail?.key,
+        streamingDepth = activeStreamingDetail?.let(::streamingDetailDepth) ?: 0,
         desktopEntityKind = state.desktopLibrary.selected?.kind?.takeIf { desktopDetailOpen },
-        desktopEntityId = state.desktopLibrary.selected?.id?.takeIf { desktopDetailOpen }
+        desktopEntityId = state.desktopLibrary.selected?.id?.takeIf { desktopDetailOpen },
+        zoneDetail = zoneDetail.takeIf { zoneDetailOpen }
     )
     CompositionLocalProvider(LocalSongMenuOpener provides openSongMenu) {
         AmbientBackground(modifier.fillMaxSize(), ambientArtwork,
             showBackdrop = !playerVisibility.currentState || !playerVisibility.targetState) {
-            Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()
+            Column(Modifier.fillMaxSize().appStatusBarPadding(state.preferences.appearance.immersiveMode).imePadding()
                 // Keep the page's saved scroll/composition, but do not paint it under the opaque player.
                 // Enter/exit transitions still draw the page until the player fully covers it.
                 .drawWithContent { if (!playerVisibility.currentState || !playerVisibility.targetState) drawContent() }
@@ -462,7 +583,9 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
                             label = "workspacePage"
                         ) { route ->
                             val routeStreamingDetail = route.streamingDetailKey?.let { key ->
-                                state.streaming.detail?.takeIf { it.key == key } ?: streamingCache[key]
+                                state.providerHome.detail?.takeIf { it.key == key }
+                                    ?: state.streaming.detail?.takeIf { it.key == key }
+                                    ?: streamingCache[key]
                             }
                             val routeDesktopLibrary = if (route.desktopEntityKind != null && route.desktopEntityId != null) {
                                 val key = "${route.desktopEntityKind}:${route.desktopEntityId}"
@@ -488,26 +611,33 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
                                 else -> ""
                             }
                             savedPages.SaveableStateProvider(route.pageKey) {
-                                PlaybackHeaderPage(routeState, actions, headerResetKey) {
+                                // Detail pages opened from Home are still details, not the Home root.
+                                val showHomePlaybackHeader = route.activeTab == MainDestinationTab.HOME && route.depth == 0
+                                val pageContent: @Composable () -> Unit = {
                                     if (routeStreamingDetail != null) {
-                                        StreamingDetailScreen(routeStreamingDetail, routeState, actions.streaming)
+                                        val detailActions = if (routeStreamingDetail.key.startsWith("v2-")) providerDetailActions else actions.streaming
+                                        StreamingDetailScreen(routeStreamingDetail, routeState, detailActions)
                                     } else when (route.activeTab) {
                                         MainDestinationTab.HOME ->
-                                            HomeTabScreen(routeState, actions.copy(streaming = streamingFrom(MainDestinationTab.HOME)))
+                                            HomeTabScreen(routeState, pageActions(MainDestinationTab.HOME))
                                         MainDestinationTab.LIBRARY -> if (route.collectionId != null) {
                                             val collection = findCollection(routeState, route.collectionKind, route.collectionId)
                                                 ?: collectionCache["${route.collectionKind}:${route.collectionId}"]
                                             CollectionDetailScreen(collection, routeState, actions, { collectionId = null })
                                         } else {
-                                            LibraryTabScreen(routeState, actions.copy(streaming = streamingFrom(MainDestinationTab.LIBRARY)),
+                                            LibraryTabScreen(routeState, pageActions(MainDestinationTab.LIBRARY),
                                                 openCollection) { openSettings(SettingsDestination.REMOTE) }
                                         }
                                         MainDestinationTab.SEARCH ->
-                                            SearchTabScreen(routeState, actions.copy(streaming = streamingFrom(MainDestinationTab.SEARCH)))
+                                            SearchTabScreen(routeState, pageActions(MainDestinationTab.SEARCH))
                                         MainDestinationTab.SETTINGS ->
                                             SettingsTabScreen(routeState, actions, route.settingsDestination, { settingsDestination = it })
+                                        MainDestinationTab.ZONES ->
+                                            ZonesTabScreen(routeState, actions, route.zoneDetail, { zoneDetail = it })
                                     }
                                 }
+                                if (showHomePlaybackHeader) PlaybackHeaderPage(routeState, actions, headerResetKey, pageContent)
+                                else pageContent()
                             }
                         }
                     }
@@ -524,14 +654,18 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
                     FloatingDock(state, activeTab, actions, Modifier) { tab ->
                         if (tab == activeTab) when (tab) {
                             // Tapping the current tab again returns to its first page.
-                            MainDestinationTab.HOME -> if (streamingDetailOpen) actions.streaming.root()
+                            MainDestinationTab.HOME -> {
+                                if (providerHomeDetailOpen) actions.providerHome.root()
+                                else if (ncmDetailOpen) actions.streaming.root()
+                            }
                             MainDestinationTab.LIBRARY -> {
                                 collectionId = null
-                                if (streamingDetailOpen) actions.streaming.root()
+                                if (ncmDetailOpen) actions.streaming.root()
                                 if (desktopDetailOpen) actions.closeEntity()
                             }
                             MainDestinationTab.SETTINGS -> settingsDestination = SettingsDestination.OVERVIEW
-                            MainDestinationTab.SEARCH -> if (streamingDetailOpen) actions.streaming.root()
+                            MainDestinationTab.SEARCH -> if (ncmDetailOpen) actions.streaming.root()
+                            MainDestinationTab.ZONES -> zoneDetail = null
                         }
                         actions.selectTab(tab)
                     }
@@ -554,6 +688,14 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
             actions = actions
         )
         state.disconnectPrompt?.let { DisconnectDialog(it, actions) }
+        if (state.desktopEntityEditor.entity != null) DesktopEntityEditorSheet(state.desktopEntityEditor, actions.entityEditor)
+        DesktopQueueSheet(state.desktopQueue, actions.desktopQueue)
+        DesktopDspLibrarySheet(state.desktopDspLibrary, actions.desktopDspLibrary)
+        DesktopPluginsSheet(state.desktopPlugins, actions.desktopPlugins)
+        if (state.offlineDownloadsOpen) OfflineDownloadsSheet(state, actions)
+        DesktopQueueSheet(state.desktopLibraryQueue, actions.desktopLibraryQueue)
+        if (!state.desktopLibraryQueue.open && !state.desktopPlugins.open)
+            DesktopLibraryWorkspaceSheet(state.desktopWorkspace, actions.desktopWorkspace, actions.openDesktopPlugins)
     }
 }
 
@@ -610,11 +752,15 @@ private fun FloatingDock(state: PlayerUiState, active: MainDestinationTab, actio
         HorizontalDivider(thickness = 0.5.dp, color = colors.outlineVariant)
         Row(Modifier.fillMaxWidth().background(colors.background.copy(alpha = LocalContentSurfaceOpacity.current)).navigationBarsPadding()
             .height(58.dp), verticalAlignment = Alignment.CenterVertically) {
-            MainDestinationTab.entries.filter { it != MainDestinationTab.HOME || state.homeAvailable == true }.forEach { tab ->
+            MainDestinationTab.entries.filter {
+                (it != MainDestinationTab.HOME || state.homeAvailable == true) &&
+                    (it != MainDestinationTab.ZONES || zonesTabAvailable(state.operatingMode))
+            }.forEach { tab ->
                 val icon = when (tab) {
                     MainDestinationTab.HOME -> TwilightIcons.Home
                     MainDestinationTab.LIBRARY -> TwilightIcons.Library
                     MainDestinationTab.SEARCH -> TwilightIcons.Search
+                    MainDestinationTab.ZONES -> TwilightIcons.Speaker
                     MainDestinationTab.SETTINGS -> TwilightIcons.Settings
                 }
                 val selected = active == tab

@@ -165,3 +165,82 @@ adb pull /sdcard/Android/data/com.twilightecho.android/files/home-cover-performa
 本轮播放器 JVM 回归 100 项通过；Provider 尺寸、授权与取消入口测试 4 项通过。最终非 Debug 包的首页冷加载采样 1 项、定向设备回归 12 项全部通过：八个消费者共用进行中请求、首个消费者回收、全部回收取消、失败重试、缩略图不取色、大图保留主题种子、本地封面共享／尺寸隔离、流媒体入口、真实 NCM 封面，以及真实原生播放／快速切换／前后切歌和无标题沉浸歌词。已检查最终首页、真实在线封面及播放器截图。
 
 构建与回归记录：`build/home-cover-debug-final-build.log`、`build/home-cover-optimized-final-build.log`、`build/home-cover-final-device.log`、`build/home-cover-optimized-regression.log`。在线封面和原生播放器截图：`build/home-cover-final/visual/`。安装包：`app/build/outputs/apk/performance/app-performance.apk`。
+
+## 网络音频：提前预读，攒够再恢复
+
+2026-11-04。针对“播一小段、卡住、进度回退，再播一小段”的串流体验，网易云 CDN 和电脑串流共用有界后台预读；原生解码端增加缓冲恢复门槛，界面跟随真实出声进度。
+
+- **不等用完才请求下一块**：连续读取达到 32 KiB 后启用后台预读，最多保留八个 Range 窗口，每个不超过 256 KiB（合计不超过 2 MiB）。小型格式探测仍按需读取。拖动到新位置会取消旧请求，旧请求迟到的字节或异常不进入新窗口；文件版本、CDN 主机、电脑证书与授权检查沿用原有约束。
+- **断粮后不靠零碎数据反复起播**：网络 PCM 首播目标为 1 秒，耗尽后等待约 3 秒再恢复；96 kHz 及以下最多缓存 8 秒，更高采样率最多 4 秒，每条解码流的 PCM 环形缓冲上限为 16 MiB。高采样率／多声道达到内存上限时，起播和恢复门槛相应收缩，避免等待超过容量的数据。短曲、尾部和读取失败会释放剩余帧，继续走原有结束或错误路径。本地文件和 DoP／Native DSD 保留原缓冲策略。
+- **缓冲不重开当前曲目**：原生引擎单独报告 `buffering` 事实，Core 保留播放意图和队列 occurrence；恢复沿用解码器和当前位置。系统媒体卡片保持待播放状态，全屏播放页的缓冲指示中仍可点击暂停；暂停后即使数据恢复也不会自行播放。
+- **进度不再先走再回退**：缓冲时停止时间外推，已经显示的末尾小数停在原处，等引擎时钟追上再继续；拖动、A–B 回跳和换曲仍接受新的真实位置。
+
+### 验证与交付
+
+319 项 JVM 检查通过：16 项 Range／电脑串流、135 项 native-integration、168 项播放器检查。覆盖有界预读、满缓存向前跳转、取消、旧响应隔离、版本／授权、缓冲状态、进度保持及显式回跳。共享 `twilight_audio_buffer_tests` 通过，包含 8–768 kHz、内存受限门槛、短尾及本地路径；实际 portable bundle 的 34 项嵌入宿主／音频检查通过。
+
+API 36 x86_64 模拟器的三项定向设备检查通过：
+
+1. `StreamingBufferRecoveryTest`：真实 QuickJS → JNI → FFmpeg → DSP → AAudio，受控字节源在 8.440 秒处断粮；补回仅 250 ms 音频后仍保持缓冲和相同位置，补足恢复水位才继续。再次断粮后暂停，数据返回不会自动起播，手动恢复沿用同一解码器（打开次数始终为 1）和队列 occurrence。
+2. `BufferingPlayerUiTest`：实际全屏缓冲状态、暂停按钮及保持不动的进度；已检查截图 `build/buffering-qa/buffering-player.png`。
+3. `PlaybackResponsivenessTest`：实际 Activity 中的快速暂停／播放、上一首／下一首和进度更新通过。
+
+四 ABI Debug 应用和测试 APK 构建通过。可安装交付：`build/deliverables/TwilightEcho-buffering-debug.apk`。设备检查使用受控断流，不涉及真实网易云 CDN 或物理手机的听感采样。
+
+记录：`build/buffering-final-build.log`、`build/buffering-progress-build.log`、`build/buffering-native-tests.log`、`build/buffering-core-tests.log`、`build/buffering-recovery-device.log`、`build/buffering-ui-device.log`、`build/buffering-responsiveness-device.log`、`build/buffering-delivery-build.log`。原生改动位于同源桌面仓库 `audio-engine/core/StreamBufferGate.h`、`AudioPipeline.*`、`TwilightAudioEngine.*`；Core 状态接线位于 `src/core/portableEmbeddedHost.ts`，已重新生成并同步到 Android 资产，不能仅复制 Kotlin 文件复现此次修正。
+
+## 首页、曲库与搜索：减少滑动期间的重复工作
+
+2026-11-05。可安装包：`build/deliverables/TwilightEcho-scroll-20261105-performance.apk`，为关闭调试、启用 R8 优化的开发签名包，包含 arm64-v8a、armeabi-v7a、x86、x86_64。
+
+### 确定减少的工作
+
+- 动画设置监听由主题共用；卡片、按压反馈和详情页的嵌套主题读取同一份设置。系统关闭、重新开启动画后，现有消费者仍即时更新。
+- 歌曲页不再建立仅供专辑和歌单使用的整库封面索引；歌曲搜索不再提前分组、排序整库的专辑和歌手。
+- 曲库的加载状态变化复用已排序的歌曲、专辑和歌手，切换设备复用“全部设备”目录。电脑归属索引、手机歌曲 ID 集合也在 `Dispatchers.Default` 中生成。元数据、曲目成员或电脑在线状态变化仍会重建对应结果。
+- 歌曲行只接收当前曲、播放、收藏等所需值，播放回调捕获实际列表。首页歌单分组与去重结果复用，页面动作保持稳定；不同 Lazy 内容使用明确的 key 和 contentType。本地／在线封面不再订阅无关的电脑封面更新。
+- 收藏过滤先建立 ID 集合；“全部”过滤直接返回已有列表。歌曲顺序、完整合集、重复 occurrence 和各设备的专辑身份沿用原规则。
+
+新增回归先在修改前的同类型 APK 上复现，再在交付实现上通过。以下为实际工作次数，不是启动耗时或帧率：
+
+| 场景 | 修改前 | 修改后 |
+| --- | ---: | ---: |
+| 打开 20,000 首歌曲页，读取曲目次数 | 40,178 | 178 |
+| 打开 20,000 首歌曲搜索页，读取曲目次数 | 80,000 | 173 |
+| 40 个动画消费者及嵌套主题，系统设置监听数 | 40 | 1 |
+
+`PlayerPresentationTest` 另外验证 10,000 首歌／5,000 个收藏 ID 的过滤只线性读取收藏列表；`SharedLibraryTest` 验证加载刷新与设备切换的结果复用，以及元数据、在线优先级和删除后的失效更新。设备回归继续检查更新后的收藏图标、播放标记、点击队列和滚动后的选曲。
+
+### 整体帧耗时尚无稳定改善
+
+同一 API 36 x86_64 模拟器，1080×2400、gfxstream、非 Debug performance 包。交替安装旧包／滑动优化包各三轮，使用现有首页冷封面和 3,000 首曲库测试；各轮耗时单位为 ms。曲库合并缓存和搜索按需构建由上述工作量／功能回归验证，这两个静态帧采样不触发它们。
+
+| 指标 | 修改前三轮 | 修改后三轮 | 三轮中位数：前 → 后 |
+| --- | --- | --- | --- |
+| 首页总帧 P95 | 46.32 / 41.18 / 52.25 | 35.22 / 45.93 / 55.07 | 46.32 → 45.93 |
+| 首页主线程定时任务最大延迟 | 517 / 443 / 442 | 274 / 474 / 571 | 443 → 474 |
+| 曲库总帧 P95 | 23.73 / 29.68 / 31.06 | 30.89 / 32.39 / 30.52 | 29.68 → 30.89 |
+| 曲库绘制 P95 | 1.42 / 1.36 / 1.83 | 1.69 / 1.85 / 1.68 | 1.42 → 1.69 |
+| 歌词跟随总帧 P95 | 206.75 / 170.68 / 167.95 | 166.33 / 173.25 / 168.39 | 170.68 → 168.39 |
+| 手动歌词浏览总帧 P95 | 107.14 / 60.75 / 67.49 | 79.90 / 59.91 / 87.89 | 67.49 → 79.90 |
+
+首轮首页改善未在后两轮稳定复现，曲库和歌词浏览部分指标变慢。证据支持重复计算、订阅和主线程索引工作减少，尚不支持“整体滑动卡顿已解决”。真实手机仍需在相同曲库、封面加载和播放状态下测量帧提交；本轮没有连接物理手机。
+
+### 验证与记录
+
+- 212 项播放器 JVM 测试通过，performance 应用与测试 APK 构建通过。
+- 两轮功能设备回归分别通过 31 项、14 项，合计覆盖 36 个不同用例：新增工作量、标题栏方向与滚动恢复、首页导航、搜索分类、歌单排序与选曲、数据刷新、封面共享／取消、进度隔离。相同实现的已通过检查复用；后续新增缓存与搜索修改执行对应回归。
+- 已检查实际首页、曲库和搜索截图，见 `build/scroll-20261105/candidate/home-cover-performance/`、`scroll-headers/`、`final-search/`。
+- 修改前失败记录：`build/scroll-20261105/workload-before.log`、`search-before.log`；最终计数：`final-workload-counts.log`；构建／通过记录：`final-build.log`、`regression-device.log`、`final-device.log`。
+- 六轮原始帧数据位于 `build/scroll-20261105/baseline*`、`candidate*`，汇总在 `summary.json`。这些原始 JSON 保留全部帧样本。
+
+重跑工作量检查：
+
+```powershell
+.\gradlew.bat :feature:player:testDebugUnitTest :app:assemblePerformance :app:assemblePerformanceAndroidTest '-PtwilightTestBuildType=performance'
+adb install -r app/build/outputs/apk/performance/app-performance.apk
+adb install -r app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
+adb shell am instrument -w -r -e class com.twilightecho.android.app.ScrollingWorkloadTest com.twilightecho.android.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+该设备检查使用临时界面数据；动画设置测试在结束时恢复原系统值。

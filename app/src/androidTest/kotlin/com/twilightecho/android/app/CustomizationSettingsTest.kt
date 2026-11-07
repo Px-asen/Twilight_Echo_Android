@@ -192,7 +192,8 @@ class CustomizationSettingsTest {
             override fun getSharedPreferences(name: String, mode: Int) = super.getSharedPreferences("$name-$id", mode)
         }
         val store = UserPreferencesStore(context)
-        store.update { it.copy(appearance = AppearancePreferences(AccentSource.CUSTOM, densityScale = 1.2f, contentOpacity = 0.5f),
+        store.update { it.copy(appearance = AppearancePreferences(AccentSource.CUSTOM, densityScale = 1.2f, contentOpacity = 0.5f,
+            immersiveMode = true),
             lyrics = LyricsPreferences(38f, 500, 0f, 34f, false, 22f), ncmQuality = NcmPlaybackQuality.LOSSLESS) }
         val image = File(directory, "source.jpg")
         instrumentation.context.assets.open("music/01.jpg").use { input -> image.outputStream().use { input.copyTo(it) } }

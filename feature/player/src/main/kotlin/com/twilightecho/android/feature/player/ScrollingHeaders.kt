@@ -61,7 +61,8 @@ internal fun ScrollAwayHeader(state: TopAppBarState, modifier: Modifier = Modifi
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PlaybackHeaderPage(state: PlayerUiState, actions: PlayerActions, resetKey: String, content: @Composable () -> Unit) {
-    val visible = state.isDesktopLibrary || state.operatingMode is com.twilightecho.android.coreclient.CoreOperatingMode.RemoteDesktopCore
+    val visible = state.activeMainTab == MainDestinationTab.HOME &&
+        (state.isDesktopLibrary || state.operatingMode is com.twilightecho.android.coreclient.CoreOperatingMode.RemoteDesktopCore)
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberScrollHeaderState(resetKey))
     Column(Modifier.fillMaxSize().then(if (visible) Modifier.nestedScroll(scroll.nestedScrollConnection) else Modifier)) {
         if (visible) ScrollAwayHeader(scroll.state, Modifier.testTag("playbackHeader")) {

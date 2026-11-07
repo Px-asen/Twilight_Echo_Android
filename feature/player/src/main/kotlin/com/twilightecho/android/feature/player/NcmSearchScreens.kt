@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -23,6 +24,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.twilightecho.android.ui.components.*
+
+/** Result filters appear after the first response, and stay put while changing category or page. */
+@Composable
+internal fun rememberSearchCategoriesVisible(query: String, completed: Boolean, session: String = "main-search"): Boolean {
+    var visible by rememberSaveable(session, query.isBlank()) { mutableStateOf(false) }
+    LaunchedEffect(completed, query.isBlank()) {
+        if (query.isNotBlank() && completed) visible = true
+    }
+    return query.isNotBlank() && (visible || completed)
+}
 
 @Composable
 internal fun <T> SearchTabs(options: List<T>, selected: T, label: (T) -> String,

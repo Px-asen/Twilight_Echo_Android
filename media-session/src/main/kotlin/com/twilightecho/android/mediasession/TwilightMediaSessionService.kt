@@ -15,10 +15,15 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
+import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.DefaultMediaNotificationProvider
 import com.twilightecho.android.coreclient.CoreResult
 import com.twilightecho.android.playbackhost.AndroidPlaybackHost
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /**
  * AndroidX Media3 `MediaSessionService` hosting `CoreSimpleBasePlayer` (Sections 11.2, 11.3, 11.4).
@@ -26,9 +31,10 @@ import com.twilightecho.android.playbackhost.AndroidPlaybackHost
  * Connects the OS media notification, lock screen controls, Bluetooth AVRCP, and Android Auto
  * to the singleton `AndroidPlaybackHost`.
  */
-class TwilightMediaSessionService : MediaSessionService() {
+class TwilightMediaSessionService : MediaLibraryService() {
 
-    private var mediaSession: MediaSession? = null
+    private var mediaSession: MediaLibrarySession? = null
+    private val libraryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -39,9 +45,10 @@ class TwilightMediaSessionService : MediaSessionService() {
                 setSmallIcon(R.drawable.ic_twilight_notification)
             }
         setMediaNotificationProvider(notificationProvider)
+        val library = CarMediaLibrary(playbackHost, libraryScope)
         val player = CoreSimpleBasePlayer(playbackHost = playbackHost,
             artworkLoader = MediaSessionArtwork(applicationContext, playbackHost)::load,
-            playRequest = ::playFromSystem)
+            playRequest = ::playFromSystem, selectMediaItems = library::select)
 
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         val sessionActivityPendingIntent = launchIntent?.let { intent ->
@@ -53,7 +60,7 @@ class TwilightMediaSessionService : MediaSessionService() {
             )
         }
 
-        val builder = MediaSession.Builder(this, player)
+        val builder = MediaLibrarySession.Builder(this, player, library)
             .setId("TwilightEchoPrimaryMediaSession")
         if (sessionActivityPendingIntent != null) {
             builder.setSessionActivity(sessionActivityPendingIntent)
@@ -107,7 +114,7 @@ class TwilightMediaSessionService : MediaSessionService() {
         ServiceCompat.startForeground(this, notificationId, notification, serviceType)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
         return mediaSession
     }
 
@@ -149,6 +156,7 @@ class TwilightMediaSessionService : MediaSessionService() {
             release()
         }
         mediaSession = null
+        libraryScope.cancel()
         super.onDestroy()
     }
 }

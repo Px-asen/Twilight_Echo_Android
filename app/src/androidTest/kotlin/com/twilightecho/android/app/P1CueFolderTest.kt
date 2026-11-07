@@ -1,8 +1,6 @@
 package com.twilightecho.android.app
 
-import android.Manifest
 import android.content.ContentUris
-import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.provider.MediaStore
 import android.util.Log
@@ -35,8 +33,8 @@ import kotlin.concurrent.thread
 
 /**
  * P1 CUE through the shipped app: a music folder picked in the system picker, its CUE image split into library
- * songs with and without Android's music permission, the album played through the native engine, and the folder
- * removed again. Start without the music permission to cover the folder-only scan (see the P1 README).
+ * songs, the album played through the native engine, and the folder removed again. Scanning uses only SAF
+ * grants; removing the grant must remove these tracks even when MediaStore has indexed the same files.
  */
 @RunWith(AndroidJUnit4::class)
 class P1CueFolderTest {
@@ -124,13 +122,16 @@ class P1CueFolderTest {
 
     @After fun cleanUp() {
         runBlocking {
-            client.executeCommand(CoreTypedCommand.Pause)
             original?.let { snapshot ->
-                client.executeCommand(CoreTypedCommand.ReplaceQueue(tracks = savedQueue,
-                    startIndex = snapshot.queue?.index?.coerceAtLeast(0) ?: 0, play = false))
-                snapshot.playback?.let { client.executeCommand(CoreTypedCommand.SetVolume(it.volume)) }
+                if (savedQueue.isEmpty()) clearTestPlaybackQueue(client)
+                else {
+                    check(client.executeCommand(CoreTypedCommand.Stop).isSuccess)
+                    check(client.executeCommand(CoreTypedCommand.ReplaceQueue(tracks = savedQueue,
+                        startIndex = snapshot.queue?.index?.coerceAtLeast(0) ?: 0, play = false)).isSuccess)
+                }
+                snapshot.playback?.let { check(client.executeCommand(CoreTypedCommand.SetVolume(it.volume)).isSuccess) }
             }
-            savedAudio?.let { client.setEqConfig(it) }
+            savedAudio?.let { client.setEqConfig(it).getOrThrow() }
         }
         releaseTestFolder()
         shell("rm -rf $FOLDER")

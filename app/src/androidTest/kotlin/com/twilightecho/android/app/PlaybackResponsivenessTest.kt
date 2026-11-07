@@ -106,11 +106,12 @@ class PlaybackResponsivenessTest {
             rule.waitForIdle()
             assertTrue(UiDevice.getInstance(instrumentation).takeScreenshot(File(directory, "player.png")))
         } finally {
-            client.executeCommand(CoreTypedCommand.Stop)
-            client.executeCommand(CoreTypedCommand.ReplaceQueue(id = original.queue?.id ?: "default", tracks = savedQueue,
-                startIndex = (original.queue?.index ?: 0).coerceAtLeast(0), play = false))
-            if (savedQueue.isNotEmpty()) {
-                client.executeCommand(CoreTypedCommand.Seek(original.playback?.position ?: 0.0))
+            if (savedQueue.isEmpty()) clearTestPlaybackQueue(client)
+            else {
+                check(client.executeCommand(CoreTypedCommand.Stop).isSuccess)
+                check(client.executeCommand(CoreTypedCommand.ReplaceQueue(id = original.queue?.id ?: "default", tracks = savedQueue,
+                    startIndex = (original.queue?.index ?: 0).coerceAtLeast(0), play = false)).isSuccess)
+                check(client.executeCommand(CoreTypedCommand.Seek(original.playback?.position ?: 0.0)).isSuccess)
             }
             if (originalMode is CoreOperatingMode.RemoteDesktopCore) host.selectPlaybackTarget(phone = false)
             source.delete()

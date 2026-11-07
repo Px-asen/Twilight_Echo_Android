@@ -19,6 +19,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -141,7 +143,7 @@ internal fun SettingsTabScreen(state: PlayerUiState, actions: PlayerActions,
                                 IconTile(TwilightIcons.Library, Modifier.padding(end = 14.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text("音乐文件夹", style = MaterialTheme.typography.titleMedium)
-                                    SupportingText("选择存放音乐的文件夹，自动导入其中的音频文件与 CUE 分轨。")
+                                    SupportingText("选择音乐文件夹，导入歌曲、CUE 分轨和 SACD 音轨。")
                                 }
                             }
                             AnimatedVisibility(
@@ -213,7 +215,7 @@ internal fun SettingsTabScreen(state: PlayerUiState, actions: PlayerActions,
                                     IconTile(TwilightIcons.Trash, Modifier.padding(end = 14.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text("已移除的歌曲", style = MaterialTheme.typography.titleMedium)
-                                        SupportingText("已从本机音乐库移除 $shownExcludedCount 首歌曲，读取文件夹时会自动跳过。")
+                                        SupportingText("已保存 $shownExcludedCount 条移除记录，读取文件夹时会跳过匹配的歌曲。")
                                     }
                                 }
                                 PillButton(
@@ -349,6 +351,24 @@ internal fun SettingsTabScreen(state: PlayerUiState, actions: PlayerActions,
                             state.isConnectingRemoteCore, onForget = { actions.forgetDesktop(device) }.takeIf { device.trusted }) {
                             actions.selectDesktop(device)
                         }
+                        if (device.trusted) {
+                            val external = state.preferences.desktopExternalUrls[device.id].orEmpty()
+                            var editing by remember(device.id) { mutableStateOf(false) }
+                            var address by remember(device.id, external) { mutableStateOf(external) }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton({ editing = true }, enabled = !state.isConnectingRemoteCore) { Text("外网地址") }
+                                if (external.isNotBlank()) TextButton({ actions.connectExternalDesktop(device) }, enabled = !state.isConnectingRemoteCore,
+                                    modifier = Modifier.testTag("externalConnect-${device.id}")) { Text("通过外网连接") }
+                            }
+                            if (editing) AlertDialog(onDismissRequest = { editing = false }, title = { Text("${device.name}的外网地址") },
+                                text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text("填写可访问此 Server 的 VPN 地址或 HTTPS 主机和端口。连接会继续核对原配对证书。")
+                                    OutlinedTextField(address, { address = it }, label = { Text("外网地址") }, singleLine = true,
+                                        placeholder = { Text("https://music.example.com:18492") }, modifier = Modifier.testTag("externalAddress"))
+                                    Text("留空可移除。", style = MaterialTheme.typography.bodySmall)
+                                } }, confirmButton = { TextButton({ actions.desktopExternalUrl(device.id, address); editing = false }) { Text("保存") } },
+                                dismissButton = { TextButton({ editing = false }) { Text("取消") } })
+                        }
                     }
                     state.remoteStatusMessage?.let {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -449,14 +469,16 @@ internal fun AudioSignalSummary(diagnostics: AudioDiagnosticsUiModel, modifier: 
                 Text("选择歌曲查看音频链路", style = MaterialTheme.typography.bodyLarge, color = colors.onSurfaceVariant)
             } else {
                 SignalStage("音源", listOfNotNull(diagnostics.codec.takeIf { it.isNotBlank() }?.uppercase(),
-                    audioResolution(diagnostics.sourceSampleRateHz, diagnostics.sourceBitDepth).takeIf { it.isNotBlank() })
+                    (if (diagnostics.isDsd) dsdResolution(diagnostics.sourceSampleRateHz, diagnostics.dsdRate)
+                    else audioResolution(diagnostics.sourceSampleRateHz, diagnostics.sourceBitDepth)).takeIf { it.isNotBlank() })
                     .joinToString(" · "))
                 if (hasOutput) {
                     SignalStage("声音处理", if (diagnostics.dspActive) "均衡与音效" else "标准播放")
                     SignalStage("播放输出 · ${if (diagnostics.exclusive) "独占" else "共享"}",
                         listOfNotNull(diagnostics.deviceName?.takeIf { it.isNotBlank() },
-                            audioResolution(diagnostics.actualSampleRateHz, diagnostics.actualBitDepth, diagnostics.actualSampleFormat))
+                            outputResolution(diagnostics))
                             .joinToString("\n"))
+                    if (diagnostics.isDsd) SignalStage("DSD 路径", dsdOutputStatus(diagnostics))
                     if (diagnostics.outputPerfect) Text("逐位输出", style = MaterialTheme.typography.bodyLarge)
                     val motionEnabled = rememberMotionEnabled()
                     TextButton(onClick = { expanded = !expanded }, modifier = Modifier
@@ -470,9 +492,14 @@ internal fun AudioSignalSummary(diagnostics: AudioDiagnosticsUiModel, modifier: 
                     ) {
                         Column(Modifier.testTag("audioOutputFacts"), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                             if (diagnostics.requestedSampleRateHz > 0) SignalStage("引擎请求",
-                                audioResolution(diagnostics.requestedSampleRateHz, 0, diagnostics.requestedSampleFormat))
-                            SignalStage("播放流", formatWithChannels(diagnostics.actualSampleRateHz, diagnostics.actualBitDepth,
-                                diagnostics.actualSampleFormat, diagnostics.actualChannels))
+                                requestedOutputResolution(diagnostics))
+                            SignalStage("播放流", listOfNotNull(outputResolution(diagnostics),
+                                when (val channels = diagnostics.actualChannels) {
+                                    0 -> null; 1 -> "单声道"; 2 -> "双声道"; else -> "$channels 声道"
+                                }).joinToString(" · "))
+                            if (diagnostics.transportSampleRateHz > 0 && diagnostics.dsdMode in setOf("native", "dop"))
+                                SignalStage(if (diagnostics.dsdMode == "native") "USB 传输字时钟" else "USB 载波时钟",
+                                    audioResolution(diagnostics.transportSampleRateHz, 0))
                             if (diagnostics.hardwareSampleRateHz > 0) SignalStage("系统硬件格式",
                                 formatWithChannels(diagnostics.hardwareSampleRateHz, diagnostics.hardwareBitDepth,
                                     diagnostics.hardwareSampleFormat, diagnostics.hardwareChannels))
@@ -530,7 +557,8 @@ internal fun SettingsSwitch(title: String, subtitle: String, checked: Boolean, t
             Text(title, style = MaterialTheme.typography.titleMedium)
             if (subtitle.isNotBlank()) SupportingText(subtitle, Modifier.padding(top = 2.dp))
         }
-        Switch(checked, { toggle() }, modifier = Modifier.heightIn(min = 48.dp), colors = twilightSwitchColors())
+        Switch(checked, { toggle() }, modifier = Modifier.heightIn(min = 48.dp)
+            .semantics { contentDescription = title }, colors = twilightSwitchColors())
     }
 }
 

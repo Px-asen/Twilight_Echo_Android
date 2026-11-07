@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.twilightecho.android.coreclient.*
+import com.twilightecho.android.nativeintegration.usb.AndroidUsbDirectHost
 import com.twilightecho.android.ui.components.*
 import com.twilightecho.android.ui.theme.LocalTwilightAccents
 import com.twilightecho.android.ui.theme.TwilightTokens
@@ -152,38 +153,52 @@ private fun PlaybackSettings(state: PlayerUiState, actions: PlayerActions) {
             Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("automix-help"))
     }
     AudioCard("输出方式") {
+        val direct = AndroidUsbDirectHost.isDirect(dsp.outputDeviceId)
         val devices = listOf("auto" to "跟随系统") + state.audioDevices.map { it.id to it.name }
-        AudioChoice("输出设备", dsp.outputDeviceId, devices) { selected -> actions.editDsp { it.copy(outputDeviceId = selected) } }
+        AudioChoice("输出设备", dsp.outputDeviceId, devices, tag = "output-device", onSelect = actions.selectOutputDevice)
         if (dsp.outputDeviceId != "auto" && devices.none { it.first == dsp.outputDeviceId }) {
-            SupportingText("所选设备当前未连接，可改为跟随系统。", Modifier.padding(horizontal = 18.dp))
+            SupportingText(if (direct) "所选 USB 设备当前未连接，播放保持暂停。可重新选择设备。" else "所选设备当前未连接，可改为跟随系统。",
+                Modifier.padding(horizontal = 18.dp))
         }
         CardDivider()
-        Column(Modifier.testTag("usb-pcm-setting")) {
-            SettingsSwitch("USB 原样 PCM（实验）", "Android 14+ · DAC 须声明 Bit-Perfect", dsp.usbPcmPassthrough) {
-                actions.editDsp { it.copy(usbPcmPassthrough = !it.usbPcmPassthrough) }
+        if (direct) {
+            SupportingText("USB 直连独占", Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("usb-direct-setting"))
+            SupportingText("先调低 DAC 硬件音量。选择后点播放接管；暂停时归还系统，断开或失败时保留位置，不自动切换扬声器。",
+                Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
+            SupportingText(if (state.diagnostics.outputBackend == "usb-direct" && state.diagnostics.exclusive)
+                "USB 接口已独占 · ${outputResolution(state.diagnostics)}"
+                else "点播放建立 USB 直连；仅在接口接管成功后显示独占状态。",
+                Modifier.padding(horizontal = 18.dp, vertical = 8.dp).testTag("usb-direct-status"))
+            UsbHardwareVolumeSetting(state, actions.usbHardwareVolume)
+        } else {
+            Column(Modifier.testTag("usb-pcm-setting")) {
+                SettingsSwitch("USB 原样 PCM（实验）", "Android 14+ · DAC 须声明 Bit-Perfect", dsp.usbPcmPassthrough) {
+                    actions.editDsp { it.copy(usbPcmPassthrough = !it.usbPcmPassthrough) }
+                }
+                SupportingText("先调低 DAC 硬件音量。需应用音量 100%、原速、跟随音源且无 DSP；不会自动调整现有设置。支持单／双声道 PCM。",
+                    Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("usb-pcm-safety"))
+                AnimatedVisibility(
+                    visible = dsp.usbPcmPassthrough,
+                    enter = TwilightMotion.sectionExpand(motionEnabled),
+                    exit = TwilightMotion.sectionCollapse(motionEnabled)
+                ) {
+                    SupportingText(
+                        if (state.diagnostics.usbPcmPreferenceAccepted && state.diagnostics.usbPcmFormatMatched)
+                            "设备已声明 · 系统偏好已接受 · 活动格式匹配。系统未提供逐轨逐位证明。"
+                        else "尚未建立原样通路。暂停时释放偏好；失效后可关闭此模式恢复普通输出。",
+                        Modifier.padding(horizontal = 18.dp, vertical = 8.dp).testTag("usb-pcm-status"))
+                }
             }
-            SupportingText("先调低 DAC 硬件音量。需应用音量 100%、原速、跟随音源且无 DSP；不会自动调整现有设置。支持单／双声道 PCM。",
-                Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("usb-pcm-safety"))
-            AnimatedVisibility(
-                visible = dsp.usbPcmPassthrough,
-                enter = TwilightMotion.sectionExpand(motionEnabled),
-                exit = TwilightMotion.sectionCollapse(motionEnabled)
-            ) {
-                SupportingText(
-                    if (state.diagnostics.usbPcmPreferenceAccepted && state.diagnostics.usbPcmFormatMatched)
-                        "设备已声明 · 系统偏好已接受 · 活动格式匹配。系统未提供逐轨逐位证明。"
-                    else "尚未建立原样通路。暂停时释放偏好；失效后可关闭此模式恢复普通输出。",
-                    Modifier.padding(horizontal = 18.dp, vertical = 8.dp).testTag("usb-pcm-status"))
+            CardDivider()
+            SettingsSwitch("请求 AAudio 独占", "连续播放策略不请求独占。系统可能改用共享模式；实际模式显示在音频链路。", dsp.exclusive) {
+                actions.editDsp { it.copy(exclusive = !it.exclusive) }
             }
-        }
-        CardDivider()
-        SettingsSwitch("请求 AAudio 独占", "连续播放策略不请求独占。系统可能改用共享模式；实际模式显示在音频链路。", dsp.exclusive) {
-            actions.editDsp { it.copy(exclusive = !it.exclusive) }
         }
         AudioChoice("缓冲区", dsp.bufferFrames.toString(), listOf("0" to "自动", "256" to "256 帧", "512" to "512 帧", "1024" to "1024 帧", "2048" to "2048 帧")) { selected ->
             actions.editDsp { it.copy(bufferFrames = selected.toInt()) }
         }
     }
+    DsdOutputSettings(state, actions)
     val stage = dsp.outputStage
     PcmRateSettings(state, actions)
     AudioCard("重采样与输出余量") {
@@ -620,8 +635,8 @@ private fun DspNodeEditor(node: CoreDspNode, spec: DspModuleSpec, importImpulse:
     DspControls(spec.controls, node.params, update)
     when (node.type) {
         "convolver" -> {
-            if (!node.params["impulseResponsePath"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()) SupportingText("已导入 WAV 脉冲响应", Modifier.padding(horizontal = 18.dp))
-            PillButton("选择 WAV 脉冲响应", { importImpulse(node.id) }, Modifier.padding(horizontal = 18.dp, vertical = 8.dp).fillMaxWidth(), tonal = true)
+            if (!node.params["impulseResponsePath"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()) SupportingText("已导入脉冲响应", Modifier.padding(horizontal = 18.dp))
+            PillButton("选择脉冲响应", { importImpulse(node.id) }, Modifier.padding(horizontal = 18.dp, vertical = 8.dp).fillMaxWidth(), tonal = true)
         }
         "dynamicEqualizer" -> DspArrayEditor("频段", "bands", node.params, dynamicEqControls, 8, update)
         "channelStrip" -> DspArrayEditor("声道", "channels", node.params, channelControls, 8, update)
@@ -684,6 +699,7 @@ private fun AudioMonitor(state: PlayerUiState) {
     val colors = MaterialTheme.colorScheme
     val track = colors.onSurface.copy(alpha = 0.08f)
     Column(Modifier.padding(horizontal = 18.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        SupportingText("频谱 · 声道平均")
         Canvas(Modifier.fillMaxWidth().height(84.dp).testTag("dsp-spectrum")) {
             val bars = state.audioLevels
             val count = bars.size.coerceAtLeast(48)
@@ -703,7 +719,7 @@ private fun AudioMonitor(state: PlayerUiState) {
                 MeterReading("${meterValue(meter.integratedLufs)} LUFS", "响度", Modifier.weight(1f))
                 MeterReading("${meterValue(meter.truePeakDb)} dBTP", "真峰值", Modifier.weight(1f))
             }
-            SupportingText("相关性 ${String.format(Locale.US, "%.2f", meter.correlation)} · 削波 ${meter.clipCount}")
+            SupportingText("累计相关性 ${String.format(Locale.US, "%.2f", meter.correlation)} · 削波 ${meter.clipCount}")
         }
         state.audioMonitorError?.let { Text(it, color = colors.error, style = MaterialTheme.typography.bodyMedium) }
     }

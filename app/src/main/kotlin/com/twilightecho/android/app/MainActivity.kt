@@ -13,6 +13,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
@@ -21,6 +27,10 @@ import com.twilightecho.android.feature.player.PlayerViewModel
 import com.twilightecho.android.mediasession.TwilightMediaSessionService
 import com.twilightecho.android.playbackhost.AndroidPlaybackHost
 import com.twilightecho.android.ui.theme.TwilightEchoTheme
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /**
  * Main Activity hosting Jetpack Compose UI (`NowPlayingScreen`), handling notification permission
@@ -49,6 +59,21 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
         )
         super.onCreate(savedInstanceState)
+        lifecycleScope.launch {
+            // Reapply the saved choice after returning from another app or recreating this Activity.
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                playbackHost.userPreferences.state.map { it.appearance.immersiveMode }
+                    .distinctUntilChanged().collect { immersive ->
+                        WindowCompat.getInsetsController(window, window.decorView).apply {
+                            systemBarsBehavior = if (immersive)
+                                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                            else WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+                            if (immersive) hide(WindowInsetsCompat.Type.statusBars())
+                            else show(WindowInsetsCompat.Type.statusBars())
+                        }
+                    }
+            }
+        }
         setContent {
             TwilightEchoTheme {
                 NowPlayingScreen(

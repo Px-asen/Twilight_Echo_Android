@@ -38,6 +38,8 @@
 
 ## Download & Installation
 
+Mobile library support now includes explicit desktop-track downloads with resume, storage limits and metered-network controls, saved external/VPN addresses for paired computers, and Android Auto browsing, search and playback on the phone. See [the mobile library guide](./MOBILE_LIBRARY.md) for usage and validation status.
+
 **[Download Latest APK from Releases →](https://github.com/Px-asen/Twilight_Echo_Android/releases)**
 
 1. Download the latest `.apk` from [Releases](https://github.com/Px-asen/Twilight_Echo_Android/releases) (universal builds include `arm64-v8a`, `armeabi-v7a`, `x86_64`, and `x86` ABIs).
@@ -53,7 +55,7 @@
 **Discover Online Streaming** — No local files required to get started. Enable the built-in NetEase Cloud Music provider from the Home card or **Settings → Plugins & Sources** and sign in via QR code or account credentials:
 - **Home** automatically loads Daily Recommendations, Personal FM, and Personal Radar;
 - **Library → Streaming** organizes your liked tracks, created/collected playlists, saved albums, followed artists, recent plays, and weekly listening rankings;
-- **Search → NetEase Cloud** searches across songs, albums, artists, and playlists;
+- **Search** lets you choose your local library or an enabled provider and browse Songs, Artists, or Albums. NetEase Cloud also supports playlists; unavailable plugin categories are clearly indicated;
 - **Settings → Streaming Quality** lets you choose Auto, Hi-Res Lossless, Lossless, Extreme, or Standard quality. Additional mobile-compatible `.tep` providers can be installed from **Settings → Plugins & Sources**.
 
 **Connect to Your Desktop Core** — With both your phone and computer on the same LAN and *LAN Remote Control* enabled on the desktop app, open **Settings → Desktop Core** on your phone. Tap your discovered computer and click **Approve** on your desktop screen. Once trusted, reconnect with a single tap anytime and switch **Audio Output** between **This Phone** and **Computer**.
@@ -218,6 +220,8 @@ Twilight_Echo_Android/
 
 Requirements: **JDK 17+** (JDK 21 recommended), **Android SDK 35**, and **Android NDK r27+** (when building native FFmpeg/JNI).
 
+Set `JAVA_HOME` to your local JDK installation; the repository does not pin a machine-specific JDK path.
+
 1. **Build Android FFmpeg libraries** (run once from the sibling `Twilight_Echo` desktop checkout):
    ```powershell
    $env:ANDROID_NDK_HOME='path/to/your/ndk'
@@ -234,7 +238,7 @@ Requirements: **JDK 17+** (JDK 21 recommended), **Android SDK 35**, and **Androi
    ```
 3. **Verify Core & Assemble Debug APK**:
    ```powershell
-   .\gradlew.bat verifyPortableCore testDebugUnitTest :app:assembleDebug
+   .\gradlew.bat verifyPortableCore :core-client:test testDebugUnitTest :app:assembleDebug
    ```
    Output APK: `app/build/outputs/apk/debug/app-debug.apk`.
 

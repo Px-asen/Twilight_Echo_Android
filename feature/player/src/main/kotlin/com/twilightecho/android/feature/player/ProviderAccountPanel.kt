@@ -53,10 +53,25 @@ internal fun ProviderAccountPanel(state: ProviderPageState, presenter: PluginPre
                     }
                     provider == null -> SupportingText(if (state.busy) "正在读取音源…" else "音源未就绪，请返回后重新打开。")
                     else -> {
+                        val qrCapable = "getQrLogin" in provider.methods && "checkQrLogin" in provider.methods
+                        val oauth = authType == "oauth"
+                        val disclaimer = state.disclaimer?.takeIf { !it.accepted }
                         IconTile(TwilightIcons.SignalWave, size = 52.dp)
                         Text("登录$name", style = MaterialTheme.typography.headlineSmall)
                         provider.ui.text("loginInstructions").takeIf { it.isNotBlank() }?.let { SupportingText(it) }
-                        if (authType == "settings" && "loginWithServer" in provider.methods) {
+                        if (disclaimer != null) {
+                            ProviderDisclaimerStep(
+                                disclaimer = disclaimer,
+                                busy = state.busy,
+                                primaryLabel = when {
+                                    qrCapable && oauth -> "同意并开始授权"
+                                    qrCapable -> "同意并获取二维码"
+                                    else -> "同意并继续"
+                                },
+                                showSkipQr = qrCapable,
+                                onConfirm = { startQr -> presenter.acceptDisclaimer(startQr = startQr) }
+                            )
+                        } else if (authType == "settings" && "loginWithServer" in provider.methods) {
                             OutlinedTextField(address, { address = it }, label = { Text("服务器地址") }, placeholder = { Text("http://192.168.1.2:4533") },
                                 singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                                 shape = RoundedCornerShape(16.dp), colors = twilightFieldColors(), modifier = Modifier.fillMaxWidth())
@@ -68,8 +83,7 @@ internal fun ProviderAccountPanel(state: ProviderPageState, presenter: PluginPre
                             SupportingText("插件只获准访问这台服务器，局域网和 HTTP 地址也可以。")
                             PillButton("连接", { presenter.serverLogin(address.trim(), username.trim(), password); password = "" }, Modifier.fillMaxWidth(),
                                 enabled = !state.busy && address.isNotBlank() && username.isNotBlank())
-                        } else if ("getQrLogin" in provider.methods && "checkQrLogin" in provider.methods) {
-                            val oauth = authType == "oauth"
+                        } else if (qrCapable) {
                             rememberQrBitmap(state.qrImage)?.let { LoginQrCode(it, "${name}登录二维码", Modifier.align(Alignment.CenterHorizontally)) }
                             state.authUrl?.let { url -> PillButton("在浏览器中授权", { runCatching { uri.openUri(url) } }, Modifier.fillMaxWidth()) }
                             PillButton(when {
@@ -84,7 +98,65 @@ internal fun ProviderAccountPanel(state: ProviderPageState, presenter: PluginPre
         state.loginMessage?.let { SupportingText(it) }
         state.notice?.let { ProviderNotice(it) }
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
-        provider?.panels?.forEach { panel -> ProviderPanelCard(panel, state.panel?.takeIf { it.panel.id == panel.id }, state.busy, presenter) }
+        provider?.panels
+            ?.filter { !state.requiresDisclaimer || it.id != state.disclaimer?.panel?.id }
+            ?.forEach { panel -> ProviderPanelCard(panel, state.panel?.takeIf { it.panel.id == panel.id }, state.busy, presenter) }
+    }
+}
+
+/** Pre-login disclaimer confirmation step presented directly before QR code generation / sign-in. */
+@Composable
+private fun ProviderDisclaimerStep(
+    disclaimer: ProviderDisclaimer,
+    busy: Boolean,
+    primaryLabel: String,
+    showSkipQr: Boolean,
+    onConfirm: (startQr: Boolean) -> Unit
+) {
+    var agreed by remember(disclaimer.panel.id, disclaimer.fieldKey) { mutableStateOf(false) }
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().testTag("providerDisclaimerGate"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .background(colors.surfaceContainerHigh.copy(alpha = 0.72f))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("使用前免责声明", style = MaterialTheme.typography.titleSmall, color = colors.primary)
+            Text(disclaimer.notice, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        }
+        Row(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .clickable(enabled = !busy, role = androidx.compose.ui.semantics.Role.Checkbox) { agreed = !agreed }
+                .padding(vertical = 4.dp)
+                .testTag("providerDisclaimerAgree"),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(checked = agreed, onCheckedChange = null, enabled = !busy)
+            Text(
+                disclaimer.acceptLabel,
+                Modifier.padding(start = 10.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onSurface
+            )
+        }
+        PillButton(
+            primaryLabel,
+            { onConfirm(showSkipQr) },
+            Modifier.fillMaxWidth().testTag("providerDisclaimerConfirm"),
+            enabled = agreed && !busy
+        )
+        if (showSkipQr) {
+            TextButton(
+                onClick = { onConfirm(false) },
+                enabled = agreed && !busy,
+                modifier = Modifier.align(Alignment.CenterHorizontally).testTag("providerDisclaimerOnly")
+            ) {
+                Text("仅确认声明，暂不扫码")
+            }
+        }
     }
 }
 
