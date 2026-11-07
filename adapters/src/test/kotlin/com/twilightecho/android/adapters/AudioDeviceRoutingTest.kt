@@ -50,4 +50,16 @@ class AudioDeviceRoutingTest {
         assertTrue(shouldPauseForDeviceRemoval(bluetooth, setOf(12)))
         assertFalse(shouldPauseForDeviceRemoval(AudioDeviceRouteInfo(), setOf(9)))
     }
+
+    @Test fun usbDirectUsesHostFactsWithoutBorrowingASystemRouteId() {
+        val output = playing.copy(outputBackend = "usb-direct", actualDeviceId = "usb-direct:/dev/bus/usb/001/002",
+            actualDeviceName = "Direct DAC", actualSampleRate = 192000, actualBitDepth = 24)
+        val route = resolvePlaybackRoute(listOf(speaker, usb), output)
+        assertEquals(0, route.deviceId); assertEquals("Direct DAC", route.deviceName)
+        assertEquals("usb_dac", route.routeType); assertEquals("usb-direct", route.outputBackend)
+        assertEquals(192000, route.activeSampleRate); assertTrue(route.isUsbHiResCapable)
+        assertFalse(shouldPauseForDeviceRemoval(route, setOf(usb.deviceId)))
+        val released = resolvePlaybackRoute(listOf(speaker, usb), output.copy(state = "paused", actualSampleRate = null, actualDeviceId = null))
+        assertEquals("unknown", released.routeType); assertEquals(0, released.activeSampleRate)
+    }
 }

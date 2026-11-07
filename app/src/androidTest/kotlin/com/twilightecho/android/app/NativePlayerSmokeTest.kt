@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.ContentUris
 import android.net.Uri
 import android.os.Environment
+import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
 import androidx.compose.ui.semantics.SemanticsActions
@@ -15,7 +16,7 @@ import androidx.test.uiautomator.*
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.twilightecho.android.adapters.MusicFolders
-import com.twilightecho.android.coreclient.CoreTypedCommand
+import com.twilightecho.android.coreclient.CoreEqConfigView
 import com.twilightecho.android.playbackhost.AndroidPlaybackHost
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -23,6 +24,7 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.runners.model.MultipleFailureException
 import java.io.File
 import java.util.regex.Pattern
 
@@ -34,6 +36,12 @@ class NativePlayerSmokeTest {
     private val host get() = AndroidPlaybackHost.getInstance(instrumentation.targetContext)
     private val device get() = UiDevice.getInstance(instrumentation)
     private val ownedFixtures = mutableListOf<Uri>()
+    private var restoreEmptyQueue = false
+    private var savedAudio: CoreEqConfigView? = null
+    private var fixtureTrackId: String? = null
+    private var savedFavorite = false
+    private var savedBookmarkIds = emptySet<String>()
+    private val playlistName = "夜行验收-${System.nanoTime()}"
 
     private fun importTestMusic(): String {
         val context = instrumentation.targetContext
@@ -102,10 +110,27 @@ class NativePlayerSmokeTest {
     }
 
     @After fun finishPlayback() {
-        runBlocking { host.primaryCoreClient.executeCommand(CoreTypedCommand.Pause) }
-        releaseQaFolder()
-        ownedFixtures.forEach { instrumentation.targetContext.contentResolver.delete(it, null, null) }
-        device.unfreezeRotation()
+        val failures = mutableListOf<Throwable>()
+        fun cleanup(action: () -> Unit) {
+            try { action() } catch (failure: Throwable) { failures += failure }
+        }
+        cleanup { if (restoreEmptyQueue) runBlocking { clearTestPlaybackQueue(host.primaryCoreClient) } }
+        cleanup { savedAudio?.let { runBlocking { host.primaryCoreClient.setEqConfig(it).getOrThrow() } } }
+        cleanup { fixtureTrackId?.let { trackId -> runBlocking {
+            val client = host.primaryCoreClient
+            check(client.reconcileState().isSuccess)
+            if ((trackId in client.snapshot.value!!.favoriteTrackIds) != savedFavorite) {
+                client.toggleFavorite(trackId).getOrThrow()
+            }
+            client.snapshot.value!!.bookmarks.filter { it.trackId == trackId && it.id !in savedBookmarkIds }
+                .forEach { client.removeBookmark(it.id).getOrThrow() }
+            client.snapshot.value!!.playlists.filter { it.name == playlistName }
+                .forEach { client.deletePlaylist(it.id).getOrThrow() }
+        } } }
+        cleanup { releaseQaFolder() }
+        ownedFixtures.forEach { uri -> cleanup { instrumentation.targetContext.contentResolver.delete(uri, null, null) } }
+        cleanup { device.unfreezeRotation() }
+        MultipleFailureException.assertEmpty(failures)
     }
 
     @Test fun scanPlaySeekLyricsFavoriteBookmarkAndRotate() {
@@ -113,7 +138,12 @@ class NativePlayerSmokeTest {
         val trackId = importTestMusic()
         rule.waitUntil(15000) { host.primaryCoreClient.snapshot.value != null }
         assertNull(host.primaryCoreClient.snapshot.value!!.track)
+        savedAudio = host.primaryCoreClient.snapshot.value!!.eqConfig
+        fixtureTrackId = trackId
+        savedFavorite = trackId in host.primaryCoreClient.snapshot.value!!.favoriteTrackIds
+        savedBookmarkIds = host.primaryCoreClient.snapshot.value!!.bookmarks.map { it.id }.toSet()
         rule.onNodeWithTag("miniPlayer").assertDoesNotExist()
+        restoreEmptyQueue = true
         shot("16-native-empty")
         rule.onNodeWithTag("nav-SETTINGS").performClick()
         rule.onNodeWithText("本地音乐", substring = false).performClick()
@@ -164,8 +194,18 @@ class NativePlayerSmokeTest {
         rule.onNodeWithContentDescription("更多播放操作").performClick()
         rule.onNodeWithText("导入 LRC 歌词").performClick()
         if (!device.wait(Until.hasObject(By.text(pickerName)), 3000)) {
-            device.wait(Until.findObject(By.desc("Show roots")), 5000)!!.click()
-            device.wait(Until.findObject(By.text("Downloads").res("android:id/title")), 5000)!!.click()
+            checkNotNull(device.wait(Until.findObject(By.desc(Pattern.compile("(?i)show roots|显示根目录"))), 5000)) {
+                "The document picker must expose its roots drawer"
+            }.click()
+            device.waitForIdle()
+            // The roots drawer can replace its nodes while animating. UiObject
+            // resolves the selector again at click time instead of retaining a
+            // UiObject2 from the preceding window update.
+            val downloads = device.findObject(UiSelector().resourceId("android:id/title")
+                .textMatches("(?i)downloads|下载"))
+            assertTrue("The document picker must list Downloads", downloads.waitForExists(5000))
+            assertTrue("The Downloads root must open", downloads.click())
+            device.waitForIdle()
         }
         val document = device.wait(Until.findObject(By.text(pickerName)), 10000)
         assertNotNull("The system document picker must expose the imported LRC fixture", document)
@@ -177,32 +217,43 @@ class NativePlayerSmokeTest {
         rule.onNodeWithText("听见安静，也听见想念").performClick()
         rule.waitUntil(10000) { (host.primaryCoreClient.snapshot.value?.playback?.position ?: 0.0) >= 17.0 }
         shot("14-native-lyrics")
+        if (savedFavorite) {
+            rule.onNodeWithContentDescription("取消收藏").performClick()
+            rule.waitUntil(10000) { track.id !in host.primaryCoreClient.snapshot.value!!.favoriteTrackIds }
+        }
         rule.onNodeWithContentDescription("收藏歌曲").performClick()
         rule.waitUntil(10000) { track.id in host.primaryCoreClient.snapshot.value!!.favoriteTrackIds }
         rule.onNodeWithContentDescription("更多播放操作").performClick()
         rule.onNodeWithText("添加当前位置书签").performClick()
         rule.waitUntil(10000) { host.primaryCoreClient.snapshot.value!!.bookmarks.any { it.trackId == track.id } }
         rule.onNodeWithText("封面", useUnmergedTree = true).performClick()
-        device.setOrientationLeft()
-        rule.waitUntil(15000) { device.displayWidth > device.displayHeight }
-        shot("15-native-landscape")
-        rule.onNodeWithContentDescription("下一首").assertIsDisplayed()
-        rule.onNodeWithTag("seek").assertIsDisplayed()
-        device.setOrientationNatural()
-        rule.waitUntil(15000) { device.displayWidth < device.displayHeight }
+        // Default callers still verify rotation. An explicit hardware-run argument
+        // keeps the remaining workflow runnable when a device refuses rotation.
+        if (InstrumentationRegistry.getArguments().getString("nativeSmokeRotation") == "skip") {
+            instrumentation.sendStatus(0, Bundle().apply { putString("rotationCheck", "skipped_by_runner_argument") })
+            shot("15-native-portrait-rotation-skipped")
+        } else {
+            device.setOrientationLeft()
+            rule.waitUntil(15000) { device.displayWidth > device.displayHeight }
+            shot("15-native-landscape")
+            rule.onNodeWithContentDescription("下一首").assertIsDisplayed()
+            rule.onNodeWithTag("seek").assertIsDisplayed()
+            device.setOrientationNatural()
+            rule.waitUntil(15000) { device.displayWidth < device.displayHeight }
+        }
         rule.onNodeWithContentDescription("收起播放器").performClick()
         rule.onNodeWithTag("nav-LIBRARY").assertIsDisplayed()
 
         rule.onNodeWithTag("nav-LIBRARY").performClick()
         rule.onNodeWithText("歌单", substring = false).performClick()
         rule.onNodeWithContentDescription("新建歌单").performClick()
-        rule.onNodeWithTag("playlistName").performTextInput("夜行验收")
+        rule.onNodeWithTag("playlistName").performTextInput(playlistName)
         rule.onNodeWithText("创建", substring = false).performClick()
-        rule.waitUntil(10000) { host.primaryCoreClient.snapshot.value!!.playlists.any { it.name == "夜行验收" } }
-        rule.onNodeWithText("夜行验收", substring = false).performClick()
+        rule.waitUntil(10000) { host.primaryCoreClient.snapshot.value!!.playlists.any { it.name == playlistName } }
+        rule.onNodeWithText(playlistName, substring = false).performClick()
         rule.onNodeWithText("加入当前歌曲").performScrollTo().performClick()
         rule.waitUntil(10000) { host.primaryCoreClient.snapshot.value!!.playlists
-            .first { it.name == "夜行验收" }.trackIds == listOf(track.id) }
+            .first { it.name == playlistName }.trackIds == listOf(track.id) }
         rule.onNodeWithText("播放全部").performScrollTo().performClick()
         awaitPlayback("playing")
         assertEquals(track.id, host.primaryCoreClient.snapshot.value!!.track!!.id)
@@ -211,13 +262,27 @@ class NativePlayerSmokeTest {
         shot("19-native-playlist")
         rule.onNodeWithContentDescription("删除歌单").performClick()
         rule.onNodeWithText("删除", substring = false).performClick()
-        rule.waitUntil(10000) { host.primaryCoreClient.snapshot.value!!.playlists.none { it.name == "夜行验收" } }
+        rule.waitUntil(10000) { host.primaryCoreClient.snapshot.value!!.playlists.none { it.name == playlistName } }
 
         rule.onNodeWithTag("nav-SETTINGS").performClick()
         rule.onNodeWithContentDescription("返回设置").performClick()
         rule.onNodeWithText("音频与 DSP", substring = false).performClick()
-        rule.onNodeWithTag("audio-page-eq").performScrollTo().performClick()
-        rule.onNodeWithText("人声", substring = false).performScrollTo().performClick()
+        rule.openAudioSettingsPage("eq")
+        shot("20-native-eq-page")
+        rule.onNodeWithTag("eq-mode-row").performScrollTo()
+        rule.onNodeWithTag("eq-mode-graphic").performScrollTo().assertIsDisplayed().performClick()
+        try {
+            rule.waitUntil(10000) { host.primaryCoreClient.snapshot.value!!.eqConfig.dsp.eqMode == "graphic" }
+        } catch (failure: Throwable) {
+            shot("native-eq-failure")
+            File(instrumentation.targetContext.getExternalFilesDir(null), "native-smoke-eq-state.txt").writeText(
+                "snapshot=${host.primaryCoreClient.snapshot.value}\n" +
+                    "queried=${runBlocking { host.primaryCoreClient.getEqConfig() }}\n" +
+                    rule.onRoot(useUnmergedTree = true).printToString())
+            throw failure
+        }
+        rule.onNodeWithTag("settings-AUDIO").performScrollToNode(hasText("人声", substring = false))
+        rule.onNodeWithText("人声", substring = false).performScrollTo().assertIsDisplayed().performClick()
         rule.waitUntil(10000) { host.primaryCoreClient.snapshot.value!!.eqConfig.preset == "Vocal" }
         rule.onNodeWithTag("settings-AUDIO").performScrollToNode(hasTestTag("eqBand-9"))
         rule.onNodeWithTag("eqBand-9").performSemanticsAction(SemanticsActions.SetProgress) { it(3f) }

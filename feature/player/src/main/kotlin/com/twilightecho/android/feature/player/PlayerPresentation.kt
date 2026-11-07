@@ -107,12 +107,16 @@ internal fun nextQueueOffset(items: List<CoreQueueEntryView>, total: Int): Int? 
     return (0 until total).firstOrNull { it !in indices }
 }
 
-internal fun filteredSearchTracks(state: PlayerUiState): List<CoreTrackView> =
-    state.searchResults.filter { track -> when (state.activeSearchFilter) {
-        SearchFilterCategory.ALL -> true
-        SearchFilterCategory.LOSSLESS -> track.format?.uppercase() in setOf("FLAC", "WAV", "ALAC", "DSD", "AIFF")
-        SearchFilterCategory.FAVORITES -> track.id in state.favoriteTrackIds
-    } }
+internal fun filteredSearchTracks(state: PlayerUiState): List<CoreTrackView> = when (state.activeSearchFilter) {
+    SearchFilterCategory.ALL -> state.searchResults
+    SearchFilterCategory.LOSSLESS -> state.searchResults.filter { it.format?.uppercase() in LosslessSearchFormats }
+    SearchFilterCategory.FAVORITES -> {
+        val favorites = state.favoriteTrackIds.toHashSet()
+        state.searchResults.filter { it.id in favorites }
+    }
+}
+
+private val LosslessSearchFormats = setOf("FLAC", "WAV", "ALAC", "DSD", "AIFF")
 
 internal fun diagnosticsFor(snapshot: CoreSnapshot): AudioDiagnosticsUiModel {
     val p = snapshot.playback
@@ -121,6 +125,14 @@ internal fun diagnosticsFor(snapshot: CoreSnapshot): AudioDiagnosticsUiModel {
             ?: snapshot.track?.format.orEmpty(),
         sourceSampleRateHz = p?.sourceSampleRate ?: snapshot.track?.sampleRate ?: 0,
         sourceBitDepth = p?.sourceBitDepth ?: snapshot.track?.bitDepth ?: 0,
+        isDsd = p?.isDsd == true,
+        dsdMode = p?.dsdMode,
+        dsdRate = p?.dsdRate ?: 0,
+        actualDsdRate = p?.actualDsdRate ?: 0,
+        dsdConversion = p?.dsdConversion,
+        dsdConversionReason = p?.dsdConversionReason,
+        transportSampleRateHz = p?.transportSampleRate ?: 0,
+        semanticSampleRateHz = p?.semanticSampleRate ?: 0,
         outputBackend = p?.outputBackend.orEmpty(),
         actualSampleRateHz = p?.actualSampleRate ?: 0,
         actualBitDepth = p?.actualBitDepth ?: 0,
@@ -158,6 +170,8 @@ internal fun sourceQualityLabel(state: PlayerUiState): String? {
     val format = codec(diagnostics.codec) ?: codec(track.format)
     val rate = diagnostics.sourceSampleRateHz.takeIf { it > 0 } ?: track.sampleRate?.takeIf { it > 0 }
     val depth = diagnostics.sourceBitDepth.takeIf { it > 0 } ?: track.bitDepth?.takeIf { it > 0 }
+    if (diagnostics.isDsd || depth == 1) return listOfNotNull(format,
+        dsdResolution(rate ?: 0, diagnostics.dsdRate).takeIf { it.isNotBlank() }).joinToString(" ")
     val khz = rate?.let {
         java.math.BigDecimal.valueOf(it.toLong(), 3).stripTrailingZeros().toPlainString()
     }
@@ -172,9 +186,43 @@ internal fun sourceQualityLabel(state: PlayerUiState): String? {
 
 /** Event boundary for the complete UI. Previews and tests supply only the actions they exercise. */
 data class PlayerActions(
+    val offlineDownloadsOpen: (Boolean) -> Unit = {},
+    val downloadTrack: (CoreTrackView) -> Unit = {},
+    val offlineDownloadAction: (String, String) -> Unit = { _, _ -> },
+    val mobileNetworkPreferences: (com.twilightecho.android.coreclient.MobileNetworkPreferences) -> Unit = {},
+    val desktopExternalUrl: (String, String) -> Unit = { _, _ -> },
+    val connectExternalDesktop: (com.twilightecho.android.coreclient.DesktopCoreDevice) -> Unit = {},
+    val desktopPlugins: DesktopPluginsActions = DesktopPluginsActions(),
+    val openDesktopPlugins: () -> Unit = {},
+    val desktopDspLibrary: DesktopDspLibraryActions = DesktopDspLibraryActions(),
+    val openDesktopDspLibrary: (String, String) -> Unit = { _, _ -> },
+    val desktopQueue: DesktopQueueActions = DesktopQueueActions(),
+    val desktopLibraryQueue: DesktopQueueActions = DesktopQueueActions(),
+    val openDesktopQueue: (String, String) -> Unit = { _, _ -> },
+    val playSourceTo: (CatalogSource, Long, com.twilightecho.android.coreclient.DesktopLibraryScope) -> Unit = { _, _, _ -> },
+    val desktopWorkspace: DesktopLibraryWorkspaceActions = DesktopLibraryWorkspaceActions(),
+    val openDesktopWorkspace: () -> Unit = {},
+    val entityEditor: DesktopEntityEditorActions = DesktopEntityEditorActions(),
     val streaming: StreamingActions = StreamingActions(),
+    val providerHome: ProviderHomeActions = ProviderHomeActions(),
+    val selectHomeProvider: (String) -> Unit = {},
     val openPlugins: () -> Unit = {},
     val playbackTarget: (Boolean) -> Unit = {},
+    val desktopAudioOpen: (Boolean) -> Unit = {},
+    val desktopOutput: (String) -> Unit = {},
+    val desktopDsp: (kotlinx.serialization.json.JsonObject) -> Unit = {},
+    val desktopScene: (String?) -> Unit = {},
+    val desktopZone: (String) -> Unit = {},
+    val desktopZoneTransport: (String) -> Unit = {},
+    val desktopZoneValue: (String, Double) -> Unit = { _, _ -> },
+    val desktopHandoff: (com.twilightecho.android.coreclient.DesktopSessionHandoff) -> Unit = {},
+    val desktopCreateGroup: (com.twilightecho.android.coreclient.DesktopSyncGroupCreate) -> Unit = {},
+    val desktopRemoveGroup: (com.twilightecho.android.coreclient.DesktopSyncGroup) -> Unit = {},
+    val desktopGroupAutoMix: (com.twilightecho.android.coreclient.DesktopSyncGroup, String) -> Unit = { _, _ -> },
+    /** The 声区 tab is on screen: keep zones, groups and the followed zone's snapshot fresh. */
+    val desktopZonesActive: (Boolean) -> Unit = {},
+    /** Transport for one zone window (zone id, action), following that zone first when needed. */
+    val desktopZoneTransportFor: (String, String) -> Unit = { _, _ -> },
     val startDiscovery: () -> Unit = {}, val stopDiscovery: () -> Unit = {},
     val refreshDiscovery: () -> Unit = {}, val cancelConnection: () -> Unit = {},
     val selectDesktop: (com.twilightecho.android.coreclient.DesktopCoreDevice) -> Unit = {},
@@ -186,6 +234,7 @@ data class PlayerActions(
     val closeEntity: () -> Unit = {}, val sourcePage: (Int) -> Unit = {},
     val artistAlbums: (Boolean) -> Unit = {}, val retryArtistAlbums: () -> Unit = {},
     val loadLibraryArtist: (String, Boolean) -> Unit = { _, _ -> },
+    val requestLibraryArtist: (String) -> Unit = {},
     val playSource: (CatalogSource, Long) -> Unit = { _, _ -> },
     val requestArtwork: (String) -> Unit = {},
     val lookupArtwork: (String) -> String? = { null },
@@ -204,6 +253,11 @@ data class PlayerActions(
     val retrySearch: () -> Unit = {},
     val selectFilter: (SearchFilterCategory) -> Unit = {},
     val searchSource: (SearchSource) -> Unit = {},
+    val librarySearchCategory: (SearchCategory) -> Unit = {},
+    val searchProvider: (String) -> Unit = {},
+    val providerSearchCategory: (SearchCategory) -> Unit = {},
+    val providerSearchPage: (Int) -> Unit = {},
+    val providerSearchActions: StreamingActions = StreamingActions(),
     val searchCategory: (NcmSearchCategory) -> Unit = {},
     val searchPage: (Int) -> Unit = {}, val submitSearch: () -> Unit = {},
     val playTracks: (List<CoreTrackView>, String) -> Unit = { _, _ -> },
@@ -237,6 +291,7 @@ data class PlayerActions(
     val toggleBitPerfect: () -> Unit = {},
     val toggleGapless: () -> Unit = {},
     val autoMixMode: (String) -> Unit = {},
+    val selectOutputDevice: (String) -> Unit = {},
     val editDsp: ((com.twilightecho.android.coreclient.CoreDspConfig) -> com.twilightecho.android.coreclient.CoreDspConfig) -> Unit = {},
     val editAudio: ((CoreEqConfigView) -> CoreEqConfigView) -> Unit = {},
     val monitorAudio: (Boolean) -> Unit = {},
@@ -249,5 +304,9 @@ data class PlayerActions(
     val useLocal: () -> Unit = {},
     val dismissError: () -> Unit = {},
     val editPreferences: ((com.twilightecho.android.coreclient.UserPreferences) -> com.twilightecho.android.coreclient.UserPreferences) -> Unit = {},
-    val pickBackground: () -> Unit = {}
+    val pickBackground: () -> Unit = {},
+    val usbHardwareVolume: UsbHardwareVolumeActions = UsbHardwareVolumeActions(),
+    val commitAudioEdit: suspend ((CoreEqConfigView) -> CoreEqConfigView) -> Result<com.twilightecho.android.coreclient.CoreAudioEditReceipt> = {
+        Result.failure(IllegalStateException("音频设置尚未连接"))
+    },
 )

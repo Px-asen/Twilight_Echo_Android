@@ -69,6 +69,23 @@ class DesktopMediaRangeReaderTest {
         assertEquals(ref, DesktopMediaReference.parse(ref.resourceId()))
         assertNull(DesktopMediaReference.parse("http://desktop/media/secret"))
     }
+    @Test fun downloadPolicyBlocksTheNextNetworkReadWhileAlreadyBufferedBytesStayUsable() {
+        Fixture().use { fixture ->
+            var allowed = true
+            DesktopMediaRangeReader(fixture.ref, { AuthorizedDesktopMedia(fixture.base, "device-secret",
+                DesktopMediaPlan("library-1", "source-1", "file-v1", "/media/" + "a".repeat(24), "audio/flac",
+                    fixture.data.size.toLong(), System.currentTimeMillis() + 900000, 262144), fixture.identity.fingerprint) },
+                { check(allowed) { "metered transfer disabled" } }).use { reader ->
+                val bytes = ByteArray(64)
+                assertEquals("file-v1", reader.sourceVersion())
+                reader.readAt(0, bytes, 0, bytes.size)
+                allowed = false
+                assertEquals(64, reader.readAt(100, bytes, 0, bytes.size))
+                assertTrue(runCatching { reader.readAt(900000, bytes, 0, bytes.size) }.isFailure)
+                assertEquals(1, fixture.requests.size)
+            }
+        }
+    }
 
     @Test fun boundedRangesSupportDecoderProbesAndSeeksWithoutDownloadingWholeFile() {
         Fixture().use { f -> f.reader().use { reader ->

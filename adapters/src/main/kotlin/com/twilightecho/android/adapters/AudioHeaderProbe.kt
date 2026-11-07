@@ -1,7 +1,7 @@
 package com.twilightecho.android.adapters
 
 /** What an audio file's own header states. [bitDepth] is null where the header does not state it exactly. */
-data class AudioHeader(val durationSeconds: Double, val sampleRate: Int, val bitDepth: Int?)
+data class AudioHeader(val durationSeconds: Double, val sampleRate: Int, val bitDepth: Int?, val isDsd: Boolean = false)
 
 /**
  * The exact length of FLAC, WAV, Monkey's Audio and WavPack files, read from their headers. CUE sheets mostly
@@ -28,7 +28,7 @@ object AudioHeaderProbe {
             head.ascii(0, 4) == "fLaC" -> flac(head)
             head.ascii(0, 4) == "RIFF" && head.ascii(8, 4) == "WAVE" -> wav(read, start)
             head.ascii(0, 4) == "MAC " -> ape(read, start)
-            head.ascii(0, 4) == "wvpk" -> wavPack(read(start, 32 + 1024))
+            head.ascii(0, 4) == "wvpk" -> wavPack(read, start)
             head.ascii(0, 4) == "DSD " -> dsf(read(start, 80))
             head.ascii(0, 4) == "FRM8" && head.ascii(12, 4) == "DSD " -> dff(read, start)
             else -> null
@@ -96,46 +96,74 @@ object AudioHeaderProbe {
     private fun blocks(frames: Long, blocksPerFrame: Long, finalFrameBlocks: Long) =
         if (frames == 0L) 0L else (frames - 1) * blocksPerFrame + finalFrameBlocks
 
-    private fun wavPack(block: ByteArray): AudioHeader? {
-        if (block.size < 32) return null
+    private fun wavPack(read: (Long, Int) -> ByteArray, start: Long): AudioHeader? {
+        var offset = start
+        var block = read(offset, 32)
+        // Metadata-only blocks can precede the first audio block.
+        while (block.size == 32 && block.ascii(0, 4) == "wvpk" && block.u32(20) == 0L) {
+            if (block.u32(4) < 24) return null
+            offset += 8 + block.u32(4)
+            block = read(offset, 32)
+        }
+        if (block.size != 32 || block.ascii(0, 4) != "wvpk" || block.u32(4) < 24) return null
         val lower = block.u32(12)
         val flags = block.u32(24)
-        // An unknown length, or DSD, whose counts are not PCM samples.
-        if (lower == 0xFFFFFFFFL || flags and 0x80000000L != 0L) return null
+        if (lower == 0xFFFFFFFFL) return null
         val upper = block.u8(11).toLong()
         val samples = lower + (upper shl 32) - upper
         val index = ((flags ushr 23) and 0xF).toInt()
-        val rate = if (index < WAVPACK_RATES.size) WAVPACK_RATES[index] else wavPackCustomRate(block) ?: return null
-        return header(samples, rate, null)
-    }
-
-    /** A rate outside the table is stored in the first block's sample-rate sub-block. */
-    private fun wavPackCustomRate(block: ByteArray): Int? {
-        val end = minOf(block.size.toLong(), 8 + block.u32(4)).toInt()
-        var at = 32
-        while (at + 2 <= end) {
-            val id = block.u8(at)
+        val dsd = flags and 0x80000000L != 0L
+        var rate = WAVPACK_RATES.getOrNull(index)
+        var dsdShift: Int? = null
+        val end = offset + 8 + block.u32(4)
+        var at = offset + 32
+        // Skip payloads positionally: album art or audio data need not fit a probe buffer.
+        while ((rate == null || (dsd && dsdShift == null)) && at + 2 <= end) {
+            val metadata = read(at, 4)
+            if (metadata.size < 2) return null
+            val id = metadata.u8(0)
             val large = id and 0x80 != 0
-            if (large && at + 4 > end) return null
-            val words = if (large) block.u8(at + 1) or (block.u8(at + 2) shl 8) or (block.u8(at + 3) shl 16) else block.u8(at + 1)
+            if (large && (metadata.size < 4 || at + 4 > end)) return null
+            val words = if (large) metadata.u8(1) or (metadata.u8(2) shl 8) or (metadata.u8(3) shl 16) else metadata.u8(1)
             val data = at + if (large) 4 else 2
             val length = words * 2 - if (id and 0x40 != 0) 1 else 0
-            if (id and 0x3F == 0x27 && length >= 3 && data + length <= block.size) {
-                return block.u8(data) or (block.u8(data + 1) shl 8) or (block.u8(data + 2) shl 16) or
-                    (if (length >= 4) block.u8(data + 3) shl 24 else 0)
+            if (length < 0 || data + words * 2 > end) return null
+            when (id and 0x3F) {
+                0x27 -> if (length == 3 || length == 4) {
+                    val value = read(data, length)
+                    if (value.size != length) return null
+                    rate = value.u8(0) or (value.u8(1) shl 8) or (value.u8(2) shl 16) or
+                        (if (length == 4) (value.u8(3) and 0x7F) shl 24 else 0)
+                }
+                0x0E -> if (dsd && length >= 2) {
+                    val value = read(data, 1)
+                    if (value.isEmpty()) return null
+                    dsdShift = value.u8(0).takeIf { it <= 30 } ?: return null
+                }
             }
             at = data + words * 2
         }
-        return null
+        val baseRate = rate?.takeIf { it > 0 } ?: return null
+        if (dsd) {
+            // WavPack totals count DSD bytes per channel; its native rate counts bits.
+            val byteRate = baseRate.toLong() shl (dsdShift ?: return null)
+            if (samples <= 0 || byteRate > Int.MAX_VALUE / 8) return null
+            val bitRate = byteRate * 8
+            return AudioHeader(samples.toDouble() / byteRate, bitRate.toInt(), 1, isDsd = true)
+        }
+        // BYTES_STORED gives the container; SHIFT removes padding, not INT32 redundancy.
+        val bits = if (flags and 0x80L != 0L) 32 else ((flags and 3).toInt() + 1) * 8 - ((flags ushr 13) and 0x1F).toInt()
+        return header(samples, baseRate, bits.takeIf { it in 1..32 })
     }
 
     private fun dsf(head: ByteArray): AudioHeader? {
         // DSD chunk (28 bytes) followed immediately by fmt chunk (>= 52 bytes).
         if (head.size < 72 || head.u64(4) != 28L || head.ascii(28, 4) != "fmt " || head.u64(32) < 52L) return null
         val rate = head.u32(56).toInt()
-        val bits = head.u32(60).toInt().takeIf { it > 0 }
+        // 1/8 describes bit order within a byte; either encoding is one-bit DSD.
+        val bits = head.u32(60).toInt().takeIf { it == 1 || it == 8 }?.let { 1 }
         val samples = head.u64(64)
-        return header(samples, rate, bits)
+        return header(samples, rate, bits, isDsd = true)
     }
 
     private fun dff(read: (Long, Int) -> ByteArray, start: Long): AudioHeader? {
@@ -167,7 +195,7 @@ object AudioHeaderProbe {
                     }
                 }
                 "DSD " -> return if (channels > 0 && rate > 0 && size <= Long.MAX_VALUE / 8) {
-                    header((size * 8) / channels, rate, 1)
+                    header((size * 8) / channels, rate, 1, isDsd = true)
                 } else null
             }
             offset += 12 + size + (size and 1)
@@ -175,8 +203,8 @@ object AudioHeaderProbe {
         return null
     }
 
-    private fun header(samples: Long, rate: Int, bits: Int?): AudioHeader? =
-        if (samples <= 0 || rate <= 0) null else AudioHeader(samples.toDouble() / rate, rate, bits)
+    private fun header(samples: Long, rate: Int, bits: Int?, isDsd: Boolean = false): AudioHeader? =
+        if (samples <= 0 || rate <= 0) null else AudioHeader(samples.toDouble() / rate, rate, bits, isDsd)
 
     private fun ByteArray.u8(index: Int) = this[index].toInt() and 0xFF
     private fun ByteArray.u16(index: Int) = u8(index) or (u8(index + 1) shl 8)

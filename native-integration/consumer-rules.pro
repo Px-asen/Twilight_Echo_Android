@@ -5,3 +5,4 @@
 -keep interface com.twilightecho.android.nativeintegration.TwilightAudioEventListener { *; }
 
 -keep class com.twilightecho.android.nativeintegration.AndroidUsbPcmPolicy { public *; }
+-keep class com.twilightecho.android.nativeintegration.usb.AndroidUsbDirectHost { public *; }

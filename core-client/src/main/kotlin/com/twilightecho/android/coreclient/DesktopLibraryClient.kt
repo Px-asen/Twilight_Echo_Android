@@ -20,7 +20,7 @@ data class CatalogPage(val revision: Long, val total: Int, val offset: Int = 0,
 
 @Serializable
 data class CatalogTrackReferences(val revision: Long, val sourceId: String,
-    val items: List<CatalogEntity> = emptyList())
+    val items: List<CatalogEntity> = emptyList(), val total: Int? = null)
 
 @Serializable
 data class CatalogEntityDetail(val revision: Long, val entity: CatalogEntity? = null)
@@ -39,7 +39,8 @@ data class CatalogSourceTrack(val title: String, val artist: String = "", val al
 
 @Serializable
 data class CatalogSourcePage(val revision: Long, val total: Int, val offset: Int = 0,
-    val items: List<CatalogSource> = emptyList())
+    val items: List<CatalogSource> = emptyList(),
+    @kotlinx.serialization.Transient val scope: DesktopLibraryScope? = null)
 
 @Serializable
 data class MetadataAttribution(val provider: String = "", val license: String = "",
@@ -47,7 +48,7 @@ data class MetadataAttribution(val provider: String = "", val license: String = 
 
 @Serializable
 data class MetadataUsage(val display: Boolean = true, val cache: Boolean = false,
-    val export: Boolean = false, val expiresAt: Long? = null) {
+    val export: Boolean = false, val expiresAt: Long? = null, val crossSource: Boolean = false) {
     fun canDisplay(now: Long = System.currentTimeMillis()) = display && (expiresAt == null || expiresAt > now)
 }
 
@@ -68,12 +69,18 @@ data class PersonalArtworkPreview(val dataUrl: String? = null)
 
 @Serializable
 data class ArtworkOverride(val mode: String)
+@Serializable
+data class MetadataIntroductionOverride(val mode: String, val value: String = "", val language: String)
+@Serializable
+data class MetadataSourcePreference(val provider: String? = null, val available: Boolean = false)
 
 @Serializable
 data class EntityMetadataDetail(val entityId: String, val revision: Long, val name: String,
     val introduction: MetadataIntroduction? = null, val facts: List<MetadataFact> = emptyList(),
     val artwork: List<MetadataArtwork> = emptyList(), val manualArtwork: PersonalArtworkPreview? = null,
-    val artworkOverride: ArtworkOverride? = null)
+    val artworkOverride: ArtworkOverride? = null, val targetId: String? = null,
+    @kotlinx.serialization.SerialName("override") val introductionOverride: MetadataIntroductionOverride? = null, val sourcePreference: MetadataSourcePreference? = null,
+    val sourceOptions: List<String> = emptyList())
 
 @Serializable
 data class TrackArtworkPreview(val id: String, val cover: String? = null)
@@ -110,16 +117,46 @@ class DesktopLibraryClient(private val transport: CoreTransport, private val epo
             revision?.let { put("revision", JsonPrimitive(it)) }
         })
 
-    suspend fun metadata(entityId: String): Result<EntityMetadataDetail> = query(
+    suspend fun metadata(entityId: String, includeAutomaticArtwork: Boolean = false): Result<EntityMetadataDetail> = query(
         "metadata.entity.detail", buildJsonObject {
             put("entityId", JsonPrimitive(entityId)); put("language", JsonPrimitive("zh-Hans"))
+            if (includeAutomaticArtwork) put("includeAutomaticArtwork", true)
         })
 
-    suspend fun sources(entityId: String, offset: Int = 0, revision: Long? = null): Result<CatalogSourcePage> = query(
-        "catalog.sources", buildJsonObject {
+    /** Source artists can repeat across recordings. Share only a single confirmed person's public data. */
+    suspend fun artistMetadata(entities: List<CatalogEntity>): Result<EntityMetadataDetail?> = try {
+        val members = entities.distinctBy { it.id }
+        val details = members.map { metadata(it.id, includeAutomaticArtwork = members.size > 1).getOrThrow() }
+        val selected = if (members.size == 1) details.single() else {
+            val confirmed = details.filter { !it.targetId.isNullOrBlank() }
+            if (confirmed.map { it.targetId }.distinct().size != 1) null else confirmed.map {
+                // A personal picture or biography belongs to its source, not every same-name source.
+                val now = System.currentTimeMillis()
+                val facts = it.facts.filter { fact -> fact.usage == null || fact.usage.crossSource && fact.usage.canDisplay(now) }
+                it.copy(manualArtwork = null, artworkOverride = null, introductionOverride = null,
+                    sourcePreference = null, sourceOptions = emptyList(),
+                    facts = facts,
+                    artwork = it.artwork.filter { image -> image.usage?.let { grant -> grant.crossSource && grant.canDisplay(now) } == true },
+                    introduction = it.introduction?.takeIf { intro -> intro.origin == "external" && facts.any { fact ->
+                        fact.field in setOf("introduction", "description") && fact.value == intro.value
+                    } })
+            }.let { shared -> shared.firstOrNull { it.artworkPreview() != null }
+                ?: shared.firstOrNull { it.introduction != null } ?: shared.first() }
+        }
+        Result.success(selected)
+    } catch (cancel: CancellationException) { throw cancel }
+    catch (error: Exception) { Result.failure(error) }
+
+    suspend fun sources(entityId: String, offset: Int = 0, revision: Long? = null): Result<CatalogSourcePage> {
+        val scope = DesktopLibraryScope(transport.generation, epoch())
+        return query<CatalogSourcePage>("catalog.sources", buildJsonObject {
             put("entityId", JsonPrimitive(entityId)); put("offset", JsonPrimitive(offset)); put("limit", JsonPrimitive(100))
             revision?.let { put("revision", JsonPrimitive(it)) }
-        })
+        }).mapCatching {
+            check(transport.generation == scope.generation && epoch() == scope.epoch) { "电脑曲库已改变，请重新读取" }
+            it.copy(scope = scope)
+        }
+    }
 
     suspend fun entity(entityId: String, revision: Long): Result<CatalogEntityDetail> = query(
         "catalog.detail", buildJsonObject { put("id", entityId); put("revision", revision) })

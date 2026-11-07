@@ -130,6 +130,20 @@ class PlayerPresentationTest {
             favoriteTrackIds = listOf("b"))).map { it.id })
     }
 
+    @Test fun largeFavoriteSearchIndexesIdsOnceAndKeepsSongOrder() {
+        var favoriteReads = 0
+        val favorites = object : AbstractList<String>() {
+            override val size = 5_000
+            override fun get(index: Int): String { favoriteReads++; return "song-${index * 2}" }
+        }
+        val songs = List(10_000) { CoreTrackView("song-$it", title = "$it") }
+        val state = PlayerUiState(searchResults = songs, favoriteTrackIds = favorites,
+            activeSearchFilter = SearchFilterCategory.FAVORITES)
+        assertEquals(songs.filterIndexed { index, _ -> index % 2 == 0 }, filteredSearchTracks(state))
+        assertTrue("Favorite lookup work must grow linearly, read $favoriteReads IDs", favoriteReads <= favorites.size * 2)
+        assertSame(songs, filteredSearchTracks(state.copy(activeSearchFilter = SearchFilterCategory.ALL)))
+    }
+
     @Test fun diagnosticsNeverInventOutputOrFlac() {
         val empty = diagnosticsFor(CoreSnapshot(epoch = "test", sequence = 1))
         assertEquals("", empty.codec)

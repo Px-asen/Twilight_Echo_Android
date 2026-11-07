@@ -32,7 +32,9 @@ data class AppearancePreferences(
     val backgroundImagePath: String? = null,
     val densityScale: Float = 1f,
     /** Container fills only. Text, icons and album artwork retain their original opacity. */
-    val contentOpacity: Float = 0.86f
+    val contentOpacity: Float = 0.86f,
+    /** Hide the phone's status bar while keeping system navigation available. */
+    val immersiveMode: Boolean = false
 ) {
     fun normalized() = copy(
         accentArgb = accentArgb or (0xFF shl 24), backgroundArgb = backgroundArgb or (0xFF shl 24),
@@ -56,19 +58,34 @@ data class LyricsPreferences(
 }
 
 @Serializable
+data class MobileNetworkPreferences(
+    val allowMeteredStreaming: Boolean = true,
+    val allowMeteredDownloads: Boolean = false,
+    val offlineQuotaBytes: Long = 5L * 1024 * 1024 * 1024
+) {
+    fun normalized() = copy(offlineQuotaBytes = offlineQuotaBytes.coerceIn(1024L * 1024 * 1024, 50L * 1024 * 1024 * 1024))
+}
+
+@Serializable
 data class UserPreferences(
     val appearance: AppearancePreferences = AppearancePreferences(),
     val lyrics: LyricsPreferences = LyricsPreferences(),
     val ncmQuality: NcmPlaybackQuality = NcmPlaybackQuality.AUTO,
+    /** Selected streaming provider plugin ID on the mobile Home tab. */
+    val homeProviderId: String = "com.twilightecho.provider.ncm",
     /** View order only; never rewrites playlist membership or the provider's stored order. */
     val collectionSorts: Map<String, CollectionSort> = emptyMap(),
     /** Phone outputs only; a connected computer keeps its own output settings. */
     val outputPresets: OutputPresetPreferences = OutputPresetPreferences(),
     /** Phone library track IDs explicitly deleted by the user so rescans keep them hidden until restored or reset. */
-    val excludedLocalTrackIds: Set<String> = emptySet()
+    val excludedLocalTrackIds: Set<String> = emptySet(),
+    /** Source evidence for exclusions; old ID-only records retain their original provider-wide scope. */
+    val excludedLocalTrackSources: Map<String, String> = emptyMap(),
+    val mobileNetwork: MobileNetworkPreferences = MobileNetworkPreferences(),
+    val desktopExternalUrls: Map<String, String> = emptyMap()
 ) {
     fun normalized() = copy(appearance = appearance.normalized(), lyrics = lyrics.normalized(),
-        outputPresets = outputPresets.normalized())
+        outputPresets = outputPresets.normalized(), mobileNetwork = mobileNetwork.normalized())
 }
 
 private fun Float.finiteOr(default: Float) = if (isFinite()) this else default

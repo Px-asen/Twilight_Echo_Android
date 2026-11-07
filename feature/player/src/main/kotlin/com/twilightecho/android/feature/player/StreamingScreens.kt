@@ -280,7 +280,7 @@ private fun StreamingDetailContent(detail: StreamingDetail, state: PlayerUiState
                 val collectionsPage = detail.artistAlbums || detail.group in setOf(StreamingLibraryGroup.CREATED,
                     StreamingLibraryGroup.PLAYLISTS, StreamingLibraryGroup.ALBUMS, StreamingLibraryGroup.ARTISTS)
                 val summary = listOf(detail.subtitle.takeIf { it.isNotBlank() },
-                    if (detail.loading) "正在载入" else "${detail.total} ${if (collectionsPage) "项" else "首歌曲"}")
+                    if (detail.loading) "正在载入" else "${detail.reportedTotal ?: detail.total} ${if (collectionsPage) "项" else "首歌曲"}")
                     .filterNotNull().joinToString(" · ")
                 if (artist) {
                     ImmersiveArtistHero(detail.artistProfile?.name?.ifBlank { null } ?: detail.title, detail.subtitle,
@@ -313,7 +313,7 @@ private fun StreamingDetailContent(detail: StreamingDetail, state: PlayerUiState
                         GlassIconButton(TwilightIcons.ArrowBack, "返回流媒体音乐", actions.back)
                         Spacer(Modifier.weight(1f))
                         TextButton(onClick = actions.retry, enabled = !detail.loading) {
-                            Text(if (detail.recommendation == StreamingRecommendation.FM) "换一批" else "刷新")
+                            Text(if (detail.recommendation == StreamingRecommendation.FM || detail.key.endsWith(":fm")) "换一批" else "刷新")
                         }
                         if (removable != null) GlassIconButton(TwilightIcons.Trash,
                             if (ownPlaylist != null) "删除歌单" else "取消收藏歌单", { confirmRemove = true })
@@ -321,9 +321,9 @@ private fun StreamingDetailContent(detail: StreamingDetail, state: PlayerUiState
                     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally) {
                         val shape = RoundedCornerShape(20.dp)
-                        if (detail.collection != null && visual != null) ArtworkImage(visual,
+                        if (visual != null && (detail.collection != null || (detail.group == null && detail.tracks.isNotEmpty()))) ArtworkImage(visual,
                             Modifier.padding(top = 4.dp).size(196.dp)
-                                .shadow(28.dp, shape).clip(shape), ContentScale.Crop)
+                                .shadow(28.dp, shape).clip(shape).testTag("streamingDetailArtwork"), ContentScale.Crop)
                         else if (detail.recommendation != null) Box(Modifier.padding(top = 4.dp).size(120.dp)
                             .clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceContainer),
                             contentAlignment = Alignment.Center) {
@@ -334,7 +334,8 @@ private fun StreamingDetailContent(detail: StreamingDetail, state: PlayerUiState
                         SupportingText(summary, Modifier.padding(top = 6.dp), maxLines = 2)
                         val playable = detail.tracks.firstOrNull { it.unavailableReason == null }
                         if (detail.tracks.isNotEmpty()) {
-                            val page = detail.offset > 0 || detail.nextOffset != null
+                            val page = detail.offset > 0 || detail.nextOffset != null ||
+                                detail.reportedTotal != null && detail.reportedTotal != detail.total
                             PillButton(if (state.operatingMode is com.twilightecho.android.coreclient.CoreOperatingMode.RemoteDesktopCore)
                                 if (page) "在此手机播放本页" else "在此手机播放"
                                 else if (page) "播放本页" else "播放全部",
@@ -344,6 +345,10 @@ private fun StreamingDetailContent(detail: StreamingDetail, state: PlayerUiState
                     }
                 }
             }
+            playlistAvailabilityNotice(detail.total, detail.reportedTotal)?.let { notice -> item {
+                SupportingText(notice, Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                    .testTag("streaming-playlist-availability"), maxLines = 4)
+            } }
             if (detail.isPlaylist) item {
                 PlaylistBrowseControls(detail.query, actions.playlistQuery, detail.sort, actions.playlistSort,
                     viewTotal, detail.total, detail.loadingPlaylist)
@@ -374,12 +379,19 @@ private fun StreamingDetailContent(detail: StreamingDetail, state: PlayerUiState
             if (!detail.loading && detail.error == null && detail.tracks.isEmpty() && detail.collections.isEmpty()) item {
                 if (detail.isPlaylist && detail.query.isNotBlank()) EmptyState("没有找到歌曲", "试试其他歌名、歌手或专辑。",
                     TwilightIcons.Search, actionLabel = "清除搜索", onAction = { actions.playlistQuery("") })
-                else EmptyState(if (artist && detail.artistAlbums) "暂无专辑" else "这里还没有音乐",
-                    if (artist) "音源暂未提供这些作品。" else "收藏与推荐来自当前网易云账号。可以刷新，或先在网易云添加喜欢的内容。")
+                else EmptyState(if (artist && detail.artistAlbums) "暂无专辑"
+                    else if (detail.reportedTotal != null && detail.reportedTotal > detail.total) "暂无可读取的歌曲" else "这里还没有音乐",
+                    when {
+                        detail.reportedTotal != null && detail.reportedTotal > detail.total -> "网易云暂未返回歌曲条目，请刷新重试。"
+                        artist -> "音源暂未提供这些作品。"
+                        detail.key.startsWith("v2-") || detail.subtitle.isNotBlank() && !detail.subtitle.startsWith("网易云") ->
+                            "当前音源暂未返回音乐内容，可尝试点击右上角刷新。"
+                        else -> "收藏与推荐来自当前网易云账号。可以刷新，或先在网易云添加喜欢的内容。"
+                    })
             }
             if (!detail.loading && detail.error == null && (detail.offset > 0 || detail.nextOffset != null)) item {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { actions.page((detail.offset - 100).coerceAtLeast(0)) }, enabled = detail.offset > 0) { Text("上一页") }
+                    TextButton(onClick = { actions.page((detail.offset - detail.pageSize.coerceAtLeast(1)).coerceAtLeast(0)) }, enabled = detail.offset > 0) { Text("上一页") }
                     Text("${if (detail.tracks.isEmpty()) 0 else detail.offset + 1}–${detail.offset + detail.tracks.size} / $viewTotal",
                         Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)

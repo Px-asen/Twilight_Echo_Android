@@ -55,11 +55,34 @@ class PluginUiFlowTest {
         screenshot("plugin-repository.png")
         rule.onNodeWithTag("plugin-open-com.twilightecho.provider.ncm").performClick()
         rule.waitUntil(10_000) { rule.onAllNodesWithTag("providerSearch").fetchSemanticsNodes().size == 1 }
+        rule.onNodeWithTag("plugin-search-category-SONGS").assertDoesNotExist()
         rule.onNodeWithTag("providerSearch").performTextInput("Twilight")
+        rule.onNodeWithTag("plugin-search-category-SONGS").assertDoesNotExist()
         rule.onNodeWithTag("providerSearch").performImeAction()
         rule.waitUntil(30_000) { rule.onAllNodesWithText("搜索结果").fetchSemanticsNodes().isNotEmpty() }
         rule.waitUntil(30_000) { rule.onAllNodesWithTag("loadedTrackArtwork", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag("plugin-search-category-SONGS").assertIsDisplayed()
         screenshot("plugin-ncm-search.png")
+        rule.onNodeWithTag("providerSearch").performTextReplacement("周杰伦")
+        rule.onNodeWithTag("plugin-search-category-ARTISTS").performClick()
+        val artistResult = hasAnyAncestor(hasTestTag("providerResults")) and hasText("周杰伦", substring = false)
+        rule.waitUntil(30_000) { rule.onAllNodes(artistResult).fetchSemanticsNodes().isNotEmpty() }
+        screenshot("plugin-ncm-artists.png")
+        rule.onAllNodes(artistResult)[0].performClick()
+        rule.onNodeWithTag("providerLogin").assertIsDisplayed()
+        rule.onNodeWithText("完成").performClick()
+        rule.onNodeWithTag("plugin-search-category-ARTISTS").assertIsSelected()
+        rule.onNodeWithTag("providerSearch").performTextReplacement("范特西")
+        rule.onNodeWithTag("plugin-search-category-ALBUMS").performClick()
+        val albumResult = hasAnyAncestor(hasTestTag("providerResults")) and hasText("范特西", substring = false)
+        rule.waitUntil(30_000) { rule.onAllNodes(albumResult).fetchSemanticsNodes().isNotEmpty() }
+        screenshot("plugin-ncm-albums.png")
+        rule.onAllNodes(albumResult)[0].performClick()
+        rule.waitUntil(30_000) { rule.onAllNodesWithContentDescription("播放 ", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("返回搜索结果").performClick()
+        rule.onNodeWithTag("plugin-search-category-ALBUMS").assertIsSelected()
+        rule.onNodeWithTag("providerSearch").performTextReplacement("")
+        rule.onNodeWithTag("plugin-search-category-ALBUMS").assertDoesNotExist()
         rule.onNodeWithText("登录", substring = false).performClick()
         rule.onNodeWithText("获取二维码").performClick()
         rule.waitUntil(30_000) { rule.onAllNodesWithContentDescription("网易云登录二维码").fetchSemanticsNodes().isNotEmpty() }

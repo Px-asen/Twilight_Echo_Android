@@ -231,6 +231,89 @@ class ImmersiveLyricsTest {
         assertAnchor(2)
     }
 
+    @Test fun horizontalSwipesEnterLyricsAndReturnToCoverWithoutSeeking() {
+        start { it.copy(isLyricsMode = false) }
+        rule.onNodeWithTag("fullCover").performTouchInput { swipeRight() }
+        rule.onNodeWithTag("coverPlayer").assertIsDisplayed()
+        rule.onNodeWithTag("fullCover").performTouchInput { swipeLeft() }
+        rule.runOnIdle { assertTrue(ui.value.isLyricsMode) }
+        assertAnchor(4)
+        shot("20-swipe-to-lyrics")
+        // Swiping across a clickable line must not seek or enter full immersion.
+        rule.onNodeWithTag("lyric-line-4").performTouchInput { swipeLeft() }
+        rule.onNodeWithTag("lyrics").assertIsDisplayed()
+        rule.onNodeWithTag("resumeLyrics").assertDoesNotExist()
+        rule.onNodeWithTag("lyric-line-4").performTouchInput { swipeRight() }
+        rule.runOnIdle { assertFalse(ui.value.isLyricsMode) }
+        rule.onNodeWithTag("coverPlayer").assertIsDisplayed()
+        rule.onNodeWithContentDescription("开始播放").assertIsDisplayed()
+        assertNull(lastSeek)
+        shot("21-swipe-back-to-cover")
+    }
+
+    @Test fun swipeRoundTripsKeepBrowsingAndExitFullImmersion() {
+        start()
+        browse()
+        val position = scrollPosition()
+        rule.onNodeWithTag("lyrics").performTouchInput { swipeRight() }
+        rule.onNodeWithTag("coverPlayer").assertIsDisplayed()
+        rule.onNodeWithTag("fullCover").performTouchInput { swipeLeft() }
+        rule.onNodeWithTag("resumeLyrics").assertIsDisplayed()
+        assertEquals(position, scrollPosition(), 0.01f)
+        rule.onNodeWithTag("resumeLyrics").performClick()
+        assertAnchor(4)
+        val stage = rule.onNodeWithTag("lyrics").fetchSemanticsNode().boundsInRoot
+        val row = rule.onNodeWithTag("lyric-line-5").fetchSemanticsNode().boundsInRoot
+        rule.onRoot().performTouchInput { click(Offset(stage.right - 8f, row.center.y)) }
+        rule.onNodeWithTag("lyricsImmersive").assertIsDisplayed()
+        rule.onNodeWithTag("lyrics").performTouchInput { swipeRight() }
+        rule.onNodeWithTag("coverPlayer").assertIsDisplayed()
+        rule.onNodeWithContentDescription("收起播放器").assertIsDisplayed()
+        rule.onNodeWithTag("fullCover").performTouchInput { swipeLeft() }
+        rule.onNodeWithTag("lyrics").assertIsDisplayed()
+        rule.onNodeWithTag("lyricsImmersive").assertDoesNotExist()
+        rule.runOnIdle { assertTrue(ui.value.isImmersivePlayerOpen) }
+        assertNull(lastSeek)
+    }
+
+    @Test fun verticalBrowsingSeekingAndShortDragsDoNotSwitchPages() {
+        start()
+        browse()
+        rule.runOnIdle { assertTrue(ui.value.isLyricsMode) }
+        assertNull(lastSeek)
+        // Slider semantics extend past its physical track; start safely inside the touch target.
+        rule.onNodeWithTag("seek").performTouchInput {
+            swipe(Offset(width * 0.2f, centerY), Offset(width * 0.8f, centerY), durationMillis = 400)
+        }
+        rule.runOnIdle { assertTrue(ui.value.isLyricsMode) }
+        assertNotNull(lastSeek)
+        rule.onNodeWithTag("lyricsImmersive").assertDoesNotExist()
+        rule.onNodeWithText("封面", useUnmergedTree = true).performClick()
+        lastSeek = null
+        rule.onNodeWithTag("seek").performTouchInput {
+            swipe(Offset(width * 0.8f, centerY), Offset(width * 0.2f, centerY), durationMillis = 400)
+        }
+        rule.runOnIdle { assertFalse(ui.value.isLyricsMode) }
+        assertNotNull(lastSeek)
+        rule.onNodeWithTag("fullCover").performTouchInput {
+            swipe(center + Offset(width * 0.05f, 0f), center - Offset(width * 0.05f, 0f), durationMillis = 300)
+        }
+        rule.onNodeWithTag("coverPlayer").assertIsDisplayed()
+        rule.runOnIdle { assertFalse(ui.value.isLyricsMode) }
+    }
+
+    @Test fun missingLyricsStillAllowsSwipeBackToCover() {
+        start { it.copy(isLyricsMode = false, currentLyrics = null) }
+        rule.onNodeWithTag("fullCover").performTouchInput { swipeLeft() }
+        rule.onNodeWithText("暂无歌词").assertIsDisplayed()
+        rule.onNodeWithTag("immersivePlayer").performTouchInput {
+            swipe(Offset(width * 0.15f, centerY), Offset(width * 0.85f, centerY), durationMillis = 300)
+        }
+        rule.onNodeWithTag("coverPlayer").assertIsDisplayed()
+        rule.runOnIdle { assertFalse(ui.value.isLyricsMode) }
+        assertNull(lastSeek)
+    }
+
     @Test fun lyricReplacementTrackAndCoreChangesResetManualOwnership() {
         start()
         browse()

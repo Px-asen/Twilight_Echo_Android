@@ -39,7 +39,7 @@ class P2UsbMixerCapabilityTest {
             .put("apiAvailable", Build.VERSION.SDK_INT >= 34)
         var failures = 0
         if (Build.VERSION.SDK_INT >= 34) {
-            failures = captureApi34(context, report)
+            failures = Api34.capture(context, report)
         } else {
             report.put("status", "api_unavailable").put("devices", JSONArray())
         }
@@ -51,61 +51,64 @@ class P2UsbMixerCapabilityTest {
         assertEquals("Platform query exceptions are recorded in ${file.absolutePath}", 0, failures)
     }
 
+    // JUnit reflects every method on the test class, even those not annotated @Test.
+    // Keep new platform types out of that class's method signatures on API 26–33.
     @RequiresApi(34)
-    private fun captureApi34(context: Context, report: JSONObject): Int {
-        val manager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val attributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
-        val inventory = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        val devices = JSONArray()
-        var failures = 0
-        var usbCount = 0
-        var bitPerfectUsbCount = 0
-        inventory.forEach { device ->
-            val usb = device.type in setOf(AudioDeviceInfo.TYPE_USB_DEVICE,
-                AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_ACCESSORY)
-            if (usb) usbCount++
-            val entry = JSONObject().put("id", device.id).put("type", device.type)
-                .put("name", device.productName.toString()).put("usb", usb)
-                .put("sampleRates", JSONArray(device.sampleRates.toList()))
-                .put("encodings", JSONArray(device.encodings.toList()))
-                .put("channelMasks", JSONArray(device.channelMasks.toList()))
-                .put("channelIndexMasks", JSONArray(device.channelIndexMasks.toList()))
-            try {
-                val supported = manager.getSupportedMixerAttributes(device)
-                val bitPerfectCount = supported.count { it.mixerBehavior == AudioMixerAttributes.MIXER_BEHAVIOR_BIT_PERFECT }
-                if (usb && bitPerfectCount > 0) bitPerfectUsbCount++
-                entry.put("queryStatus", "returned")
-                    .put("supportedMixerAttributes", JSONArray(supported.map(::mixerJson)))
-                    .put("bitPerfectAttributeCount", bitPerfectCount)
-                    // This getter returns a preference, not the currently active output mode.
-                    .put("preferredMixerAttributes", manager.getPreferredMixerAttributes(attributes, device)?.let(::mixerJson) ?: JSONObject.NULL)
-            } catch (error: Exception) {
-                failures++
-                entry.put("queryStatus", "exception").put("errorType", error.javaClass.name)
-                    .put("errorMessage", error.message ?: "")
+    private object Api34 {
+        fun capture(context: Context, report: JSONObject): Int {
+            val manager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val attributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
+            val inventory = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            val devices = JSONArray()
+            var failures = 0
+            var usbCount = 0
+            var bitPerfectUsbCount = 0
+            inventory.forEach { device ->
+                val usb = device.type in setOf(AudioDeviceInfo.TYPE_USB_DEVICE,
+                    AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_ACCESSORY)
+                if (usb) usbCount++
+                val entry = JSONObject().put("id", device.id).put("type", device.type)
+                    .put("name", device.productName.toString()).put("usb", usb)
+                    .put("sampleRates", JSONArray(device.sampleRates.toList()))
+                    .put("encodings", JSONArray(device.encodings.toList()))
+                    .put("channelMasks", JSONArray(device.channelMasks.toList()))
+                    .put("channelIndexMasks", JSONArray(device.channelIndexMasks.toList()))
+                try {
+                    val supported = manager.getSupportedMixerAttributes(device)
+                    val bitPerfectCount = supported.count { it.mixerBehavior == AudioMixerAttributes.MIXER_BEHAVIOR_BIT_PERFECT }
+                    if (usb && bitPerfectCount > 0) bitPerfectUsbCount++
+                    entry.put("queryStatus", "returned")
+                        .put("supportedMixerAttributes", JSONArray(supported.map(::mixerJson)))
+                        .put("bitPerfectAttributeCount", bitPerfectCount)
+                        // This getter returns a preference, not the currently active output mode.
+                        .put("preferredMixerAttributes", manager.getPreferredMixerAttributes(attributes, device)?.let(::mixerJson) ?: JSONObject.NULL)
+                } catch (error: Exception) {
+                    failures++
+                    entry.put("queryStatus", "exception").put("errorType", error.javaClass.name)
+                        .put("errorMessage", error.message ?: "")
+                }
+                devices.put(entry)
             }
-            devices.put(entry)
+            report.put("devices", devices).put("usbOutputCount", usbCount)
+                .put("bitPerfectUsbOutputCount", bitPerfectUsbCount).put("queryExceptionCount", failures)
+                .put("status", when {
+                    failures > 0 -> "query_failed"
+                    usbCount == 0 -> "no_usb_output"
+                    bitPerfectUsbCount > 0 -> "bit_perfect_advertised"
+                    else -> "bit_perfect_not_advertised"
+                })
+                // Android maps native query failure to an empty list/null in these public getters.
+                .put("emptyResultMeaning", "not_advertised_or_native_query_failed")
+            return failures
         }
-        report.put("devices", devices).put("usbOutputCount", usbCount)
-            .put("bitPerfectUsbOutputCount", bitPerfectUsbCount).put("queryExceptionCount", failures)
-            .put("status", when {
-                failures > 0 -> "query_failed"
-                usbCount == 0 -> "no_usb_output"
-                bitPerfectUsbCount > 0 -> "bit_perfect_advertised"
-                else -> "bit_perfect_not_advertised"
-            })
-            // Android maps native query failure to an empty list/null in these public getters.
-            .put("emptyResultMeaning", "not_advertised_or_native_query_failed")
-        return failures
-    }
 
-    @RequiresApi(34)
-    private fun mixerJson(mixer: AudioMixerAttributes): JSONObject = JSONObject()
-        .put("behavior", mixer.mixerBehavior)
-        .put("sampleRate", mixer.format.sampleRate)
-        .put("encoding", mixer.format.encoding)
-        .put("channelMask", mixer.format.channelMask)
-        .put("channelIndexMask", mixer.format.channelIndexMask)
-        .put("channelCount", mixer.format.channelCount)
+        private fun mixerJson(mixer: AudioMixerAttributes): JSONObject = JSONObject()
+            .put("behavior", mixer.mixerBehavior)
+            .put("sampleRate", mixer.format.sampleRate)
+            .put("encoding", mixer.format.encoding)
+            .put("channelMask", mixer.format.channelMask)
+            .put("channelIndexMask", mixer.format.channelIndexMask)
+            .put("channelCount", mixer.format.channelCount)
+    }
 }

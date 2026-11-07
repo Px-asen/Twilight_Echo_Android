@@ -8,6 +8,46 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PlaybackOutputTest {
+    @Test fun bufferingFreezesTransportWithoutLosingItsOutputAndPauseStillWins() {
+        val buffering = parseNativePlaybackSnapshot("""{"state":"playing","buffering":true,"position":12.5,
+            "actualSampleRate":48000,"actualBitDepth":32,"outputInfo":{"actualDeviceId":"9"}}""",
+            AudioSnapshot(state = "playing", positionMs = 12500), 0.7, DefaultCoreClient.DefaultJson)!!
+        assertEquals("buffering", buffering.state)
+        assertEquals(12500L, buffering.positionMs)
+        assertEquals(48000, buffering.actualSampleRate)
+        val resumed = parseNativePlaybackSnapshot("""{"state":"playing","buffering":false,"position":12.6}""",
+            buffering, 0.7, DefaultCoreClient.DefaultJson)!!
+        assertEquals("playing", resumed.state)
+        val paused = parseNativePlaybackSnapshot("""{"state":"paused","buffering":true,"position":12.5}""",
+            buffering, 0.7, DefaultCoreClient.DefaultJson)!!
+        assertEquals("paused", paused.state)
+    }
+
+    @Test fun dsdSourceCarrierAndWordClocksAreIndependentAndReleaseClearsOnlyOutputFacts() {
+        val native = parseNativePlaybackSnapshot("""{"state":"playing","isDsd":true,"dsdMode":"native",
+            "sourceSampleRate":2822400,"sourceBitDepth":1,"dsdRate":64,"actualDsdRate":64,
+            "actualSampleRate":2822400,"actualBitDepth":1,"dsdRatePolicy":"exact","dsdConversion":"exact",
+            "outputInfo":{"exclusive":true,"diagnostics":{"transportSampleRate":88200,"semanticSampleRate":2822400}}}
+            """, AudioSnapshot(), 1.0, DefaultCoreClient.DefaultJson)!!
+        assertEquals(2822400, native.sampleRate)
+        assertEquals(64, native.dsdRate)
+        assertEquals(64, native.actualDsdRate)
+        assertEquals(88200, native.transportSampleRate)
+        assertEquals(2822400, native.semanticSampleRate)
+        val released = native.withoutOutputFacts()
+        assertTrue(released.isDsd)
+        assertEquals(64, released.dsdRate)
+        assertNull(released.dsdMode)
+        assertNull(released.actualDsdRate)
+        assertNull(released.transportSampleRate)
+        assertFalse(released.exclusive)
+        val pcm = parseNativePlaybackSnapshot("""{"state":"playing","isDsd":false,"dsdMode":"pcm"}""",
+            native, 1.0, DefaultCoreClient.DefaultJson)!!
+        assertFalse(pcm.isDsd)
+        assertNull(pcm.dsdRate)
+        assertNull(pcm.transportSampleRate)
+    }
+
     private val old = AudioSnapshot(state = "playing", actualSampleRate = 192000, actualBitDepth = 24,
         actualDeviceId = "9", actualDeviceName = "USB DAC", hardwareSampleRate = 192000, exclusive = true)
 

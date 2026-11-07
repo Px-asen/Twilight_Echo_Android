@@ -69,34 +69,51 @@ private fun greeting(): String = when (LocalTime.now().hour) {
 internal fun HomeTabScreen(state: PlayerUiState, actions: PlayerActions) {
     val streaming = state.streaming
     val open = actions.streaming
+    val (own, collected) = remember(streaming.playlists) { streaming.playlists.partition { it.owned == true } }
     var creating by rememberSaveable { mutableStateOf(false) }
     LazyColumn(contentPadding = PaddingValues(bottom = LocalDockInset.current + 24.dp),
         modifier = Modifier.fillMaxSize().testTag("home")) {
-        item { PageHeading(greeting(), modifier = Modifier.padding(horizontal = 20.dp).padding(top = 8.dp)) }
-        item { StreamingHome(streaming, open) }
-        if (streaming.access != StreamingAccess.READY) {
-            item { HomeAccessPrompt(streaming, open) }
+        item(key = "greeting", contentType = "heading") { PageHeading(greeting(), modifier = Modifier.padding(horizontal = 20.dp).padding(top = 8.dp)) }
+        if (state.homeProviders.size > 1) {
+            item(key = "home-provider-switcher", contentType = "providers") {
+                HomeProviderSwitcher(
+                    providers = state.homeProviders,
+                    selectedPluginId = state.activeHomePluginId,
+                    onSelect = actions.selectHomeProvider
+                )
+            }
+        }
+        if (!state.isNcmHomeActive) {
+            providerHomeItems(
+                state = state.providerHome,
+                currentTrackId = state.currentTrack?.id,
+                isPlaying = state.playbackButtonPlaying,
+                actions = actions.providerHome
+            )
             return@LazyColumn
         }
-        item { HomeShortcuts(streaming, open) }
-        val own = streaming.playlists.filter { it.owned == true }
-        val collected = streaming.playlists.filter { it.owned != true }
+        item(key = "recommendations", contentType = "recommendations") { StreamingHome(streaming, open) }
+        if (streaming.access != StreamingAccess.READY) {
+            item(key = "access", contentType = "status") { HomeAccessPrompt(streaming, open) }
+            return@LazyColumn
+        }
+        item(key = "shortcuts", contentType = "shortcuts") { HomeShortcuts(streaming, open) }
         val libraryError = streaming.libraryError
         when {
-            streaming.playlists.isEmpty() && streaming.libraryLoading -> item { LoadingContent("正在载入歌单") }
-            streaming.playlists.isEmpty() && libraryError != null -> item {
+            streaming.playlists.isEmpty() && streaming.libraryLoading -> item(key = "library-loading", contentType = "status") { LoadingContent("正在载入歌单") }
+            streaming.playlists.isEmpty() && libraryError != null -> item(key = "library-error", contentType = "status") {
                 EmptyState("歌单未载入", libraryError, actionLabel = "重试", onAction = open.refresh)
             }
             else -> {
-                item { PlaylistShelf("我的歌单", own, open, "home-own",
+                item(key = "own-playlists", contentType = "shelf") { PlaylistShelf("我的歌单", own, open, "home-own",
                     more = { open.group(StreamingLibraryGroup.CREATED) }, create = { creating = true }) }
-                if (collected.isNotEmpty()) item {
+                if (collected.isNotEmpty()) item(key = "collected-playlists", contentType = "shelf") {
                     PlaylistShelf("收藏的歌单", collected, open, "home-collected",
                         more = { open.group(StreamingLibraryGroup.PLAYLISTS) })
                 }
             }
         }
-        if (streaming.recommendedPlaylists.isNotEmpty()) item {
+        if (streaming.recommendedPlaylists.isNotEmpty()) item(key = "recommended-playlists", contentType = "shelf") {
             PlaylistShelf("推荐歌单", streaming.recommendedPlaylists, open, "home-recommended")
         }
     }
@@ -150,16 +167,17 @@ private fun HomeShortcut(icon: ImageVector, tint: Color, title: String, subtitle
 @Composable
 private fun PlaylistShelf(title: String, playlists: List<StreamingCollection>, actions: StreamingActions, tag: String,
     more: (() -> Unit)? = null, create: (() -> Unit)? = null) {
+    val uniquePlaylists = remember(playlists) { playlists.distinctBy { it.id } }
     val heading = Modifier.padding(horizontal = 20.dp).padding(top = 24.dp)
     if (more != null) SectionLink(title, more, heading)
     else SectionHeading(title, modifier = heading.padding(vertical = 6.dp))
     LazyRow(Modifier.padding(top = 8.dp).testTag(tag), contentPadding = PaddingValues(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        items(playlists.distinctBy { it.id }, key = { it.id }) { item ->
+        items(uniquePlaylists, key = { it.id }, contentType = { "playlist" }) { item ->
             ArtworkTile(rememberStreamingArtwork(item, size = 512, extractColors = false), item.title, item.count.takeIf { it > 0 }?.let { "$it 首" },
                 { actions.collection(item) }, Modifier.width(148.dp).testTag("home-playlist-${item.id}"))
         }
-        if (create != null) item(key = "create") {
+        if (create != null) item(key = "create", contentType = "create") {
             val createInteraction = remember { MutableInteractionSource() }
             Column(Modifier.width(148.dp).tactilePress(createInteraction, pressedScale = 0.96f)
                 .clip(RoundedCornerShape(16.dp))
@@ -216,8 +234,10 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
     val dock = LocalDockInset.current
     val tab = state.activeLibraryTab
     val streamingTab = tab == LibrarySectionTab.STREAMING
-    // A connected computer shown on its own lists its own albums and artists, with their pictures and notes.
-    val catalog = state.desktopCatalogMode && tab in DesktopCatalogTabs
+    // Catalog artist rows are per-source identities, not a deduplicated list of people.
+    // All device filters use the same credited-member grid; explicit source detail stays accessible.
+    val catalog = state.desktopCatalogMode && tab in DesktopCatalogTabs &&
+        (tab != LibrarySectionTab.ARTISTS || state.desktopLibrary.selected != null)
     val computer = state.libraryDevices.find { it.id == state.libraryDevice && it.id != LIBRARY_ALL && it.id != LIBRARY_PHONE }
     val navigation = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberScrollHeaderState(libraryHeaderResetKey(state)))
     val detailOpen = catalog && state.desktopLibrary.selected != null
@@ -238,6 +258,9 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
                         if (!streamingTab && state.libraryDevices.isNotEmpty())
                             LibraryDeviceMenu(state, actions.selectLibraryDevice, onConnectComputer)
                         when {
+                            !streamingTab && computer != null -> TextButton(actions.openDesktopWorkspace,
+                                enabled = (state.librarySource as? LibrarySource.Desktop)?.connected == true,
+                                modifier = Modifier.testTag("desktopLibraryManage")) { Text("管理") }
                             streamingTab && state.streaming.access == StreamingAccess.READY ->
                                 GlassIconButton(TwilightIcons.Plus, "新建歌单", { streamingCreate = true })
                             streamingTab -> GlassIconButton(TwilightIcons.Settings, "管理音源", actions.openPlugins)
@@ -253,6 +276,7 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
                     }
                 }
                 if (!streamingTab) {
+                    TextButton({ actions.offlineDownloadsOpen(true) }, modifier = Modifier.padding(horizontal = 12.dp).testTag("offlineDownloadsOpen")) { Text("离线音乐") }
                     val headerMotion = rememberMotionEnabled()
                     AnimatedVisibility(
                         visible = state.isScanningLocalMusic,
@@ -300,7 +324,7 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
                 TwilightIcons.Computer, actionLabel = if (computer.connected) "刷新" else "连接电脑",
                 onAction = if (computer.connected) actions.refreshLibrary else onConnectComputer)
             else if (state.musicFolders.isEmpty()) EmptyState("还没有添加音乐文件夹",
-                "选择手机中存放音乐的文件夹，自动导入其中的歌曲与 CUE 分轨。",
+                "选择音乐文件夹，导入歌曲、CUE 分轨和 SACD 音轨。",
                 TwilightIcons.Library,
                 actionLabel = if (state.isScanningLocalMusic) null else "选择音乐文件夹",
                 onAction = actions.addMusicFolder)
@@ -311,17 +335,26 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
                 onAction = actions.addMusicFolder)
             return@Column
         }
-        val byId = remember(state.libraryTracks, state.allTracks) { (state.allTracks + state.libraryTracks).associateBy { it.id } }
+        // Songs and artist portraits need no full-library lookup when the page opens or scrolls.
+        val byId = if (tab == LibrarySectionTab.ALBUMS || tab == LibrarySectionTab.PLAYLISTS) {
+            remember(state.libraryTracks, state.allTracks) {
+                state.allTracks.associateByTo(HashMap()) { it.id }.apply { state.libraryTracks.forEach { put(it.id, it) } }
+            }
+        } else emptyMap()
         fun cover(ids: List<String>) = ids.firstNotNullOfOrNull { byId[it] }
         when (tab) {
             LibrarySectionTab.STREAMING -> Unit // Rendered above, independently of the songs on devices.
             LibrarySectionTab.SONGS -> {
+                val tracks = state.libraryTracks
+                val playTracks = actions.playTracks
+                val favorites = remember(state.favoriteTrackIds) { state.favoriteTrackIds.toHashSet() }
                 val listState = rememberLazyListState()
                 ScrollToTopOn(state.libraryDevice, listState)
                 LazyColumn(Modifier.weight(1f).testTag("librarySongs"), state = listState,
                     contentPadding = PaddingValues(bottom = dock + 8.dp)) {
-                    items(state.libraryTracks, key = { it.id }) { track ->
-                        TrackRow(track, state, { actions.playTracks(state.libraryTracks, track.id) })
+                    items(tracks, key = { it.id }, contentType = { "track" }) { track ->
+                        TrackRow(track, state.currentTrack?.id == track.id, state.isPlaying, track.id in favorites,
+                            { playTracks(tracks, track.id) })
                     }
                 }
             }
@@ -331,7 +364,7 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
                 LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.weight(1f).testTag("albumGrid"), state = gridState,
                     contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = dock + 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                    items(state.albums, key = { it.id }) { album ->
+                    items(state.albums, key = { it.id }, contentType = { "album" }) { album ->
                         ArtworkTile(rememberPlayerArtwork(cover(album.trackIds), size = 512, extractColors = false), album.title,
                             album.artist.ifBlank { "未知艺术家" }, { onOpenCollection("album", album.id) })
                     }
@@ -343,9 +376,14 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
                 LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f).testTag("artistGrid"), state = gridState,
                     contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = dock + 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                    items(state.artists, key = { it.id }) { artist ->
-                        ArtworkTile(rememberPlayerArtwork(cover(artist.trackIds), size = 512, extractColors = false), artist.name, "${artist.trackCount} 首",
-                            { onOpenCollection("artist", artist.id) }, round = true, centered = true)
+                    items(state.artists, key = { it.id }, contentType = { "artist" }) { artist ->
+                        val profile = state.libraryArtistProfiles[artist.id]
+                        LaunchedEffect(artist, profile) { actions.requestLibraryArtist(artist.id) }
+                        val portrait = rememberArtistPortrait(artist.id, artist.name, profile?.metadata, size = 512, extractColors = false)
+                        ArtworkTile(portrait, artist.name, "${artist.trackCount} 首",
+                            { onOpenCollection("artist", artist.id) },
+                            Modifier.testTag(if (portrait.isRealEmbeddedArt) "libraryArtistPortrait-${artist.id}" else "libraryArtistPlaceholder-${artist.id}"),
+                            round = true, centered = true)
                     }
                 }
             }
@@ -354,7 +392,7 @@ internal fun LibraryTabScreen(state: PlayerUiState, actions: PlayerActions,
                     TwilightIcons.Library, actionLabel = "新建歌单", onAction = { createDialog = true })
                 LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = dock + 8.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(state.playlists, key = { it.id }) { playlist ->
+                    items(state.playlists, key = { it.id }, contentType = { "playlist" }) { playlist ->
                         CollectionRow(playlist.name, "${playlist.trackCount} 首歌曲", cover(playlist.trackIds)) {
                             onOpenCollection("playlist", playlist.id)
                         }
@@ -419,6 +457,8 @@ private fun LibraryDeviceMenu(state: PlayerUiState, select: (String) -> Unit, on
 
 internal data class UiCollection(val kind: String, val id: String, val title: String,
     val subtitle: String, val ids: List<String>)
+
+internal val LocalCollectionBackLabel = staticCompositionLocalOf { "返回音乐库" }
 
 internal fun findCollection(state: PlayerUiState, kind: String?, id: String?): UiCollection? = when (kind) {
     "album" -> state.albums.find { it.id == id }?.let { UiCollection(kind, it.id, it.title, it.artist, it.trackIds) }
@@ -488,6 +528,8 @@ private fun CollectionDetailBody(
     val visible = remember(tracks, query, sort, collection?.kind) {
         if (collection?.kind == "playlist") browseCollection(tracks, query, sort) else tracks
     }
+    val favorites = remember(state.favoriteTrackIds) { state.favoriteTrackIds.toHashSet() }
+    val playTracks = actions.playTracks
     val albums = remember(collection, state.albums) {
         val ids = collection?.ids.orEmpty().toHashSet()
         state.albums.filter { album -> album.trackIds.any { it in ids } }
@@ -503,7 +545,7 @@ private fun CollectionDetailBody(
         LazyColumn(Modifier.fillMaxSize().testTag("collection"), contentPadding = PaddingValues(bottom = dock + 8.dp)) {
             if (collection == null) {
                 item {
-                    Row(Modifier.padding(horizontal = 8.dp)) { GlassIconButton(TwilightIcons.ArrowBack, "返回音乐库", onBack) }
+                    Row(Modifier.padding(horizontal = 8.dp)) { GlassIconButton(TwilightIcons.ArrowBack, LocalCollectionBackLabel.current, onBack) }
                     EmptyState("合集已不可用", "返回音乐库查看当前内容。", actionLabel = "返回音乐库", onAction = onBack)
                 }
                 return@LazyColumn
@@ -512,6 +554,24 @@ private fun CollectionDetailBody(
                 item {
                     LibraryArtistOverview(collection.title, "${tracks.size} 首歌曲 · ${albums.size} 张专辑", profile,
                         onBack, { actions.loadLibraryArtist(collection.id, true) })
+                    val sourceArtists = remember(collection, state.libraryTracks, state.desktopCatalogMode) {
+                        if (!state.desktopCatalogMode) emptyList() else desktopArtistEditTargets(collection.ids, collection.title, state.libraryTracks)
+                    }
+                    if (sourceArtists.isNotEmpty()) {
+                        var chooseArtist by remember(collection.id) { mutableStateOf(false) }
+                        Box(Modifier.padding(horizontal = 12.dp)) {
+                            TextButton(onClick = {
+                                if (sourceArtists.size == 1) actions.openEntity(sourceArtists.single().first) else chooseArtist = true
+                            }, modifier = Modifier.testTag("desktopArtistManage")) { Text("整理电脑上的艺人资料") }
+                            DropdownMenu(chooseArtist, { chooseArtist = false }) {
+                                sourceArtists.forEach { (entity, source) ->
+                                    DropdownMenuItem(text = { Text("${entity.title} · 来自「$source」") }, onClick = {
+                                        chooseArtist = false; actions.openEntity(entity)
+                                    })
+                                }
+                            }
+                        }
+                    }
                     ArtistContentTabs(artistAlbums, { artistAlbums = it })
                     if (!artistAlbums) PillButton("播放全部", { tracks.firstOrNull()?.let { actions.playTracks(tracks, it.id) } },
                         Modifier.padding(start = 20.dp, top = 4.dp, bottom = 14.dp), icon = TwilightIcons.Play,
@@ -542,12 +602,14 @@ private fun CollectionDetailBody(
                 EmptyState("没有找到歌曲", "试试其他歌名、歌手或专辑。", TwilightIcons.Search,
                     actionLabel = "清除搜索", onAction = { query = "" })
             }
-            itemsIndexed(visible, key = { index, track -> "$index-${track.id}" }) { index, track ->
+            itemsIndexed(visible, key = { index, track -> "$index-${track.id}" }, contentType = { _, _ -> "track" }) { index, track ->
                 val openSongMenu = LocalSongMenuOpener.current
                 TrackRow(
                     track = track,
-                    state = state,
-                    onClick = { actions.playTracks(visible, track.id) },
+                    current = state.currentTrack?.id == track.id,
+                    playing = state.isPlaying,
+                    favorite = track.id in favorites,
+                    onClick = { playTracks(visible, track.id) },
                     index = index + 1,
                     onLongClick = if (collection.kind == "playlist") {
                         {
@@ -584,7 +646,7 @@ private fun CollectionHero(collection: UiCollection, tracks: List<CoreTrackView>
     val shape = RoundedCornerShape(24.dp)
     Column(Modifier.fillMaxWidth().padding(bottom = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(TwilightIcons.ArrowBack, "返回音乐库", onBack)
+            GlassIconButton(TwilightIcons.ArrowBack, LocalCollectionBackLabel.current, onBack)
             Spacer(Modifier.weight(1f))
             if (collection.kind == "playlist") GlassIconButton(TwilightIcons.Trash, "删除歌单", onDelete)
         }
@@ -608,82 +670,105 @@ private fun CollectionHero(collection: UiCollection, tracks: List<CoreTrackView>
 
 @Composable
 internal fun SearchTabScreen(state: PlayerUiState, actions: PlayerActions) {
-    val focusRequester = remember { FocusRequester() }
-    val keyboard = LocalSoftwareKeyboardController.current
-    val motionEnabled = rememberMotionEnabled()
-    val listState = rememberLazyListState()
-    ScrollToTopOn(state.searchQuery, listState)
-    var firstVisit by rememberSaveable { mutableStateOf(true) }
-    LaunchedEffect(Unit) { if (firstVisit) { focusRequester.requestFocus(); firstVisit = false } }
-    val results = remember(state.searchResults, state.activeSearchFilter, state.favoriteTrackIds) { filteredSearchTracks(state) }
-    Column(Modifier.fillMaxSize().testTag("search")) {
-        PageHeading("搜索", modifier = Modifier.padding(horizontal = 20.dp))
-        SearchTabs(SearchSource.entries, state.searchSource, { it.label }, actions.searchSource,
-            Modifier.padding(bottom = 12.dp).testTag("searchSources"), tag = { "search-source-$it" })
-        TextField(value = state.searchQuery, onValueChange = actions.query, singleLine = true,
-            placeholder = { Text(if (state.searchSource == SearchSource.NETEASE) "搜索网易云音乐" else "歌曲、艺术家、专辑") },
-            leadingIcon = { Icon(TwilightIcons.Search, null) },
-            trailingIcon = {
-                AnimatedVisibility(
-                    visible = state.searchQuery.isNotEmpty(),
-                    enter = TwilightMotion.pillPopEnter(motionEnabled),
-                    exit = TwilightMotion.pillPopExit(motionEnabled)
-                ) {
-                    QuietIconButton(TwilightIcons.Close, "清除搜索", { actions.query("") })
+    var collectionKind by rememberSaveable(state.searchQuery, state.librarySearchCategory) { mutableStateOf<String?>(null) }
+    var collectionId by rememberSaveable(state.searchQuery, state.librarySearchCategory) { mutableStateOf<String?>(null) }
+    val savedSearchPages = rememberSaveableStateHolder()
+    if (state.searchSource == SearchSource.LIBRARY && collectionId != null) {
+        val allAlbums = remember(state.allTracks) { libraryAlbums(state.allTracks) }
+        val allArtists = remember(state.allTracks) { libraryArtists(state.allTracks) }
+        val detailState = state.copy(libraryTracks = state.allTracks, albums = allAlbums, artists = allArtists,
+            libraryDevice = LIBRARY_ALL, libraryArtist = state.libraryArtistProfiles[collectionId] ?: LibraryArtistProfile())
+        androidx.activity.compose.BackHandler { collectionId = null }
+        CompositionLocalProvider(LocalCollectionBackLabel provides "返回搜索结果") {
+            CollectionDetailScreen(findCollection(detailState, collectionKind, collectionId), detailState, actions, { collectionId = null })
+        }
+        return
+    }
+    if (state.searchSource == SearchSource.PROVIDER && state.providerSearch.detail != null) {
+        androidx.activity.compose.BackHandler { actions.providerSearchActions.back() }
+        StreamingDetailScreen(state.providerSearch.detail, state, actions.providerSearchActions)
+        return
+    }
+    savedSearchPages.SaveableStateProvider("search-results") {
+        val focusRequester = remember { FocusRequester() }
+        val keyboard = LocalSoftwareKeyboardController.current
+        val motionEnabled = rememberMotionEnabled()
+        var firstVisit by rememberSaveable { mutableStateOf(true) }
+        LaunchedEffect(Unit) { if (firstVisit) { focusRequester.requestFocus(); firstVisit = false } }
+        val sourceOptions = listOf(SearchSource.LIBRARY.name to SearchSource.LIBRARY.label,
+            SearchSource.NETEASE.name to SearchSource.NETEASE.label) + state.searchProviders.map { it.pluginId to it.name }
+        val selectedSource = if (state.searchSource == SearchSource.PROVIDER) state.providerSearch.provider?.pluginId.orEmpty() else state.searchSource.name
+        val searchCompleted = when (state.searchSource) {
+            SearchSource.LIBRARY -> !state.isSearching && !(state.isLoadingLibrary && state.allTracks.isEmpty())
+            SearchSource.NETEASE -> state.ncmSearch.query == state.searchQuery.trim() &&
+                (state.ncmSearch.searched || state.ncmSearch.error != null)
+            SearchSource.PROVIDER -> state.providerSearch.query == state.searchQuery.trim() &&
+                (state.providerSearch.searched || state.providerSearch.error != null)
+        }
+        val showCategories = rememberSearchCategoriesVisible(state.searchQuery, searchCompleted)
+        Column(Modifier.fillMaxSize().testTag("search")) {
+            PageHeading("搜索", modifier = Modifier.padding(horizontal = 20.dp))
+            SearchTabs(sourceOptions.map { it.first }, selectedSource, { id -> sourceOptions.first { it.first == id }.second }, { id ->
+                when (id) {
+                    SearchSource.LIBRARY.name -> actions.searchSource(SearchSource.LIBRARY)
+                    SearchSource.NETEASE.name -> actions.searchSource(SearchSource.NETEASE)
+                    else -> actions.searchProvider(id)
                 }
-            },
-            shape = RoundedCornerShape(28.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { keyboard?.hide(); actions.submitSearch() }),
-            colors = TextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.8f),
-                focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-                focusedLeadingIconColor = MaterialTheme.colorScheme.primary),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).heightIn(min = 56.dp)
-                .focusRequester(focusRequester).testTag("searchInput"))
-        AnimatedContent(
-            targetState = state.searchSource,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            transitionSpec = {
-                val dir = targetState.ordinal.compareTo(initialState.ordinal)
-                TwilightMotion.directionalTabTransition(dir, motionEnabled)
-            },
-            label = "searchSourceBody"
-        ) { targetSource ->
-            Column(Modifier.fillMaxSize()) {
-                if (targetSource == SearchSource.NETEASE) {
-                    SearchTabs(NcmSearchCategory.entries, state.ncmSearch.category, { it.label }, actions.searchCategory,
-                        Modifier.padding(vertical = 14.dp), tag = { "search-category-$it" })
-                    NcmSearchResults(state, actions.copy(streaming = actions.streaming.copy(
-                        play = { tracks, track -> keyboard?.hide(); actions.streaming.play(tracks, track) },
-                        collection = { keyboard?.hide(); actions.streaming.collection(it) })), Modifier.weight(1f))
-                } else {
-                    PillTabs(SearchFilterCategory.entries, state.activeSearchFilter, { it.label }, actions.selectFilter,
-                        Modifier.padding(vertical = 14.dp))
-                    val error = if (state.searchQuery.isBlank()) state.libraryError else state.searchError
-                    val phase = when {
-                        state.isSearching || (state.isLoadingLibrary && state.searchQuery.isBlank()) -> "loading"
-                        error != null -> "error"
-                        results.isEmpty() -> "empty"
-                        else -> "results"
+            }, Modifier.padding(bottom = 12.dp).testTag("searchSources"), tag = { "search-source-$it" })
+            TextField(value = state.searchQuery, onValueChange = actions.query, singleLine = true,
+                placeholder = { Text(when (state.searchSource) {
+                    SearchSource.NETEASE -> "搜索网易云音乐"
+                    SearchSource.PROVIDER -> "搜索${state.providerSearch.provider?.name.orEmpty()}"
+                    SearchSource.LIBRARY -> "歌曲、歌手、专辑"
+                }) },
+                leadingIcon = { Icon(TwilightIcons.Search, null) },
+                trailingIcon = {
+                    AnimatedVisibility(
+                        visible = state.searchQuery.isNotEmpty(),
+                        enter = TwilightMotion.pillPopEnter(motionEnabled),
+                        exit = TwilightMotion.pillPopExit(motionEnabled)
+                    ) {
+                        QuietIconButton(TwilightIcons.Close, "清除搜索", { actions.query("") })
                     }
-                    AnimatedContent(
-                        targetState = phase,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                        transitionSpec = { TwilightMotion.stateFadeTransition(motionEnabled) },
-                        label = "localSearchPhase"
-                    ) { targetPhase ->
-                        when (targetPhase) {
-                            "loading" -> LoadingContent("正在搜索")
-                            "error" -> EmptyState("暂时无法搜索", error.orEmpty(), TwilightIcons.Search, actionLabel = "重试",
-                                onAction = if (state.searchQuery.isBlank()) actions.refreshLibrary else actions.retrySearch)
-                            "empty" -> EmptyState("没有找到音乐", "试试其他关键词，或更换筛选条件。", TwilightIcons.Search)
-                            else -> LazyColumn(Modifier.fillMaxSize().testTag("searchResults"), state = listState,
-                                contentPadding = PaddingValues(bottom = LocalDockInset.current + 8.dp)) {
-                                items(results, key = { it.id }) { track -> TrackRow(track, state, {
-                                    keyboard?.hide(); actions.playTracks(results, track.id)
-                                }) }
-                            }
-                        }
+                },
+                shape = RoundedCornerShape(28.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide(); actions.submitSearch() }),
+                colors = TextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.8f),
+                    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
+                    focusedLeadingIconColor = MaterialTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).heightIn(min = 56.dp)
+                    .focusRequester(focusRequester).testTag("searchInput"))
+            AnimatedContent(
+                targetState = state.searchSource,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                transitionSpec = {
+                    val dir = targetState.ordinal.compareTo(initialState.ordinal)
+                    TwilightMotion.directionalTabTransition(dir, motionEnabled)
+                },
+                label = "searchSourceBody"
+            ) { targetSource ->
+                Column(Modifier.fillMaxSize()) {
+                    if (targetSource == SearchSource.NETEASE) {
+                        if (showCategories) SearchTabs(NcmSearchCategory.entries, state.ncmSearch.category, { it.label }, actions.searchCategory,
+                            Modifier.padding(vertical = 14.dp), tag = { "search-category-$it" })
+                        NcmSearchResults(state, actions.copy(streaming = actions.streaming.copy(
+                            play = { tracks, track -> keyboard?.hide(); actions.streaming.play(tracks, track) },
+                            collection = { keyboard?.hide(); actions.streaming.collection(it) })), Modifier.weight(1f))
+                    } else if (targetSource == SearchSource.PROVIDER) {
+                        if (showCategories) SearchTabs(SearchCategory.entries, state.providerSearch.category, { it.label }, actions.providerSearchCategory,
+                            Modifier.padding(vertical = 14.dp), tag = { "provider-search-category-$it" })
+                        ProviderSearchResults(state, actions.copy(providerSearchActions = actions.providerSearchActions.copy(
+                            play = { tracks, track -> keyboard?.hide(); actions.providerSearchActions.play(tracks, track) },
+                            collection = { keyboard?.hide(); actions.providerSearchActions.collection(it) })), Modifier.weight(1f))
+                    } else {
+                        if (showCategories) SearchTabs(SearchCategory.entries, state.librarySearchCategory, { it.label }, actions.librarySearchCategory,
+                            Modifier.padding(top = 14.dp, bottom = 8.dp), tag = { "local-search-category-$it" })
+                        if (state.librarySearchCategory == SearchCategory.SONGS) PillTabs(SearchFilterCategory.entries,
+                            state.activeSearchFilter, { it.label }, actions.selectFilter,
+                            Modifier.padding(top = if (showCategories) 0.dp else 14.dp, bottom = 10.dp))
+                        LocalSearchResults(state, actions.copy(playTracks = { tracks, id -> keyboard?.hide(); actions.playTracks(tracks, id) }),
+                            { collection -> keyboard?.hide(); collectionKind = collection.kind; collectionId = collection.id }, Modifier.weight(1f))
                     }
                 }
             }
@@ -694,19 +779,20 @@ internal fun SearchTabScreen(state: PlayerUiState, actions: PlayerActions) {
 @Composable
 internal fun TrackRow(
     track: CoreTrackView,
-    state: PlayerUiState,
+    current: Boolean,
+    playing: Boolean,
+    favorite: Boolean,
     onClick: () -> Unit,
     index: Int? = null,
     onLongClick: (() -> Unit)? = null
 ) {
-    val current = state.currentTrack?.id == track.id
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(16.dp))
         .background(if (current) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f) else Color.Transparent)
         .songRowClickable(track = track, onClick = onClick, onLongClick = onLongClick)
         .padding(horizontal = 12.dp, vertical = 8.dp).heightIn(min = 52.dp).testTag("track-${track.id}"),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         if (index != null) Box(Modifier.width(26.dp), contentAlignment = Alignment.Center) {
-            if (current) PlayingBars(state.isPlaying, MaterialTheme.colorScheme.primary)
+            if (current) PlayingBars(playing, MaterialTheme.colorScheme.primary)
             else Text(index.toString(), style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -716,9 +802,9 @@ internal fun TrackRow(
                 color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
             SupportingText(track.artist.ifBlank { "未知艺术家" }, Modifier.padding(top = 2.dp), maxLines = 1)
         }
-        if (current && state.isPlaying && index == null) Icon(TwilightIcons.SignalWave, "正在播放",
+        if (current && playing && index == null) Icon(TwilightIcons.SignalWave, "正在播放",
             Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-        else if (track.id in state.favoriteTrackIds) Icon(TwilightIcons.HeartFilled, "已收藏",
+        else if (favorite) Icon(TwilightIcons.HeartFilled, "已收藏",
             Modifier.size(16.dp), tint = TwilightTokens.FavoriteRose)
         Text(formatDurationSeconds(track.duration), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)

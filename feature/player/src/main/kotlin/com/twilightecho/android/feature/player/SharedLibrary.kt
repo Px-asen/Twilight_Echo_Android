@@ -3,6 +3,9 @@ package com.twilightecho.android.feature.player
 import com.twilightecho.android.coreclient.CoreAlbumCollectionView
 import com.twilightecho.android.coreclient.CoreArtistCollectionView
 import com.twilightecho.android.coreclient.CoreTrackView
+import com.twilightecho.android.coreclient.CatalogEntity
+import com.twilightecho.android.coreclient.artistNameKey
+import com.twilightecho.android.coreclient.libraryArtistNames
 import java.text.Collator
 import java.util.Locale
 
@@ -20,6 +23,37 @@ internal data class DesktopShelf(val serverId: String, val hostLabel: String, va
 internal data class SharedLibraryView(val tracks: List<CoreTrackView> = emptyList(),
     val albums: List<CoreAlbumCollectionView> = emptyList(), val artists: List<CoreArtistCollectionView> = emptyList())
 
+internal data class SharedLibraryProjection(val all: SharedLibraryView, val visible: SharedLibraryView,
+    val owners: Map<String, String>, val phoneTrackIds: Set<String>)
+
+/** Confined to the library collector's worker; loading/error updates reuse the existing catalog. */
+internal class SharedLibraryProjector {
+    private var phone: List<CoreTrackView>? = null
+    private var desktops: List<DesktopShelf>? = null
+    private var device: String? = null
+    private var projection: SharedLibraryProjection? = null
+
+    fun project(phone: List<CoreTrackView>, desktops: List<DesktopShelf>, device: String): SharedLibraryProjection {
+        val previous = projection
+        val sameLibrary = previous != null && this.phone == phone && this.desktops == desktops
+        val all = if (sameLibrary) previous!!.all else sharedLibrary(phone, desktops, LIBRARY_ALL)
+        val visible = when {
+            device == LIBRARY_ALL -> all
+            sameLibrary && this.device == device -> previous!!.visible
+            else -> sharedLibrary(phone, desktops, device)
+        }
+        return SharedLibraryProjection(all, visible,
+            if (sameLibrary) previous!!.owners else desktopOwners(desktops),
+            if (previous != null && this.phone == phone) previous.phoneTrackIds else phone.mapTo(HashSet()) { it.id }
+        ).also {
+            this.phone = phone
+            this.desktops = desktops
+            this.device = device
+            projection = it
+        }
+    }
+}
+
 /**
  * One library for the phone and its computers. "All" lists each song once, preferring the copy that
  * plays without a network (phone, then a connected computer); a single device shows exactly its songs.
@@ -36,7 +70,8 @@ internal fun sharedLibrary(phone: List<CoreTrackView>, desktops: List<DesktopShe
         else -> desktops.find { it.serverId == device }?.tracks.orEmpty()
     }.distinctBy { it.id }
     val sorted = sortedByTitle(tracks)
-    return SharedLibraryView(sorted, libraryAlbums(sorted), libraryArtists(sorted))
+    val catalogAlbums = device != LIBRARY_ALL && device != LIBRARY_PHONE
+    return SharedLibraryView(sorted, libraryAlbums(sorted, catalogAlbums), libraryArtists(sorted, catalogAlbums))
 }
 
 /** Which computer each remembered song belongs to; phone songs are absent. */
@@ -51,22 +86,52 @@ internal fun searchSharedLibrary(tracks: List<CoreTrackView>, query: String): Li
         it.album.lowercase().contains(words) }
 }
 
-internal fun libraryAlbums(tracks: List<CoreTrackView>): List<CoreAlbumCollectionView> =
-    tracks.groupBy { it.album.trim().lowercase() }.map { (key, members) ->
-        CoreAlbumCollectionView(id = "album:$key", title = members.first().album.trim().ifBlank { "未知专辑" },
-            artist = members.groupingBy { it.artist.trim() }.eachCount().maxByOrNull { it.value }?.key.orEmpty(),
+internal fun libraryAlbums(tracks: List<CoreTrackView>, catalogAlbums: Boolean = false): List<CoreAlbumCollectionView> =
+    tracks.groupBy { albumKey(it, catalogAlbums) }.map { (key, members) ->
+        val release = members.first().catalog?.items?.firstOrNull { catalogAlbums && it.kind == "release" }
+        CoreAlbumCollectionView(id = "album:$key", title = release?.title?.takeIf { it.isNotBlank() }
+            ?: members.first().album.trim().ifBlank { "未知专辑" },
+            artist = release?.artist?.takeIf { it.isNotBlank() }
+                ?: members.groupingBy { it.artist.trim() }.eachCount().maxByOrNull { it.value }?.key.orEmpty(),
             trackCount = members.size, totalDurationSec = members.sumOf { it.duration }, trackIds = members.map { it.id })
     }.let { albums -> sortedByKey(albums) { it.title } }
 
-internal fun libraryArtists(tracks: List<CoreTrackView>): List<CoreArtistCollectionView> =
-    tracks.groupBy { it.artist.trim().lowercase() }.map { (key, members) ->
-        CoreArtistCollectionView(id = "artist:$key", name = members.first().artist.trim().ifBlank { "未知艺术家" },
-            albumCount = members.map { it.album.trim().lowercase() }.distinct().size,
+internal fun libraryArtists(tracks: List<CoreTrackView>, catalogAlbums: Boolean = false): List<CoreArtistCollectionView> =
+    tracks.flatMap { track -> libraryArtistNames(track).map { it to track } }
+        .groupBy { (name, _) -> artistNameKey(name) }.map { (key, credits) ->
+        val members = credits.map { it.second }.distinctBy { it.id }
+        CoreArtistCollectionView(id = "artist:$key", name = credits.first().first,
+            albumCount = members.map { albumKey(it, catalogAlbums) }.distinct().size,
             trackCount = members.size, trackIds = members.map { it.id })
     }.let { artists -> sortedByKey(artists) { it.name } }
 
+/** A computer's same-title releases stay separate when drilling into a merged artist. */
+private fun albumKey(track: CoreTrackView, catalogAlbums: Boolean): String =
+    track.catalog?.items?.firstOrNull { catalogAlbums && it.kind == "release" }?.let { "catalog:${it.id}" }
+        ?: track.album.trim().lowercase()
+
+/** A phone-preferred song still carries its computer copy's exact catalog membership. */
+internal fun desktopArtistSources(artist: CoreArtistCollectionView, visible: List<CoreTrackView>,
+    desktop: List<CoreTrackView>): Set<String> {
+    val ids = artist.trackIds.toHashSet()
+    val songs = visible.filter { it.id in ids }.mapTo(HashSet(), ::songKey)
+    val name = artistNameKey(artist.name)
+    return desktop.asSequence().filter { track ->
+        (track.id in ids || songKey(track) in songs) && libraryArtistNames(track).any { artistNameKey(it) == name }
+    }.mapNotNull { it.catalog?.sourceId }.toSet()
+}
+
 private fun songKey(track: CoreTrackView) = listOf(track.title, track.artist, track.album)
     .joinToString("\u0000") { value -> value.lowercase().filter { it.isLetterOrDigit() } }
+
+/** Editing choices come only from exact Catalog memberships of the selected computer's collection. */
+internal fun desktopArtistEditTargets(trackIds: List<String>, name: String, tracks: List<CoreTrackView>): List<Pair<CatalogEntity, String>> {
+    val ids = trackIds.toSet()
+    return tracks.filter { it.id in ids }.flatMap { track ->
+        track.catalog?.items.orEmpty().filter { it.kind == "artist" && artistNameKey(it.title) == artistNameKey(name) }
+            .map { entity -> entity to listOf(track.album, track.title).filter(String::isNotBlank).joinToString(" · ") }
+    }.distinctBy { it.first.id }
+}
 
 private fun sortedByTitle(tracks: List<CoreTrackView>): List<CoreTrackView> = sortedByKey(tracks) { it.title + "\u0000" + it.artist }
 

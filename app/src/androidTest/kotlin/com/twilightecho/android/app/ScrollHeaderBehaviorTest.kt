@@ -71,7 +71,7 @@ class ScrollHeaderBehaviorTest {
         assertTrue("The content must be away from its top", scrollValue(tag) > 0f)
     }
 
-    private fun reverseBeforeReleasing(tag: String, connected: Boolean) {
+    private fun reverseBeforeReleasing(tag: String) {
         rule.onNodeWithTag(tag).performTouchInput {
             down(center)
             moveBy(Offset(0f, 48.dp.toPx()), delayMillis = 160)
@@ -79,14 +79,14 @@ class ScrollHeaderBehaviorTest {
         // Check while the finger is still down: no release, fling or return to item zero is required.
         assertTrue(navigationHeight() > 0.dp)
         assertTrue(scrollValue(tag) > 0f)
-        if (connected) rule.onNodeWithTag("playbackHeader").assertIsNotDisplayed()
+        rule.onNodeWithTag("playbackHeader").assertDoesNotExist()
         rule.onNodeWithTag(tag).performTouchInput {
             moveBy(Offset(0f, 144.dp.toPx()), delayMillis = 500)
             advanceEventTime(200)
             up()
         }
         rule.onNodeWithTag("libraryTabs").assertIsDisplayed()
-        if (connected) rule.onNodeWithTag("targetPhone").assertIsNotDisplayed()
+        rule.onNodeWithTag("targetPhone").assertDoesNotExist()
     }
 
     private fun shot(name: String) {
@@ -97,22 +97,22 @@ class ScrollHeaderBehaviorTest {
         }
     }
 
-    @Test fun outputReturnsOnlyAtTopWhileLibraryReturnsOnReverseDrag() {
+    @Test fun libraryNavigationReturnsOnReverseDragWithoutAnOutputSelector() {
         start(library())
-        rule.onNodeWithTag("targetPhone").assertIsDisplayed()
-        rule.onNodeWithTag("targetDesktop").assertIsDisplayed()
+        rule.onNodeWithTag("targetPhone").assertDoesNotExist()
+        rule.onNodeWithTag("targetDesktop").assertDoesNotExist()
         shot("songs-top")
         collapse("librarySongs")
-        rule.onNodeWithTag("playbackHeader").assertIsNotDisplayed()
+        rule.onNodeWithTag("playbackHeader").assertDoesNotExist()
         shot("songs-down")
-        reverseBeforeReleasing("librarySongs", connected = true)
+        reverseBeforeReleasing("librarySongs")
         shot("songs-reverse")
         repeat(12) {
             rule.onNodeWithTag("librarySongs").performTouchInput { swipeDown(durationMillis = 600) }
         }
         assertEquals(0f, scrollValue("librarySongs"), 0f)
-        rule.onNodeWithTag("targetPhone").assertIsDisplayed()
-        rule.onNodeWithTag("targetDesktop").assertIsDisplayed()
+        rule.onNodeWithTag("targetPhone").assertDoesNotExist()
+        rule.onNodeWithTag("targetDesktop").assertDoesNotExist()
         rule.onNodeWithTag("libraryTabs").assertIsDisplayed()
         shot("songs-return-top")
     }
@@ -121,7 +121,7 @@ class ScrollHeaderBehaviorTest {
         start(library(LibrarySectionTab.ALBUMS, connected = false))
         rule.onNodeWithTag("playbackHeader").assertDoesNotExist()
         collapse("albumGrid")
-        reverseBeforeReleasing("albumGrid", connected = false)
+        reverseBeforeReleasing("albumGrid")
         shot("albums-reverse")
         rule.runOnIdle { ui.value = ui.value.copy(libraryDevice = LIBRARY_PHONE) }
         assertEquals(0f, scrollValue("albumGrid"), 0f)
@@ -131,26 +131,26 @@ class ScrollHeaderBehaviorTest {
     @Test fun artistGridUsesTheSameDirectionRule() {
         start(library(LibrarySectionTab.ARTISTS))
         collapse("artistGrid")
-        rule.onNodeWithTag("playbackHeader").assertIsNotDisplayed()
-        reverseBeforeReleasing("artistGrid", connected = true)
+        rule.onNodeWithTag("playbackHeader").assertDoesNotExist()
+        reverseBeforeReleasing("artistGrid")
         shot("artists-reverse")
         rule.onNodeWithTag("libraryDevice").performClick()
         rule.onNodeWithTag("libraryDevice-$LIBRARY_PHONE").performClick()
         assertEquals(0f, scrollValue("artistGrid"), 0f)
-        rule.onNodeWithTag("targetPhone").assertIsDisplayed()
+        rule.onNodeWithTag("targetPhone").assertDoesNotExist()
     }
 
-    @Test fun desktopAlbumsUseBothHeaderRules() {
+    @Test fun desktopAlbumsKeepOnlyTheLibraryHeader() {
         start(library(LibrarySectionTab.ALBUMS, catalog = true))
         collapse("desktopCatalog")
-        reverseBeforeReleasing("desktopCatalog", connected = true)
+        reverseBeforeReleasing("desktopCatalog")
         shot("desktop-albums-reverse")
     }
 
-    @Test fun desktopArtistsUseBothHeaderRules() {
+    @Test fun desktopArtistsKeepOnlyTheLibraryHeader() {
         start(library(LibrarySectionTab.ARTISTS, catalog = true))
-        collapse("desktopCatalog")
-        reverseBeforeReleasing("desktopCatalog", connected = true)
+        collapse("artistGrid")
+        reverseBeforeReleasing("artistGrid")
     }
 
     @Test fun pageAndSavedStateRestorationKeepCollapsedHeadersWithTheirList() {
@@ -158,15 +158,15 @@ class ScrollHeaderBehaviorTest {
         collapse("librarySongs")
         val before = scrollValue("librarySongs")
         rule.onNodeWithTag("nav-SETTINGS").performClick()
-        rule.onNodeWithTag("targetPhone").assertIsDisplayed()
+        rule.onNodeWithTag("targetPhone").assertDoesNotExist()
         rule.onNodeWithTag("nav-LIBRARY").performClick()
         assertEquals(before, scrollValue("librarySongs"), 0f)
         rule.onNodeWithTag("libraryNavigation").assertIsNotDisplayed()
-        rule.onNodeWithTag("playbackHeader").assertIsNotDisplayed()
+        rule.onNodeWithTag("playbackHeader").assertDoesNotExist()
         restoration.emulateSavedInstanceStateRestore()
         assertEquals(before, scrollValue("librarySongs"), 0f)
         rule.onNodeWithTag("libraryNavigation").assertIsNotDisplayed()
-        rule.onNodeWithTag("playbackHeader").assertIsNotDisplayed()
+        rule.onNodeWithTag("playbackHeader").assertDoesNotExist()
     }
 
     @Test fun horizontalLibraryTabScrollingDoesNotCollapseTheHeaders() {
@@ -174,18 +174,18 @@ class ScrollHeaderBehaviorTest {
         val height = navigationHeight()
         rule.onNodeWithTag("libraryTabs").performTouchInput { swipeLeft() }
         assertEquals(height, navigationHeight())
-        rule.onNodeWithTag("targetPhone").assertIsDisplayed()
+        rule.onNodeWithTag("targetPhone").assertDoesNotExist()
         rule.onNodeWithTag("libraryTab-STREAMING").assertIsDisplayed()
     }
 
     @Test fun changingLibraryDeviceRevealsHeadersAtTheResetListTop() {
         start(library())
         collapse("librarySongs")
-        reverseBeforeReleasing("librarySongs", connected = true)
+        reverseBeforeReleasing("librarySongs")
         rule.onNodeWithTag("libraryDevice").performClick()
         rule.onNodeWithTag("libraryDevice-$LIBRARY_PHONE").performClick()
         assertEquals(0f, scrollValue("librarySongs"), 0f)
-        rule.onNodeWithTag("targetPhone").assertIsDisplayed()
+        rule.onNodeWithTag("targetPhone").assertDoesNotExist()
         rule.onNodeWithTag("libraryTabs").assertIsDisplayed()
     }
 
@@ -195,21 +195,21 @@ class ScrollHeaderBehaviorTest {
         rule.runOnIdle { ui.value = ui.value.copy(desktopLibrary = ui.value.desktopLibrary.copy(
             page = ui.value.desktopLibrary.page!!.copy(offset = 100))) }
         assertEquals(0f, scrollValue("desktopCatalog"), 0f)
-        rule.onNodeWithTag("targetPhone").assertIsDisplayed()
+        rule.onNodeWithTag("targetPhone").assertDoesNotExist()
         rule.onNodeWithTag("libraryTabs").assertIsDisplayed()
     }
 
-    @Test fun desktopDetailStartsWithItsOwnHeaderAndBackRestoresTheCatalog() {
+    @Test fun desktopDetailHasNoOutputHeaderAndBackRestoresTheCatalog() {
         start(library(LibrarySectionTab.ALBUMS, catalog = true))
         collapse("desktopCatalog")
         rule.onNodeWithTag("desktopCatalog").performScrollToIndex(12)
         val before = scrollValue("desktopCatalog")
         rule.onNodeWithTag("catalog-entity-12").performClick()
         rule.onNodeWithTag("desktopEntity").assertIsDisplayed()
-        rule.onNodeWithTag("targetPhone").assertIsDisplayed()
+        rule.onNodeWithTag("targetPhone").assertDoesNotExist()
         rule.onNodeWithContentDescription("返回电脑曲库").performClick()
         assertEquals(before, scrollValue("desktopCatalog"), 0f)
         rule.onNodeWithTag("libraryNavigation").assertIsNotDisplayed()
-        rule.onNodeWithTag("playbackHeader").assertIsNotDisplayed()
+        rule.onNodeWithTag("playbackHeader").assertDoesNotExist()
     }
 }

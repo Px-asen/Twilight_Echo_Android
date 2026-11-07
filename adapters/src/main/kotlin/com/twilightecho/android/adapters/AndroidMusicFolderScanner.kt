@@ -10,6 +10,8 @@ import android.os.storage.StorageManager
 import android.provider.DocumentsContract
 import com.twilightecho.android.coreclient.CueSheets
 import com.twilightecho.android.coreclient.CueSkip
+import com.twilightecho.android.coreclient.AudioFileMetadata
+import com.twilightecho.android.coreclient.SafDocumentIdentity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -32,7 +34,10 @@ data class LibraryScanSummary(
     val skipped: List<CueSkip>,
     val unreadableFolders: List<MusicFolder>,
     val withDeviceMusic: Boolean = false,
-    val folderCount: Int = 0
+    val folderCount: Int = 0,
+    val sacdSongs: Int = 0,
+    val skippedFiles: List<MusicFileSkip> = emptyList(),
+    val ambiguousExclusions: Int = 0
 )
 
 /**
@@ -40,7 +45,10 @@ data class LibraryScanSummary(
  * MediaStore and lists APE or WavPack files at most as plain files, so CUE sheets and such audio are found by
  * walking the folders themselves. The folders are the app's persisted folder grants.
  */
-class AndroidMusicFolderScanner(private val context: Context) {
+class AndroidMusicFolderScanner(
+    private val context: Context,
+    private val readNativeMetadata: ((String) -> AudioFileMetadata)? = null
+) {
     private val resolver get() = context.contentResolver
 
     companion object {
@@ -68,12 +76,12 @@ class AndroidMusicFolderScanner(private val context: Context) {
 
     /** Reads every selected music folder. A folder inside another picked folder is walked once. */
     suspend fun scan(): MusicFolderScan = withContext(Dispatchers.IO) {
-        val visited = HashSet<String>()
+        val visited = MusicFolderVisits()
         val parts = mutableListOf<FolderSongs>()
         val unreadable = mutableListOf<MusicFolder>()
         for (folder in folders()) {
             val tree = Uri.parse(folder.uri)
-            val reader = TreeReader(tree)
+            val reader = TreeReader(tree) { ensureActive() }
             val readable = walk(tree, visited) { listed ->
                 ensureActive()
                 parts += MusicFolders.songs(folder = listed, reader = reader)
@@ -84,21 +92,24 @@ class AndroidMusicFolderScanner(private val context: Context) {
     }
 
     /** Lists each folder under [tree], eight levels deep; false when the folder itself cannot be read. */
-    private fun walk(tree: Uri, visited: MutableSet<String>, onFolder: (ListedFolder) -> Unit): Boolean {
+    private fun walk(tree: Uri, visited: MusicFolderVisits, onFolder: (ListedFolder) -> Unit): Boolean {
+        val authority = tree.authority ?: return false
         val rootId = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull() ?: return false
         val rootName = displayName(tree, rootId) ?: return false
         val pending = ArrayDeque(listOf(Triple(rootId, rootName, 0)))
         while (pending.isNotEmpty()) {
             val (documentId, path, depth) = pending.removeFirst()
-            if (!visited.add(documentId)) continue
+            val identity = SafDocumentIdentity(authority, documentId)
+            if (!visited.needsRead(identity, 8 - depth)) continue
             val children = children(tree, documentId) ?: if (documentId == rootId) return false else continue
+            val emitSongs = visited.record(identity, 8 - depth)
             val files = mutableListOf<ListedFile>()
             for (child in children) {
                 if (child.file.name.startsWith(".")) continue
                 if (!child.directory) files += child.file
                 else if (depth < 8) pending += Triple(child.file.documentId, "$path/${child.file.name}", depth + 1)
             }
-            onFolder(ListedFolder(path, files))
+            if (emitSongs) onFolder(ListedFolder(path, files, authority))
         }
         return true
     }
@@ -157,8 +168,14 @@ class AndroidMusicFolderScanner(private val context: Context) {
         }
     }
 
-    private inner class TreeReader(private val tree: Uri) : FolderReader {
+    private inner class TreeReader(private val tree: Uri, private val checkActive: () -> Unit) : FolderReader {
         override fun uri(file: ListedFile): String = DocumentsContract.buildDocumentUriUsingTree(tree, file.documentId).toString()
+        override fun nativeMetadata(file: ListedFile): AudioFileMetadata? {
+            checkActive()
+            val metadata = readNativeMetadata?.invoke(uri(file))
+            checkActive()
+            return metadata
+        }
 
         override fun bytes(file: ListedFile): ByteArray {
             val input = resolver.openInputStream(Uri.parse(uri(file))) ?: throw java.io.IOException("无法读取 ${file.name}")

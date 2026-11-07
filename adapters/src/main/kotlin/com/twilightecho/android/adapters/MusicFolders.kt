@@ -1,17 +1,20 @@
 package com.twilightecho.android.adapters
 
 import com.twilightecho.android.coreclient.CoreTrackView
+import com.twilightecho.android.coreclient.AudioFileMetadata
 import com.twilightecho.android.coreclient.CueSheets
 import com.twilightecho.android.coreclient.CueSkip
 import com.twilightecho.android.coreclient.FolderFile
+import com.twilightecho.android.coreclient.SafTrackIds
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.CancellationException
 
 /** A file a folder lists. [documentId] names it to the storage provider; [size] is -1 when unknown. */
 data class ListedFile(val documentId: String, val name: String, val size: Long = -1, val lastModified: Long? = null)
 
 /** One folder inside a picked music folder; [path] starts with the picked folder's name. */
-data class ListedFolder(val path: String, val files: List<ListedFile>)
+data class ListedFolder(val path: String, val files: List<ListedFile>, val authority: String? = null)
 
 /** Tags MediaMetadataRetriever reads from a file MediaStore does not list. */
 data class FileTags(
@@ -35,7 +38,11 @@ interface FolderReader {
     fun bytes(file: ListedFile): ByteArray
     fun header(file: ListedFile): AudioHeader?
     fun tags(file: ListedFile): FileTags?
+    /** WavPack/DSD tags and SACD area tracks from the shared reader; never whole-file byte loading. */
+    fun nativeMetadata(file: ListedFile): AudioFileMetadata? = null
 }
+
+data class MusicFileSkip(val fileName: String, val reason: String)
 
 /**
  * What music folders change in the MediaStore library: songs only the folders hold, including the songs CUE
@@ -46,11 +53,13 @@ data class FolderSongs(
     val tracks: List<CoreTrackView> = emptyList(),
     val replaced: Set<String> = emptySet(),
     val covers: Map<String, String> = emptyMap(),
-    val skipped: List<CueSkip> = emptyList()
+    val skipped: List<CueSkip> = emptyList(),
+    val skippedFiles: List<MusicFileSkip> = emptyList()
 ) {
     companion object {
         fun of(parts: List<FolderSongs>) = FolderSongs(parts.flatMap { it.tracks }, parts.flatMapTo(HashSet()) { it.replaced },
-            parts.fold(HashMap()) { covers, part -> covers.apply { putAll(part.covers) } }, parts.flatMap { it.skipped })
+            parts.fold(HashMap()) { covers, part -> covers.apply { putAll(part.covers) } }, parts.flatMap { it.skipped },
+            parts.flatMap { it.skippedFiles })
     }
 
     /** The library: MediaStore's songs, less the files sheets split, then the folders' own songs. */
@@ -116,6 +125,23 @@ object MusicFolders {
         val replaced = mutableSetOf<String>()
         val covers = mutableMapOf<String, String>()
         val skipped = claims.skipped.toMutableList()
+        val skippedFiles = mutableListOf<MusicFileSkip>()
+        // ISO areas are native virtual tracks, not CUE time ranges.
+        for (file in files.filter { extension(it.name) == "iso" }) {
+            val metadata = try { reader.nativeMetadata(file) } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                skippedFiles += MusicFileSkip(file.name, error.message ?: "无法读取 SACD ISO")
+                continue
+            }
+            if (metadata == null || metadata.isoTracks.isEmpty()) {
+                skippedFiles += MusicFileSkip(file.name, "未找到 SACD 音轨")
+                continue
+            }
+            val cover = (images.firstOrNull { baseName(it.name) == baseName(file.name) } ?: folderCover)?.let(reader::uri)
+            tracks += metadata.isoTracks.map { track -> nativeLibraryTrack(file, folder, track.source, track, cover) }
+            mediaStore[StorageLocation.ofDocument(file.documentId)]?.let { replaced += it.id }
+        }
         for (file in audio) {
             val cover = (images.firstOrNull { baseName(it.name) == baseName(file.name) } ?: folderCover)?.let(reader::uri)
             val stored = mediaStore[StorageLocation.ofDocument(file.documentId)]
@@ -125,15 +151,26 @@ object MusicFolders {
                 continue
             }
             if (stored == null && candidates == null && extension(file.name) !in SONG_EXTENSIONS) continue
-            val header = reader.header(file)
-            val own = (stored ?: describe(file, folder, reader, header)).let { it.copy(cover = it.cover ?: cover) }
+            val native = if (extension(file.name) in setOf("dsf", "dff", "wv")) {
+                try { reader.nativeMetadata(file) } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    skippedFiles += MusicFileSkip(file.name, error.message ?: "无法读取 ${audioFormat(null, file.name)} 音频")
+                    continue
+                }
+            } else null
+            val header = if (native != null && extension(file.name) in setOf("dsf", "dff")) {
+                AudioHeader(native.duration, native.sampleRate, 1, isDsd = true)
+            } else reader.header(file)
+            val own = (stored ?: native?.let { nativeLibraryTrack(file, folder, reader.uri(file), it, cover, header) }
+                ?: describe(file, folder, reader, header)).let { it.copy(cover = it.cover ?: cover) }
             if (candidates != null) {
                 // Header lengths are exact, so the last song ends exactly where the file does.
                 val base = own.copy(source = reader.uri(file), duration = header?.durationSeconds ?: own.duration)
                 val split = CueSheets.split(base, file.documentId, candidates)
                 skipped += split.skipped
                 if (split.tracks.isNotEmpty()) {
-                    tracks += split.tracks
+                    tracks += split.tracks.map { it.copy(id = SafTrackIds.qualify(it.id, folder.authority)) }
                     stored?.let { replaced += it.id }
                     continue
                 }
@@ -145,7 +182,8 @@ object MusicFolders {
             }
             if (own.duration > 0) tracks += own
         }
-        return FolderSongs(tracks, replaced, covers, skipped.map { it.copy(sheetName = "${folder.path}/${it.sheetName}") })
+        return FolderSongs(tracks, replaced, covers, skipped.map { it.copy(sheetName = "${folder.path}/${it.sheetName}") },
+            skippedFiles.map { it.copy(fileName = "${folder.path}/${it.fileName}") })
     }
 
     /** A song for a file MediaStore does not list, from its tags and header. */
@@ -155,7 +193,7 @@ object MusicFolders {
         val duration = header?.durationSeconds ?: tags?.durationSeconds ?: 0.0
         val size = file.size.takeIf { it >= 0 }
         return CoreTrackView(
-            id = folderTrackId(file.documentId),
+            id = SafTrackIds.qualify(folderTrackId(file.documentId), folder.authority),
             title = tags?.title ?: file.name.substringBeforeLast('.').ifEmpty { file.name },
             artist = artist,
             artists = listOf(artist),
@@ -164,7 +202,7 @@ object MusicFolders {
             source = reader.uri(file),
             duration = duration,
             size = size,
-            format = audioFormat(null, file.name),
+            format = if (header?.isDsd == true && extension(file.name) == "wv") "WavPack DSD" else audioFormat(null, file.name),
             sampleRate = header?.sampleRate,
             bitDepth = header?.bitDepth,
             bitrate = tags?.bitrateKbps ?: if (size != null && duration > 0) size * 8 / duration / 1000 else null,

@@ -515,6 +515,33 @@ object TwilightIcons {
             moveTo(19f, 6.5f); arcTo(7.5f, 7.5f, 0f, false, true, 19f, 17.5f)
         } }
     }
+    /** Two half links joined by a bar: outputs bound into one sync group. */
+    val Link: ImageVector by lazy {
+        strokeIcon("TwilightLink") { path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+            moveTo(10f, 7.5f); lineTo(7.5f, 7.5f); arcTo(4.5f, 4.5f, 0f, false, false, 7.5f, 16.5f); lineTo(10f, 16.5f)
+            moveTo(14f, 7.5f); lineTo(16.5f, 7.5f); arcTo(4.5f, 4.5f, 0f, false, true, 16.5f, 16.5f); lineTo(14f, 16.5f)
+            moveTo(8.5f, 12f); lineTo(15.5f, 12f)
+        } }
+    }
+    /** The same links pulled apart: an output that is not connected, or a group being dissolved. */
+    val Unlink: ImageVector by lazy {
+        strokeIcon("TwilightUnlink") { path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+            moveTo(9.5f, 7.5f); lineTo(7.5f, 7.5f); arcTo(4.5f, 4.5f, 0f, false, false, 7.5f, 16.5f); lineTo(9.5f, 16.5f)
+            moveTo(14.5f, 7.5f); lineTo(16.5f, 7.5f); arcTo(4.5f, 4.5f, 0f, false, true, 16.5f, 16.5f); lineTo(14.5f, 16.5f)
+            moveTo(12f, 3f); lineTo(12f, 5f); moveTo(12f, 19f); lineTo(12f, 21f)
+        } }
+    }
+    /** Music leaving one place for another (接力). */
+    val Handoff: ImageVector by lazy {
+        strokeIcon("TwilightHandoff") { path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+            moveTo(10f, 4.5f); lineTo(6f, 4.5f); arcTo(2f, 2f, 0f, false, false, 4f, 6.5f); lineTo(4f, 17.5f)
+            arcTo(2f, 2f, 0f, false, false, 6f, 19.5f); lineTo(10f, 19.5f)
+            moveTo(10f, 12f); lineTo(20f, 12f); moveTo(16f, 8f); lineTo(20f, 12f); lineTo(16f, 16f)
+        } }
+    }
 
     val Info: ImageVector by lazy {
         strokeIcon("TwilightInfo") {

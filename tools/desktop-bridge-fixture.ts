@@ -12,7 +12,7 @@ import { CoreRemoteService } from '../../Twilight_Echo/src/core/remote/service.t
 import { createDefaultSettings } from '../../Twilight_Echo/src/core/settings/normalization.ts'
 import { CoreDiscoveryAdvertisement } from '../../Twilight_Echo/src/main/remote/coreDiscovery.ts'
 import { RemoteMediaResolver } from '../../Twilight_Echo/src/core/remote/media.ts'
-import { createRemoteTlsIdentity } from '../../Twilight_Echo/src/core/cast/tlsIdentity.ts'
+import { createRemoteTlsIdentity } from '../../Twilight_Echo/src/adapters-node/remoteTlsIdentity.ts'
 
 const pin = '123456'
 const server = new RemoteHttpServer({ staticRoot: '', addresses: () => ['127.0.0.1'], auth: new RemoteAuthSession({ pin }),
@@ -79,14 +79,20 @@ remote.attach({ connect: (_identity, send) => { receive = send; publish() }, dis
       value = { tracks: page, total: found.length, offset: p.offset, revision: 3,
         catalog: { tracks: page.map(track => ({ revision: state.catalogRevision, sourceId: `source-${tracks.indexOf(track)}`,
           total: 3, items: [{ id: 'recording-1', kind: 'recording', title: track.title, artist: track.artist },
-            { id: 'artist-1', kind: 'artist', title: track.artist, artist: '' },
+            { id: process.env.TWILIGHT_FIXTURE_ARTIST_DUPLICATES === 'true'
+                ? `artist-${tracks.indexOf(track) % 2 + 1}` : 'artist-1', kind: 'artist', title: track.artist, artist: '' },
             { id: 'release-1', kind: 'release', title: track.album, artist: track.artist }] })) } }
     } else if (request.name === 'library.byIds') value = { tracks: p.ids.map(id => tracks.find(track => track.id === id)), revision: 3 }
     else if (request.name === 'queue.page') value = { revision: state.queue?.revision, total: queueTracks.length,
       offset: p.offset, items: queueTracks.slice(p.offset, p.offset + p.limit).map((track, i) => ({ track, position: p.offset + i, queueEntryId: occurrence(p.offset + i) })) }
     else if (request.name === 'library.artwork') value = { revision: 3, items: p.ids.map(id => ({ id, cover: 'cover://fixture.jpg' })) }
-    else if (request.name === 'catalog.query') value = { revision: state.catalogRevision, offset: p.offset, total: 1, items: [{
-      id: p.kind === 'artist' ? 'artist-1' : 'release-1', kind: p.kind, title: p.kind === 'artist' ? '共享艺术家' : '共享专辑', artist: '共享艺术家', sourceCount: 1 }] }
+    else if (request.name === 'catalog.query') {
+      const ids = p.kind === 'artist'
+        ? process.env.TWILIGHT_FIXTURE_ARTIST_DUPLICATES === 'true' ? ['artist-1', 'artist-2'] : ['artist-1']
+        : ['release-1']
+      value = { revision: state.catalogRevision, offset: p.offset, total: ids.length, items: ids.slice(p.offset, p.offset + p.limit).map(id => ({
+        id, kind: p.kind, title: p.kind === 'artist' ? '共享艺术家' : '共享专辑', artist: '共享艺术家', sourceCount: 1 })) }
+    }
     else if (request.name === 'catalog.sources') value = { revision: state.catalogRevision, offset: p.offset, total: 1, items: [{ id: 'source-0',
       provider: 'local', recordingId: 'recording-1', releaseId: 'release-1', availability: 'indexed', inLibrary: true, track: tracks[0] }] }
     else if (request.name === 'catalog.detail') value = { revision: state.catalogRevision,
@@ -98,6 +104,11 @@ remote.attach({ connect: (_identity, send) => { receive = send; publish() }, dis
       name: state.entityMetadataRevision > 9 ? '电脑更正后的艺术家' : '整理后的共享艺术家',
       introduction: { value: '这段简介来自电脑已整理的音乐资料。', language: 'zh-Hans', origin: 'manual', attribution: null },
       facts: [], manualArtwork: { dataUrl: preview }, artworkOverride: { mode: 'value' }, artwork: [] }
+      if (process.env.TWILIGHT_FIXTURE_ARTIST_DUPLICATES === 'true') value = { ...value,
+        targetId: 'person-shared-artist', introduction: { ...value.introduction, origin: 'external' },
+        facts: [{ field: 'introduction', value: value.introduction.value, language: 'zh-Hans', usage: { display: true, cache: false, crossSource: true, export: false } }],
+        manualArtwork: null, artworkOverride: null,
+        artwork: [{ scope: 'artist', handle: 'cover://fixture.jpg', usage: { display: true, cache: false, crossSource: true, export: false } }] }
     }
     else if (request.name === 'catalog.play') play([tracks[0]])
     else if (request.name === 'queue.select') { state.queue.index = p.index; state.queue.occurrenceId = occurrence(p.index); state.track = queueTracks[p.index]; publish() }

@@ -11,6 +11,9 @@ import com.twilightecho.android.coreclient.CoreBookmarkView
 import com.twilightecho.android.coreclient.CoreClient
 import com.twilightecho.android.coreclient.CoreErrorCode
 import com.twilightecho.android.coreclient.CoreEqConfigView
+import com.twilightecho.android.coreclient.CoreAudioEditReceipt
+import com.twilightecho.android.coreclient.commitAudioEdit
+import com.twilightecho.android.coreclient.withSavedDspScene
 import com.twilightecho.android.coreclient.CoreDspConfig
 import com.twilightecho.android.coreclient.CoreDspStatus
 import com.twilightecho.android.coreclient.CoreDspScene
@@ -25,6 +28,7 @@ import com.twilightecho.android.coreclient.CoreQueueEntryView
 import com.twilightecho.android.coreclient.CoreQueueWindowView
 import com.twilightecho.android.coreclient.CoreSnapshot
 import com.twilightecho.android.coreclient.CoreTrackView
+import com.twilightecho.android.coreclient.SacdTrackSource
 import com.twilightecho.android.coreclient.CoreTypedCommand
 import com.twilightecho.android.coreclient.CoreResult
 import com.twilightecho.android.coreclient.TrackInspectionDetails
@@ -33,6 +37,7 @@ import com.twilightecho.android.coreclient.CatalogSource
 import com.twilightecho.android.coreclient.RemoteConnectionPhase
 import com.twilightecho.android.coreclient.PlayMode
 import com.twilightecho.android.coreclient.DesktopCoreDevice
+import com.twilightecho.android.coreclient.DesktopAudioSnapshot
 import com.twilightecho.android.coreclient.DesktopDiscoveryState
 import com.twilightecho.android.coreclient.DesktopMediaReference
 import com.twilightecho.android.coreclient.mergeDesktopDevices
@@ -42,8 +47,11 @@ import com.twilightecho.android.coreclient.TrackArtworkPreview
 import com.twilightecho.android.playbackhost.AndroidPlaybackHost
 import com.twilightecho.android.playbackhost.NcmFallbackUri
 import com.twilightecho.android.playbackhost.offlineNcmFallbackTrack
+import com.twilightecho.android.nativeintegration.usb.AndroidUsbDirectHost
+import com.twilightecho.android.nativeintegration.usb.UsbHardwareControlId
 import com.twilightecho.android.ui.components.formatDurationSeconds
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
@@ -69,7 +77,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.NonCancellable
 import kotlinx.serialization.json.*
-import java.util.UUID
 
 data class AudioDiagnosticsUiModel(
     val codec: String = "",
@@ -107,10 +114,19 @@ data class AudioDiagnosticsUiModel(
     val actualChannels: Int = 0,
     val hardwareChannels: Int = 0,
     /** The phone's Bluetooth link while it plays to a Bluetooth output: "a2dp", "le_audio" or "call". */
-    val bluetoothProfile: String = ""
+    val bluetoothProfile: String = "",
+    val isDsd: Boolean = false,
+    val dsdMode: String? = null,
+    val dsdRate: Int = 0,
+    val actualDsdRate: Int = 0,
+    val dsdConversion: String? = null,
+    val dsdConversionReason: String? = null,
+    val transportSampleRateHz: Int = 0,
+    val semanticSampleRateHz: Int = 0
 )
 
-data class AudioOutputDeviceUi(val id: String, val name: String, val sampleRates: List<Int> = emptyList())
+data class AudioOutputDeviceUi(val id: String, val name: String, val sampleRates: List<Int> = emptyList(),
+    val dopConfirmationKey: String = "")
 
 enum class LibrarySectionTab(val label: String) {
     SONGS("歌曲"),
@@ -124,8 +140,13 @@ enum class MainDestinationTab(val label: String) {
     HOME("首页"),
     LIBRARY("音乐库"),
     SEARCH("搜索"),
+    /** Shown only while a computer's Core is the playback target; see [zonesTabAvailable]. */
+    ZONES("声区"),
     SETTINGS("设置")
 }
+
+/** The 声区 tab exists only while the phone controls a computer's Core (the desktop audio sheet's condition). */
+fun zonesTabAvailable(mode: CoreOperatingMode): Boolean = mode is CoreOperatingMode.RemoteDesktopCore
 
 enum class SearchFilterCategory(val label: String) {
     ALL("全部"),
@@ -189,6 +210,9 @@ data class PlayerUiState(
     val isSearching: Boolean = false,
     val searchError: String? = null,
     val searchSource: SearchSource = SearchSource.LIBRARY,
+    val librarySearchCategory: SearchCategory = SearchCategory.SONGS,
+    val searchProviders: List<SearchProviderOption> = emptyList(),
+    val providerSearch: ProviderSearchState = ProviderSearchState(),
     val ncmSearch: NcmSearchState = NcmSearchState(),
     val isScanningLocalMusic: Boolean = false,
     val scanStatusMessage: String? = null,
@@ -209,8 +233,29 @@ data class PlayerUiState(
     val remoteStatusMessage: String? = null,
     val errorBanner: String? = null,
     val desktopLibrary: DesktopBrowseState = DesktopBrowseState(),
+    val desktopEntityEditor: DesktopEntityEditorState = DesktopEntityEditorState(),
+    val desktopQueue: DesktopQueueState = DesktopQueueState(),
+    val desktopDspLibrary: DesktopDspLibraryState = DesktopDspLibraryState(),
+    val desktopPlugins: DesktopPluginsState = DesktopPluginsState(),
+    val offlineDownloads: com.twilightecho.android.playbackhost.OfflineDownloadState = com.twilightecho.android.playbackhost.OfflineDownloadState(),
+    val offlineDownloadsOpen: Boolean = false,
+    val desktopLibraryQueue: DesktopQueueState = DesktopQueueState(),
+    val desktopWorkspace: DesktopLibraryWorkspaceState = DesktopLibraryWorkspaceState(),
+    val desktopAudio: DesktopAudioSnapshot? = null,
+    val desktopZoneSessions: List<com.twilightecho.android.coreclient.DesktopZoneSession> = emptyList(),
+    val desktopZonesError: String? = null,
+    val desktopSyncGroups: com.twilightecho.android.coreclient.DesktopSyncGroups? = null,
+    val desktopGroupsError: String? = null,
+    val desktopAudioOpen: Boolean = false,
+    val desktopAudioBusy: Boolean = false,
+    val desktopAudioError: String? = null,
+    val desktopAudioNotice: String? = null,
     val libraryArtist: LibraryArtistProfile = LibraryArtistProfile(),
+    val libraryArtistProfiles: Map<String, LibraryArtistProfile> = emptyMap(),
     val streaming: StreamingUiState = StreamingUiState(),
+    val homeProviders: List<HomeProviderOption> = emptyList(),
+    val activeHomePluginId: String = NCM_PLUGIN_ID,
+    val providerHome: ProviderHomeUiState = ProviderHomeUiState(),
     val remoteConnectionPhase: RemoteConnectionPhase = RemoteConnectionPhase.CLOSED,
     /** Whose songs the library lists: [LIBRARY_ALL], [LIBRARY_PHONE] or a computer's server ID. */
     val libraryDevice: String = LIBRARY_ALL,
@@ -232,12 +277,14 @@ data class PlayerUiState(
     val outputPreset: com.twilightecho.android.coreclient.OutputPresetStatus = com.twilightecho.android.coreclient.OutputPresetStatus()
 ) {
     val isDesktopLibrary: Boolean get() = librarySource is LibrarySource.Desktop
+    val isNcmHomeActive: Boolean
+        get() = activeHomePluginId == NCM_PLUGIN_ID || homeProviders.none { it.pluginId == activeHomePluginId }
     /** The library shows exactly one connected computer, whose own albums and artists can be browsed. */
     val desktopCatalogMode: Boolean get() =
         (librarySource as? LibrarySource.Desktop)?.let { it.connected && it.serverId == libraryDevice } == true
     val interpolatedPositionSec: Double
         get() = displayedPositionSeconds
-    val playbackButtonPlaying: Boolean get() = requestedPlaying ?: isPlaying
+    val playbackButtonPlaying: Boolean get() = requestedPlaying ?: (isPlaying || playbackState == "buffering")
 }
 
 /** A song on a computer that cannot be reached right now, and the ways to still hear it. */
@@ -289,24 +336,130 @@ class PlayerViewModel(
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
     internal val pluginPresenter = PluginPresenter(viewModelScope, playbackHost.plugins)
     internal val streamingPresenter = StreamingPresenter(viewModelScope) { method, args ->
-        playbackHost.plugins.call(NCM_PLUGIN_ID, method, args)
+        if (method == "fetchPlaylistTracksPage") playbackHost.plugins.browseNcmPlaylistPage(args)
+        else playbackHost.plugins.call(NCM_PLUGIN_ID, method, args)
     }
+    internal val providerHomePresenter = ProviderHomePresenter(
+        scope = viewModelScope,
+        describeProvider = playbackHost.plugins::provider,
+        callProvider = playbackHost.plugins::call,
+        runCommand = playbackHost.plugins::command
+    )
     private val ncmSearch = NcmSearchPresenter(viewModelScope) { method, args ->
         playbackHost.plugins.call(NCM_PLUGIN_ID, method, args)
     }
+    internal val providerSearchPresenter = ProviderSearchPresenter(viewModelScope, playbackHost.plugins::call)
     // The phone's own songs; computer songs come from the lists the playback host remembers per computer.
     private val libraryLoader = LibraryContentLoader(viewModelScope, search = { playbackHost.phoneLibraryClient.searchTracks(it) })
     private val desktopLibrary = DesktopLibraryPresenter(viewModelScope, playbackHost.desktopLibrary, ::desktopArtwork)
     private val libraryArtist = LibraryArtistPresenter(viewModelScope) { artist ->
-        val members = artist.trackIds.toHashSet()
         val online = playbackHost.connectedDesktops.value
-        val desktop = playbackHost.desktopLibraries.value.firstOrNull { index ->
-            index.serverId in online && index.tracks.any { it.id in members }
+        val visible = _uiState.value.libraryTracks
+        val device = _uiState.value.libraryDevice
+        val desktops = playbackHost.desktopLibraries.value
+        val target = withContext(Dispatchers.Default) {
+            desktops.asSequence().filter { it.serverId in online && (device == LIBRARY_ALL || device == it.serverId) }
+                .map { it.serverId to desktopArtistSources(artist, visible, it.tracks) }
+                .firstOrNull { it.second.isNotEmpty() }
         }
-        if (desktop == null) Result.success(null) else playbackHost.desktopArtistMetadata(desktop.serverId,
-            desktop.tracks.filter { it.id in members }.mapNotNull { it.catalog?.sourceId }.toSet(), artist.name)
+        if (target == null) Result.success(null)
+        else playbackHost.desktopArtistMetadata(target.first, target.second, artist.name)
     }
     private val libraryDevice = MutableStateFlow(LIBRARY_ALL)
+    private val desktopQueue = DesktopQueuePresenter(viewModelScope, playbackHost.desktopQueues)
+    private val desktopDspLibrary = DesktopDspLibraryPresenter(viewModelScope, playbackHost.desktopDspLibrary)
+    private val desktopPlugins = DesktopPluginsPresenter(viewModelScope, playbackHost.desktopPlugins)
+    fun onOfflineDownloadsOpen(open: Boolean) { _uiState.update { it.copy(offlineDownloadsOpen = open) } }
+    fun onDownloadTrack(track: CoreTrackView) {
+        val server = ownerOf(track) ?: return
+        viewModelScope.launch {
+            try { playbackHost.downloadDesktopTrack(server, track); onOfflineDownloadsOpen(true) }
+            catch (cancel: CancellationException) { throw cancel }
+            catch (error: Exception) { banner(error.message ?: "无法开始下载") }
+        }
+    }
+    fun onOfflineDownloadAction(id: String, action: String) {
+        viewModelScope.launch {
+            try {
+                if (action == "play") {
+                    val track = playbackHost.offlineDownloads.state.value.items.firstOrNull { it.id == id }?.let(playbackHost.offlineDownloads::track) ?: error("下载文件不可用")
+                    playbackHost.selectPlaybackTarget(true).getOrThrow()
+                    onPlayTracks(listOf(track), track.id)
+                } else withContext(Dispatchers.IO) { when (action) {
+                    "resume" -> playbackHost.resumeOfflineDownload(id)
+                    "pause" -> playbackHost.offlineDownloads.pause(id)
+                    "remove" -> playbackHost.removeOfflineDownload(id)
+                    else -> error("未知下载操作")
+                } }
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (error: Exception) { banner(error.message ?: "下载操作失败") }
+        }
+    }
+    fun onMobileNetworkPreferences(value: com.twilightecho.android.coreclient.MobileNetworkPreferences) {
+        viewModelScope.launch(Dispatchers.IO) { playbackHost.userPreferences.update { it.copy(mobileNetwork = value.normalized()) } }
+    }
+    fun onDesktopExternalUrl(serverId: String, input: String) {
+        viewModelScope.launch {
+            try {
+                val address = input.trim().takeIf { it.isNotEmpty() }?.let { com.twilightecho.android.coreclient.RemoteNetworkCoreTransport.normalizeBaseUrl(it) }
+                withContext(Dispatchers.IO) { playbackHost.userPreferences.update { preferences -> preferences.copy(
+                    desktopExternalUrls = if (address == null) preferences.desktopExternalUrls - serverId else preferences.desktopExternalUrls + (serverId to address)) } }
+            } catch (error: Exception) { banner(error.message ?: "地址无效") }
+        }
+    }
+    fun onConnectExternalDesktop(device: DesktopCoreDevice) {
+        val address = playbackHost.userPreferences.state.value.desktopExternalUrls[device.id] ?: return
+        onSelectDesktop(device.copy(baseUrl = address))
+    }
+    val desktopPluginsActions get() = desktopPlugins.actions
+    fun onOpenDesktopPlugins() {
+        val source = playbackHost.librarySource.value as? LibrarySource.Desktop ?: return
+        desktopPlugins.open(source.hostLabel)
+    }
+    val desktopDspLibraryActions get() = desktopDspLibrary.actions
+    fun onOpenDesktopDspLibrary(zone: String, name: String) = desktopDspLibrary.open(zone, name)
+    private val desktopLibraryQueue: DesktopQueuePresenter = DesktopQueuePresenter(viewModelScope, playbackHost.desktopLibraryQueues,
+        playbackHost.desktopLibraryManagement) { desktopWorkspace.refresh() }
+    private val desktopWorkspace: DesktopLibraryWorkspacePresenter = DesktopLibraryWorkspacePresenter(viewModelScope, playbackHost.desktopLibraryManagement,
+        playbackHost.desktopLibraryQueues,
+        playSelection = { captured, selection ->
+            if (!desktopQueue.state.value.writing) {
+                desktopQueue.close(); desktopLibraryQueue.open(selection = selection, expected = captured)
+            }
+        }, addSelection = { playlist, revision, captured -> desktopLibraryQueue.openPlaylist(playlist, revision, captured) })
+    val desktopWorkspaceActions get() = desktopWorkspace.actions
+    fun onOpenDesktopWorkspace() {
+        val source = playbackHost.librarySource.value as? LibrarySource.Desktop ?: return
+        desktopWorkspace.open(source.hostLabel)
+    }
+    val desktopQueueActions get() = desktopQueue.actions
+    val desktopLibraryQueueActions get() = desktopLibraryQueue.actions
+    fun onOpenDesktopQueue(kind: String, id: String) {
+        if (desktopLibraryQueue.state.value.writing) return
+        desktopLibraryQueue.close()
+        desktopQueue.open(kind, id)
+    }
+    fun onPlaySourceTo(source: CatalogSource, revision: Long, captured: com.twilightecho.android.coreclient.DesktopLibraryScope) {
+        if (desktopQueue.state.value.writing) return
+        desktopQueue.close()
+        desktopLibraryQueue.open(selection = com.twilightecho.android.coreclient.catalogQueueSelection(revision, listOf(source.id)), expected = captured)
+    }
+    private val desktopEntityEditor = DesktopEntityEditorPresenter(viewModelScope, playbackHost.desktopLibraryManagement) {
+        desktopLibrary.refreshCurrent()
+        libraryArtist.reset()
+    }
+    val entityEditorActions = DesktopEntityEditorActions(
+        open = { entity ->
+            val source = playbackHost.librarySource.value as? LibrarySource.Desktop
+            if (source != null) desktopEntityEditor.open(entity, source.hostLabel)
+        },
+        close = desktopEntityEditor::close, refresh = desktopEntityEditor::refresh,
+        target = desktopEntityEditor::selectTarget, rate = desktopEntityEditor::rate,
+        prefer = desktopEntityEditor::prefer, tag = desktopEntityEditor::tag,
+        tagName = desktopEntityEditor::tagNameDraft, createTag = desktopEntityEditor::createTag,
+        introductionDraft = desktopEntityEditor::introductionDraft, introduction = desktopEntityEditor::introduction,
+        source = desktopEntityEditor::source, artwork = desktopEntityEditor::artwork
+    )
     private val searchText = MutableStateFlow("")
     private val sharedTracks = MutableStateFlow<List<CoreTrackView>>(emptyList())
     /** Remembered computer songs by ID → the computer they live on. */
@@ -336,13 +489,21 @@ class PlayerViewModel(
     private var seekRequest = 0L
     private val seekMutex = Mutex()
     @Volatile private var pendingSeek: PendingSeekHold? = null
+    private var progressTimeline: String? = null
+    private var bufferingFloor: Double? = null
     private val attemptedAutoLyricsTrackIds: MutableSet<String> =
         java.util.Collections.synchronizedSet(LinkedHashSet())
 
     init {
+        pluginPresenter.onChanged = {
+            streamingPresenter.refreshAccount()
+            providerHomePresenter.refreshActive(force = true)
+            providerSearchPresenter.refresh()
+        }
         viewModelScope.launch {
             playbackHost.userPreferences.state.collect { preferences ->
                 streamingPresenter.restoreSorts(preferences.collectionSorts)
+                providerHomePresenter.restoreSorts(preferences.collectionSorts)
                 _uiState.update { it.copy(preferences = preferences) }
             }
         }
@@ -374,15 +535,74 @@ class PlayerViewModel(
                 _uiState.update { it.copy(errorBanner = notice) }
             }
         }
-        // Home only shows streaming music, so it is hidden until a streaming provider is installed and enabled.
+        // Home shows streaming music across all enabled audio-source plugins, hidden only when none is enabled.
+        val describingPlugins = java.util.Collections.synchronizedSet(HashSet<String>())
         viewModelScope.launch {
-            playbackHost.plugins.state.map { repository ->
-                if (!repository.ready) null else repository.installed.any { it.id == NCM_PLUGIN_ID && it.enabled }
-            }.distinctUntilChanged().collect { available ->
-                if (available == null) return@collect
-                _uiState.update { state -> state.copy(homeAvailable = available,
-                    activeMainTab = if (!available && state.activeMainTab == MainDestinationTab.HOME) MainDestinationTab.LIBRARY
-                        else state.activeMainTab) }
+            combine(
+                playbackHost.plugins.state,
+                playbackHost.userPreferences.state.map { it.homeProviderId }.distinctUntilChanged()
+            ) { repository, preferredId -> repository to preferredId }
+                .collect { (repository, preferredId) ->
+                    if (!repository.ready) return@collect
+                    val ncmEnabled = repository.installed.any { it.id == NCM_PLUGIN_ID && it.enabled }
+                    val entriesById = repository.entries.associateBy { it.id }
+                    val enabledV2Ids = repository.installed
+                        .filter { it.enabled && it.id != NCM_PLUGIN_ID }
+                        .map { it.id }
+                    val enabledV2Entries = enabledV2Ids.map { id ->
+                        entriesById[id] ?: com.twilightecho.android.plugins.PluginEntry(
+                            id = id,
+                            name = id.substringAfterLast('.'),
+                            version = "",
+                            description = "",
+                            type = listOf("provider")
+                        )
+                    }
+                    val described = repository.providers.associateBy { it.pluginId }
+                    for (id in enabledV2Ids) {
+                        if (id !in described && describingPlugins.add(id)) {
+                            viewModelScope.launch {
+                                try {
+                                    playbackHost.plugins.provider(id)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                } finally {
+                                    describingPlugins.remove(id)
+                                }
+                            }
+                        }
+                    }
+                    providerHomePresenter.evict(enabledV2Ids.toHashSet())
+                    val options = buildHomeProviderOptions(ncmEnabled, enabledV2Entries, described)
+                    val searchOptions = searchProviderOptions(repository)
+                    providerSearchPresenter.retain(searchOptions)
+                    val available = options.isNotEmpty()
+                    val activeId = options.find { it.pluginId == preferredId }?.pluginId
+                        ?: options.firstOrNull()?.pluginId
+                        ?: NCM_PLUGIN_ID
+                    if (available && activeId != NCM_PLUGIN_ID) {
+                        val activeName = options.find { it.pluginId == activeId }?.name.orEmpty()
+                        providerHomePresenter.selectProvider(activeId, fallbackName = activeName)
+                    } else {
+                        providerHomePresenter.clearActive()
+                    }
+                    _uiState.update { state ->
+                        state.copy(
+                            homeAvailable = available,
+                            homeProviders = options,
+                            searchProviders = searchOptions,
+                            activeHomePluginId = activeId,
+                            activeMainTab = if (!available && state.activeMainTab == MainDestinationTab.HOME) {
+                                MainDestinationTab.LIBRARY
+                            } else state.activeMainTab
+                        )
+                    }
+                }
+        }
+        viewModelScope.launch {
+            providerHomePresenter.state.collect { providerHome ->
+                _uiState.update { it.copy(providerHome = providerHome) }
             }
         }
         viewModelScope.launch {
@@ -401,7 +621,9 @@ class PlayerViewModel(
         } } }
         viewModelScope.launch { streamingPresenter.state.map { it.accountId }.distinctUntilChanged().collect(ncmSearch::account) }
         viewModelScope.launch { ncmSearch.state.collect { search -> _uiState.update { it.copy(ncmSearch = search) } } }
+        viewModelScope.launch { providerSearchPresenter.state.collect { search -> _uiState.update { it.copy(providerSearch = search) } } }
         viewModelScope.launch { libraryArtist.state.collect { artist -> _uiState.update { it.copy(libraryArtist = artist) } } }
+        viewModelScope.launch { libraryArtist.profiles.collect { profiles -> _uiState.update { it.copy(libraryArtistProfiles = profiles) } } }
         viewModelScope.launch { streamingPresenter.state.map { it.favoriteError }.distinctUntilChanged().collect { error ->
             if (error != null) { _uiState.update { it.copy(errorBanner = error) }; streamingPresenter.clearFavoriteError() }
         } }
@@ -450,7 +672,10 @@ class PlayerViewModel(
             playbackHost.operatingMode.collect { mode ->
                 fun key(value: CoreOperatingMode) = (value as? CoreOperatingMode.RemoteDesktopCore)?.baseUrl ?: "local"
                 val changed = key(mode) != key(_uiState.value.operatingMode)
-                _uiState.update { it.copy(operatingMode = mode) }
+                // The 声区 tab leaves with the computer; do not reopen it when one connects again later.
+                _uiState.update { it.copy(operatingMode = mode, activeMainTab =
+                    if (it.activeMainTab == MainDestinationTab.ZONES && !zonesTabAvailable(mode)) MainDestinationTab.HOME
+                    else it.activeMainTab) }
                 if (changed) {
                     sourceGeneration++
                     pendingSeek = null
@@ -466,6 +691,8 @@ class PlayerViewModel(
         viewModelScope.launch {
             playbackHost.librarySource.collect { source ->
                 val browsing = desktopCatalogMode()
+                if ((_uiState.value.librarySource as? LibrarySource.Desktop)?.serverId !=
+                    (source as? LibrarySource.Desktop)?.serverId) desktopEntityEditor.reset()
                 _uiState.update { it.copy(librarySource = source) }
                 if (browsing && _uiState.value.desktopLibrary.page == null) browseDesktopCatalog(_uiState.value.activeLibraryTab)
             }
@@ -478,6 +705,7 @@ class PlayerViewModel(
                 if (loadedLibrary != key) {
                     loadedLibrary = key
                     desktopLibrary.reset()
+                    desktopEntityEditor.reset()
                     libraryArtist.reset()
                     if (desktopCatalogMode()) browseDesktopCatalog(_uiState.value.activeLibraryTab)
                 }
@@ -503,24 +731,31 @@ class PlayerViewModel(
         }
         // One library: the phone's songs plus every remembered computer's, narrowed to the chosen device.
         viewModelScope.launch {
+            var artistDesktops: List<DesktopShelf>? = null
+            var artistDevice: String? = null
+            val projector = SharedLibraryProjector()
             combine(libraryLoader.state, playbackHost.desktopLibraries, playbackHost.connectedDesktops, libraryDevice) { phone, indexes, online, device ->
                 LibraryInputs(phone, indexes.map { DesktopShelf(it.serverId, it.hostLabel, it.serverId in online, it.tracks) }, device)
             }.collectLatest { input ->
                 val device = input.device.takeIf { it == LIBRARY_ALL || it == LIBRARY_PHONE || input.desktops.any { d -> d.serverId == it } }
                     ?: LIBRARY_ALL
-                val (all, view) = withContext(Dispatchers.Default) {
-                    val all = sharedLibrary(input.phone.tracks, input.desktops, LIBRARY_ALL)
-                    all to if (device == LIBRARY_ALL) all else sharedLibrary(input.phone.tracks, input.desktops, device)
+                val projected = withContext(Dispatchers.Default) {
+                    projector.project(input.phone.tracks, input.desktops, device)
                 }
-                trackOwners = desktopOwners(input.desktops)
+                val all = projected.all
+                val view = projected.visible
+                trackOwners = projected.owners
                 sharedTracks.value = all.tracks
                 val devices = if (input.desktops.isEmpty()) emptyList() else
                     listOf(LibraryDeviceOption(LIBRARY_ALL, "全部设备"), LibraryDeviceOption(LIBRARY_PHONE, "此手机")) +
                         input.desktops.map { LibraryDeviceOption(it.serverId, it.hostLabel, it.connected) }
-                if (_uiState.value.artists != view.artists || _uiState.value.libraryDevices != devices) libraryArtist.reset()
+                if (_uiState.value.artists != view.artists || _uiState.value.libraryDevices != devices ||
+                    artistDesktops != input.desktops || artistDevice != device) libraryArtist.reset()
+                artistDesktops = input.desktops
+                artistDevice = device
                 _uiState.update { it.copy(libraryDevice = device, libraryDevices = devices, allTracks = all.tracks,
                     phoneTrackCount = input.phone.tracks.size,
-                    phoneTrackIds = input.phone.tracks.mapTo(HashSet()) { t -> t.id },
+                    phoneTrackIds = projected.phoneTrackIds,
                     libraryTracks = view.tracks, libraryTrackCount = view.tracks.size, albums = view.albums, artists = view.artists,
                     isLoadingLibrary = input.phone.loading && view.tracks.isEmpty(),
                     libraryError = input.phone.error?.takeIf { view.tracks.isEmpty() }) }
@@ -553,6 +788,15 @@ class PlayerViewModel(
         viewModelScope.launch { desktopLibrary.state.collect { data ->
             _uiState.update { it.copy(desktopLibrary = data) }
         } }
+        viewModelScope.launch { desktopEntityEditor.state.collect { data ->
+            _uiState.update { it.copy(desktopEntityEditor = data) }
+        } }
+        viewModelScope.launch { desktopQueue.state.collect { data -> _uiState.update { it.copy(desktopQueue = data) } } }
+        viewModelScope.launch { desktopDspLibrary.state.collect { data -> _uiState.update { it.copy(desktopDspLibrary = data) } } }
+        viewModelScope.launch { desktopPlugins.state.collect { data -> _uiState.update { it.copy(desktopPlugins = data) } } }
+        viewModelScope.launch { playbackHost.offlineDownloads.state.collect { data -> _uiState.update { it.copy(offlineDownloads = data) } } }
+        viewModelScope.launch { desktopLibraryQueue.state.collect { data -> _uiState.update { it.copy(desktopLibraryQueue = data) } } }
+        viewModelScope.launch { desktopWorkspace.state.collect { data -> _uiState.update { it.copy(desktopWorkspace = data) } } }
         viewModelScope.launch { playbackHost.remoteConnection.collect { connection ->
             if (connection.phase == RemoteConnectionPhase.CONNECTED &&
                 _uiState.value.remoteConnectionPhase == RemoteConnectionPhase.RECONNECTING) desktopLibrary.refreshArtwork()
@@ -581,7 +825,7 @@ class PlayerViewModel(
                         val elapsedSeconds =
                             ((nowMonotonicMs() - state.anchorMonotonicMs).coerceAtLeast(0L) / 1000.0) *
                                 state.playbackRate
-                        val interpolated = (state.anchorPositionSeconds + elapsedSeconds)
+                        val interpolated = maxOf(state.displayedPositionSeconds, state.anchorPositionSeconds + elapsedSeconds)
                             .coerceIn(0.0, state.durationSeconds)
                         val activeLyricIdx = computeActiveLyricIndex(
                             lyrics = state.currentLyrics,
@@ -623,6 +867,7 @@ class PlayerViewModel(
     fun onPresentationActive(active: Boolean) { presentationActive = active }
 
     fun onSeekTo(positionSeconds: Double) {
+        bufferingFloor = null
         val clamped = positionSeconds.coerceIn(0.0, _uiState.value.durationSeconds.coerceAtLeast(0.0))
         val monoNow = nowMonotonicMs()
         val request = ++seekRequest
@@ -966,7 +1211,7 @@ class PlayerViewModel(
 
     private fun browseDesktopCatalog(tab: LibrarySectionTab) = when (tab) {
         LibrarySectionTab.ALBUMS -> desktopLibrary.browse("release")
-        LibrarySectionTab.ARTISTS -> desktopLibrary.browse("artist")
+        LibrarySectionTab.ARTISTS -> desktopLibrary.closeDetail(clearHistory = true)
         else -> Unit
     }
 
@@ -994,6 +1239,9 @@ class PlayerViewModel(
 
     fun cachedDesktopArtwork(id: String): String? = playbackHost.cachedDesktopArtworkMemory(id)
 
+    fun onImportDesktopArtwork(ticket: DesktopEntityEditTicket, uri: String) =
+        desktopEntityEditor.importArtwork(ticket, uri, playbackHost.personalArtworkImporter::dataUrl)
+
     fun onCatalogPage(offset: Int) = desktopLibrary.browse(offset = offset)
     fun onOpenEntity(entity: CatalogEntity) = desktopLibrary.open(entity)
     fun onCloseEntity() = desktopLibrary.closeDetail()
@@ -1002,6 +1250,9 @@ class PlayerViewModel(
     fun onRetryArtistAlbums() = desktopLibrary.loadArtistAlbums()
     fun onLoadLibraryArtist(id: String, force: Boolean = false) {
         _uiState.value.artists.firstOrNull { it.id == id }?.let { libraryArtist.load(it, force) }
+    }
+    fun onRequestLibraryArtist(id: String) {
+        _uiState.value.artists.firstOrNull { it.id == id }?.let { libraryArtist.request(it) }
     }
     fun onRequestArtwork(id: String) = desktopLibrary.requestArtwork(id)
     fun onPlaySource(source: CatalogSource, revision: Long) {
@@ -1028,7 +1279,122 @@ class PlayerViewModel(
         }
     }
 
+    private var desktopAudioJob: kotlinx.coroutines.Job? = null
+    private var desktopZoneId = "local"
+    /**
+     * Visible 声区 pages; they poll through the same loop as the sheet without opening it. Counted, because
+     * the outgoing and incoming pages of a route transition are both composed for a moment.
+     */
+    private var desktopZonesViewers = 0
+    fun onDesktopAudioOpen(open: Boolean) {
+        desktopAudioJob?.cancel()
+        desktopZoneId = "local"
+        _uiState.update { it.copy(desktopAudioOpen = open, desktopAudio = null, desktopAudioError = null,
+            desktopZoneSessions = emptyList(), desktopZonesError = null, desktopAudioNotice = null,
+            desktopSyncGroups = null, desktopGroupsError = null) }
+        if (open || desktopZonesViewers > 0) desktopAudioJob = viewModelScope.launch { pollDesktopAudio() }
+    }
+    fun onDesktopZonesActive(active: Boolean) {
+        desktopZonesViewers = (desktopZonesViewers + if (active) 1 else -1).coerceAtLeast(0)
+        if (desktopZonesViewers == 0 || desktopAudioJob?.isActive == true) return
+        // Never show the zones of a computer the phone has since left.
+        if (_uiState.value.desktopAudio?.targetGeneration != playbackHost.switchableTransport.generation) {
+            desktopZoneId = "local"
+            _uiState.update { it.copy(desktopAudio = null, desktopAudioError = null, desktopZoneSessions = emptyList(),
+                desktopZonesError = null, desktopAudioNotice = null, desktopSyncGroups = null, desktopGroupsError = null) }
+        }
+        desktopAudioJob = viewModelScope.launch { pollDesktopAudio() }
+    }
+    private suspend fun pollDesktopAudio() {
+        while (_uiState.value.desktopAudioOpen || desktopZonesViewers > 0) {
+            if (!_uiState.value.desktopAudioBusy && !_uiState.value.desktopDspLibrary.open) refreshDesktopAudio()
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+    private suspend fun refreshDesktopAudio() {
+        val selected = desktopZoneId
+        playbackHost.desktopAudio.snapshot(selected).fold(
+            { snapshot -> if (desktopZoneId == selected) _uiState.update { it.copy(desktopAudio = snapshot, desktopAudioError = null) } },
+            { error -> if (desktopZoneId == selected) _uiState.update { it.copy(desktopAudio = null, desktopAudioError = error.message ?: "读取电脑音频失败") } })
+        playbackHost.desktopAudio.sessions().fold(
+            { sessions ->
+                // A followed zone the computer removed falls back to its main session instead of failing every poll.
+                if (desktopZoneId != "local" && sessions.zones.isNotEmpty() && sessions.zones.none { it.id == desktopZoneId }) desktopZoneId = "local"
+                _uiState.update { it.copy(desktopZoneSessions = sessions.zones, desktopZonesError = sessions.error) }
+            },
+            { error -> _uiState.update { it.copy(desktopZonesError = "多 Zone 列表不可用：${error.message}") } })
+        playbackHost.desktopAudio.groups().fold(
+            { groups -> _uiState.update { it.copy(desktopSyncGroups = groups, desktopGroupsError = groups.error) } },
+            { error -> _uiState.update { it.copy(desktopSyncGroups = null, desktopGroupsError = "同步组不可用：${error.message}") } })
+    }
+    fun onDesktopZone(id: String) {
+        if (_uiState.value.desktopAudioBusy || _uiState.value.desktopZoneSessions.none { it.id == id }) return
+        desktopZoneId = id
+        _uiState.update { it.copy(desktopAudio = null, desktopAudioError = null, desktopAudioNotice = null) }
+        viewModelScope.launch { refreshDesktopAudio() }
+    }
+    private var desktopAudioEdits = 0
+    private var desktopAudioEditSerial = 0
+    private fun editDesktopAudio(allowInterrupt: Boolean = false, successMessage: String? = null, action: suspend (DesktopAudioSnapshot) -> Result<Unit>) {
+        val snapshot = _uiState.value.desktopAudio ?: return
+        if (_uiState.value.desktopAudioBusy && !allowInterrupt) return
+        val serial = ++desktopAudioEditSerial
+        desktopAudioEdits++
+        _uiState.update { it.copy(desktopAudioBusy = true, desktopAudioError = null, desktopAudioNotice = null) }
+        viewModelScope.launch {
+            try {
+                val result = action(snapshot)
+                // Reconcile even when a mutation's outcome is unknown; never replay it.
+                if (serial == desktopAudioEditSerial) {
+                    refreshDesktopAudio()
+                    if (result.isSuccess) _uiState.update { it.copy(desktopAudioNotice = successMessage) }
+                    result.onFailure { error -> _uiState.update { it.copy(desktopAudioError = error.message ?: "电脑音频操作失败") } }
+                }
+            } finally { desktopAudioEdits--; _uiState.update { it.copy(desktopAudioBusy = desktopAudioEdits > 0) } }
+        }
+    }
+    fun onDesktopOutput(outputId: String) = editDesktopAudio { playbackHost.desktopAudio.selectOutput(it.zone.revision, outputId, it.targetGeneration) }
+    fun onDesktopDsp(settings: kotlinx.serialization.json.JsonObject) = editDesktopAudio { playbackHost.desktopAudio.processing(it.dsp.revision, settings, it.targetGeneration, it.zone.zoneId) }
+    fun onDesktopScene(id: String?) = editDesktopAudio { playbackHost.desktopAudio.scene(it.dsp.revision, id, it.targetGeneration, it.zone.zoneId) }
+    fun onDesktopZoneTransport(kind: String) = editDesktopAudio(allowInterrupt = kind == "pause" || kind == "stop") {
+        if (kind == "pause" || kind == "stop") playbackHost.desktopAudio.interrupt(it, kind)
+        else playbackHost.desktopAudio.control(transportSnapshot(it), kind)
+    }
+    fun onDesktopZoneValue(kind: String, value: Double) = editDesktopAudio { playbackHost.desktopAudio.control(transportSnapshot(it), kind, value) }
+    /**
+     * zones.state carries the output revision, while the local zone's transport is fenced by its session
+     * revision from zones.list. Bridge zones and groups already carry their transport revision.
+     */
+    private fun transportSnapshot(snapshot: DesktopAudioSnapshot): DesktopAudioSnapshot {
+        if (snapshot.group != null || snapshot.zone.zoneId != "local") return snapshot
+        val local = _uiState.value.desktopZoneSessions.singleOrNull { it.id == "local" } ?: return snapshot
+        return snapshot.copy(zone = snapshot.zone.copy(revision = local.revision))
+    }
+    /** A window's own play/pause on the 声区 page: follow [zoneId] first when the snapshot shows another place. */
+    fun onDesktopZoneTransportFor(zoneId: String, kind: String) {
+        val state = _uiState.value
+        if (state.desktopAudio?.zone?.zoneId == zoneId) return onDesktopZoneTransport(kind)
+        if (state.desktopAudioBusy || state.desktopZoneSessions.none { it.id == zoneId }) return
+        desktopZoneId = zoneId
+        _uiState.update { it.copy(desktopAudio = null, desktopAudioError = null, desktopAudioNotice = null) }
+        viewModelScope.launch {
+            refreshDesktopAudio()
+            if (desktopZoneId == zoneId && _uiState.value.desktopAudio?.zone?.zoneId == zoneId) onDesktopZoneTransport(kind)
+        }
+    }
+    fun onDesktopHandoff(command: com.twilightecho.android.coreclient.DesktopSessionHandoff) = editDesktopAudio(
+        successMessage = "已接力到「${command.target.name}」${if (command.resume) "继续播放" else "并暂停"}；源会话已暂停。") {
+        playbackHost.desktopAudio.handoff(command)
+    }
+    fun onDesktopCreateGroup(command: com.twilightecho.android.coreclient.DesktopSyncGroupCreate) = editDesktopAudio(
+        successMessage = "同步组已建立，队列暂停待播；成员原独立队列保留。") { playbackHost.desktopAudio.createGroup(command) }
+    fun onDesktopRemoveGroup(group: com.twilightecho.android.coreclient.DesktopSyncGroup) = editDesktopAudio(
+        successMessage = "已解除编组，各输出回到原独立队列并保持暂停。") { playbackHost.desktopAudio.removeGroup(group, it.targetGeneration) }
+    fun onDesktopGroupAutoMix(group: com.twilightecho.android.coreclient.DesktopSyncGroup, mode: String) = editDesktopAudio(
+        successMessage = "组 AutoMix 已保存，全组暂停待播。") { playbackHost.desktopAudio.groupAutoMix(group, mode, it.targetGeneration) }
+
     fun onSelectPlaybackTarget(phone: Boolean) {
+        onDesktopAudioOpen(false)
         viewModelScope.launch { playbackHost.selectPlaybackTarget(phone).onFailure { error ->
             _uiState.update { it.copy(errorBanner = error.message ?: "无法切换播放目标") }
         } }
@@ -1049,6 +1415,25 @@ class PlayerViewModel(
         val key = streamingSortKey(streamingPresenter.state.value.accountId, detail)
         playbackHost.userPreferences.update { it.copy(collectionSorts = it.collectionSorts + (key to sort)) }
         streamingPresenter.playlistSort(sort)
+    }
+
+    internal fun onProviderHomePlaylistSort(sort: com.twilightecho.android.coreclient.CollectionSort) {
+        val home = providerHomePresenter.state.value
+        val detail = home.detail?.takeIf { it.isPlaylist } ?: return
+        val key = providerSortKey(home.pluginId, home.profile?.userId, detail.key)
+        playbackHost.userPreferences.update { it.copy(collectionSorts = it.collectionSorts + (key to sort)) }
+        providerHomePresenter.playlistSort(sort)
+    }
+
+    internal fun onSelectHomeProvider(pluginId: String) {
+        streamingPresenter.closeDetail()
+        providerHomePresenter.root()
+        playbackHost.userPreferences.update { it.copy(homeProviderId = pluginId) }
+    }
+
+    internal fun onPluginsClosed() {
+        streamingPresenter.refreshAccount()
+        providerHomePresenter.refreshActive(force = true)
     }
 
     fun onCreatePlaylist(seedWithCurrentTrack: Boolean = true) {
@@ -1176,11 +1561,13 @@ class PlayerViewModel(
         }
     }
 
-    private suspend fun applyAudioEdit(edit: (CoreEqConfigView) -> CoreEqConfigView): Boolean = audioSettingsMutex.withLock {
+    private suspend fun applyAudioEdit(beforeApply: suspend (CoreEqConfigView) -> Boolean = { true },
+        edit: (CoreEqConfigView) -> CoreEqConfigView): Boolean = audioSettingsMutex.withLock {
         if (!requireLocal()) return@withLock false
         // Read from Core: an output preset may have just changed the config this client's snapshot lags behind.
         val current = coreClient.getEqConfig().getOrNull() ?: coreClient.snapshot.value?.eqConfig ?: _uiState.value.eqConfig
         val updated = edit(current)
+        if (!beforeApply(updated)) return@withLock false
         val result = coreClient.setEqConfig(updated)
         reportResult(result)
         if (result.isSuccess) _uiState.update { it.copy(eqConfig = coreClient.snapshot.value?.eqConfig ?: updated) }
@@ -1189,21 +1576,65 @@ class PlayerViewModel(
 
     private fun editAudio(edit: (CoreEqConfigView) -> CoreEqConfigView) {
         if (!requireLocal()) return
-        viewModelScope.launch { applyAudioEdit(edit) }
+        viewModelScope.launch { applyAudioEdit(edit = edit) }
     }
 
     /** One revision for edits spanning EQ and DSP fields, such as an AutoEQ import or its undo. */
     fun onEditAudio(edit: (CoreEqConfigView) -> CoreEqConfigView) = editAudio(edit)
+
+    /** The ViewModel owns the commit even if the import panel closes while awaiting its response. */
+    suspend fun onCommitAudioEdit(edit: (CoreEqConfigView) -> CoreEqConfigView): Result<CoreAudioEditReceipt> =
+        viewModelScope.async {
+            audioSettingsMutex.withLock {
+                if (_uiState.value.operatingMode !is CoreOperatingMode.StandaloneLocal) {
+                    Result.failure(IllegalStateException("此操作请在电脑端完成，或先切回本机音乐"))
+                } else coreClient.commitAudioEdit(edit).onSuccess { receipt ->
+                    _uiState.update { it.copy(eqConfig = receipt.committed) }
+                }
+            }
+        }.await()
 
     fun onEditDspConfig(edit: (CoreDspConfig) -> CoreDspConfig) = editAudio {
         val config = edit(it.dsp)
         it.copy(dsp = config, gapless = if (config.crossfadeSeconds > 0) true else it.gapless)
     }
 
+    fun onSelectOutputDevice(deviceId: String) {
+        if (!requireLocal()) return
+        viewModelScope.launch {
+            try {
+                applyAudioEdit(beforeApply = { config ->
+                    require(!AndroidUsbDirectHost.isDirect(deviceId) || !config.dsp.usbPcmPassthrough) {
+                        "请先关闭系统原样 PCM，再选择 USB 独占输出"
+                    }
+                    playbackHost.nativeAudioEngine.authorizeUsbDirectOutput(deviceId).also { granted ->
+                        if (!granted) banner("未授权 USB 设备，输出选择未改变")
+                    }
+                }) { it.copy(dsp = it.dsp.copy(outputDeviceId = deviceId)) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { banner(error.message ?: "输出设备选择失败") }
+        }
+    }
+
+    suspend fun readUsbHardwareVolume(deviceId: String) = withLocalUsbControls {
+        playbackHost.nativeAudioEngine.readUsbHardwareVolume(deviceId)
+    }
+
+    suspend fun setUsbHardwareVolume(id: UsbHardwareControlId, db256: Int) = withLocalUsbControls {
+        playbackHost.nativeAudioEngine.setUsbHardwareVolume(id, db256)
+    }
+
+    suspend fun setUsbHardwareMute(id: UsbHardwareControlId, muted: Boolean) = withLocalUsbControls {
+        playbackHost.nativeAudioEngine.setUsbHardwareMute(id, muted)
+    }
+
+    private suspend fun <T> withLocalUsbControls(action: suspend () -> T): T {
+        check(_uiState.value.operatingMode is CoreOperatingMode.StandaloneLocal) { "DAC 音量请切回本机播放后调节" }
+        return action()
+    }
+
     fun onSaveDspScene(name: String) = editAudio { config ->
-        if (name.isBlank() || config.scenes.size >= 32) config else config.copy(scenes = config.scenes + CoreDspScene(
-            UUID.randomUUID().toString(), name.trim().take(80),
-            JsonObject(DefaultCoreClient.DefaultJson.encodeToJsonElement(config).jsonObject - "scenes")))
+        if (name.isBlank() || config.scenes.size >= 32) config else config.withSavedDspScene(name)
     }
 
     fun onApplyDspScene(id: String) = editAudio { config -> config.scenes.find { it.id == id }?.let(config::withScene) ?: config }
@@ -1246,11 +1677,11 @@ class PlayerViewModel(
                 while (isActive && _uiState.value.operatingMode is CoreOperatingMode.StandaloneLocal) {
                     val status = playbackHost.nativeAudioEngine.getDspStatus()
                     val visualization = playbackHost.nativeAudioEngine.getVisualization()
-                    val levels = (visualization["visualizerBars"] as? JsonArray).orEmpty().map {
-                        (it.jsonPrimitive.doubleOrNull ?: 0.0).toFloat().coerceIn(0f, 1f)
-                    }
+                    val levels = audioMonitorLevels(visualization)
                     val devices = playbackHost.audioDeviceAdapter.listOutputDevices().map {
                         AudioOutputDeviceUi(it.deviceId.toString(), it.deviceName, it.supportedSampleRates)
+                    } + playbackHost.nativeAudioEngine.usbDirectOutputs().map {
+                        AudioOutputDeviceUi(it.id, "${it.name} · USB 独占", dopConfirmationKey = it.dopConfirmationKey)
                     }
                     val rates = playbackHost.audioDeviceAdapter.sampleRatesForOutput("auto")
                     _uiState.update { it.copy(dspStatus = status, audioLevels = levels, audioDevices = devices,
@@ -1344,18 +1775,33 @@ class PlayerViewModel(
 
     fun onSearchQueryChanged(query: String) {
         _uiState.update { it.copy(searchQuery = query, isSearching = query.isNotBlank(), searchError = null,
+            librarySearchCategory = if (query.isBlank()) SearchCategory.SONGS else it.librarySearchCategory,
             searchResults = if (query.isBlank()) it.allTracks else it.searchResults) }
         searchText.value = query
         ncmSearch.query(query)
+        providerSearchPresenter.query(query)
     }
 
     fun onSelectSearchSource(source: SearchSource) {
         _uiState.update { it.copy(searchSource = source) }
         ncmSearch.active(source == SearchSource.NETEASE)
+        providerSearchPresenter.active(source == SearchSource.PROVIDER)
     }
+    fun onSelectLibrarySearchCategory(category: SearchCategory) { _uiState.update { it.copy(librarySearchCategory = category) } }
+    fun onSelectSearchProvider(pluginId: String) {
+        val option = _uiState.value.searchProviders.find { it.pluginId == pluginId } ?: return
+        onSelectSearchSource(SearchSource.PROVIDER)
+        providerSearchPresenter.select(option)
+    }
+    fun onSelectProviderSearchCategory(category: SearchCategory) = providerSearchPresenter.category(category)
+    fun onProviderSearchPage(offset: Int) = providerSearchPresenter.search(offset)
     fun onSelectNcmSearchCategory(category: NcmSearchCategory) = ncmSearch.category(category)
     fun onNcmSearchPage(offset: Int) = ncmSearch.search(offset)
-    fun onSubmitSearch() { if (_uiState.value.searchSource == SearchSource.NETEASE) ncmSearch.search() }
+    fun onSubmitSearch() { when (_uiState.value.searchSource) {
+        SearchSource.NETEASE -> ncmSearch.search()
+        SearchSource.PROVIDER -> providerSearchPresenter.search()
+        SearchSource.LIBRARY -> Unit
+    } }
 
     fun onRefreshLibrary() {
         if (desktopCatalogMode()) desktopLibrary.refreshCurrent()
@@ -1364,6 +1810,7 @@ class PlayerViewModel(
     }
     fun onRetrySearch() {
         if (_uiState.value.searchSource == SearchSource.NETEASE) ncmSearch.search(ncmSearch.state.value.offset)
+        else if (_uiState.value.searchSource == SearchSource.PROVIDER) providerSearchPresenter.search(providerSearchPresenter.state.value.offset)
         else libraryLoader.refresh()
     }
     fun onDismissError() { _uiState.update { it.copy(errorBanner = null) } }
@@ -1386,8 +1833,11 @@ class PlayerViewModel(
                         buildList {
                             add("已从音乐文件夹同步 ${summary.songs} 首歌曲")
                             if (summary.cueSongs > 0) add("其中 ${summary.cueSongs} 首来自 CUE 分轨")
+                            if (summary.sacdSongs > 0) add("${summary.sacdSongs} 首来自 SACD ISO")
                             if (summary.unreadableFolders.isNotEmpty()) add("${summary.unreadableFolders.size} 个文件夹无法读取")
                             if (summary.skipped.isNotEmpty()) add("${summary.skipped.size} 个 CUE 未分轨")
+                            if (summary.skippedFiles.isNotEmpty()) add("${summary.skippedFiles.size} 个音频文件无法读取")
+                            if (summary.ambiguousExclusions > 0) add("${summary.ambiguousExclusions} 条旧移除记录涉及多个来源")
                         }.joinToString("，")
                     }
                     _uiState.update {
@@ -1395,7 +1845,10 @@ class PlayerViewModel(
                             isScanningLocalMusic = false,
                             scanStatusMessage = message,
                             scanDetails = summary.unreadableFolders.map { folder -> "${folder.label}：无法读取，请移除后重新添加" } +
-                                summary.skipped.map { skip -> "${skip.sheetName}：${skip.reason}" }
+                                summary.skipped.map { skip -> "${skip.sheetName}：${skip.reason}" } +
+                                summary.skippedFiles.map { skip -> "${skip.fileName}：${skip.reason}" } +
+                                if (summary.ambiguousExclusions > 0) listOf("旧移除记录未保存文件来源，仍按原范围隐藏；如需按来源重新选择，请先恢复已移除歌曲。")
+                                else emptyList()
                         )
                     }
                     libraryLoader.refresh()
@@ -1451,13 +1904,15 @@ class PlayerViewModel(
                     val message = buildList {
                         add("已恢复并同步 ${summary.songs} 首歌曲")
                         if (summary.cueSongs > 0) add("其中 ${summary.cueSongs} 首来自 CUE 分轨")
+                        if (summary.sacdSongs > 0) add("${summary.sacdSongs} 首来自 SACD ISO")
                     }.joinToString("，")
                     _uiState.update {
                         it.copy(
                             isScanningLocalMusic = false,
                             scanStatusMessage = message,
                             scanDetails = summary.unreadableFolders.map { folder -> "${folder.label}：无法读取，请移除后重新添加" } +
-                                summary.skipped.map { skip -> "${skip.sheetName}：${skip.reason}" }
+                                summary.skipped.map { skip -> "${skip.sheetName}：${skip.reason}" } +
+                                summary.skippedFiles.map { skip -> "${skip.fileName}：${skip.reason}" }
                         )
                     }
                     libraryLoader.refresh()
@@ -1700,7 +2155,7 @@ class PlayerViewModel(
     fun onPlayTracks(tracks: List<CoreTrackView>, startTrackId: String) = playTracks(tracks, startTrackId, ::ownerOf)
 
     /** The computer a listed song lives on, or null for the phone's own songs. */
-    private fun ownerOf(track: CoreTrackView): String? = trackOwners[track.id]
+    private fun ownerOf(track: CoreTrackView): String? = if (track.id.startsWith("offline-download:")) null else trackOwners[track.id]
         ?: (playbackHost.librarySource.value as? LibrarySource.Desktop)?.serverId?.takeIf {
             track.id.startsWith("remote-track:") || (track.catalog != null && track.id !in _uiState.value.phoneTrackIds)
         }
@@ -1711,7 +2166,7 @@ class PlayerViewModel(
         val online = playbackHost.connectedDesktops.value
         return if (_uiState.value.operatingMode is CoreOperatingMode.RemoteDesktopCore)
             owner != null && owner == playbackHost.playbackDesktopServerId() && owner in online
-        else owner == null || owner in online && track.catalog != null
+        else owner == null || playbackHost.offlineTrack(owner, track) != null || owner in online && track.catalog != null
     }
 
     private fun reachableOrConfirmedFallback(track: CoreTrackView): Boolean {
@@ -1742,7 +2197,7 @@ class PlayerViewModel(
             }
             return
         }
-        if (startOwner != null && startOwner !in online) {
+        if (startOwner != null && startOwner !in online && playbackHost.offlineTrack(startOwner, start) == null) {
             if (startOwner in confirmedOfflineFallbackDesktops && ncmEnabled()) {
                 playTracksWithOfflineFallback(tracks, startTrackId, ownerOf, initialMatch = null)
             } else {
@@ -1755,7 +2210,7 @@ class PlayerViewModel(
         // The phone streams online computer songs directly, and plays confirmed offline computers via NetEase Cloud Music.
         val playable = tracks.filter { track ->
             val owner = ownerOf(track)
-            owner == null || (owner in online && track.catalog != null) ||
+            owner == null || playbackHost.offlineTrack(owner, track) != null || (owner in online && track.catalog != null) ||
                 (allowConfirmedFallback && owner in confirmedOfflineFallbackDesktops)
         }
         val skipped = tracks.size - playable.size
@@ -1773,6 +2228,7 @@ class PlayerViewModel(
             val queue = try {
                 playable.map { track ->
                     val serverId = ownerOf(track) ?: return@map track
+                    playbackHost.offlineTrack(serverId, track)?.let { return@map it }
                     if (serverId in playbackHost.connectedDesktops.value && track.catalog != null) {
                         playbackHost.desktopStreamTracks(serverId, listOf(track)).single().also { desktopLibrary.aliasArtwork(it.id, track.id) }
                     } else {
@@ -2272,7 +2728,12 @@ class PlayerViewModel(
             emptyList()
         }
 
-        val activeLyricIdx = computeActiveLyricIndex(snapshot.currentLyrics, seekEval.displayedPositionSeconds)
+        val timeline = "$source:${snapshot.queue?.occurrenceId ?: currentTrackId}"
+        bufferingFloor = bufferingProgressFloor(_uiState.value, positionSeconds, playback?.state ?: "stopped",
+            bufferingFloor, progressTimeline == timeline, pendingSeek != null)
+        progressTimeline = timeline
+        val displayedPosition = maxOf(seekEval.displayedPositionSeconds, bufferingFloor ?: 0.0)
+        val activeLyricIdx = computeActiveLyricIndex(snapshot.currentLyrics, displayedPosition)
 
         _uiState.update { current ->
             current.copy(
@@ -2285,7 +2746,7 @@ class PlayerViewModel(
                 currentTrack = snapshot.track,
                 anchorPositionSeconds = seekEval.anchorPositionSeconds,
                 anchorMonotonicMs = seekEval.anchorMonotonicMs,
-                displayedPositionSeconds = seekEval.displayedPositionSeconds,
+                displayedPositionSeconds = displayedPosition,
                 durationSeconds = durationSeconds,
                 playbackRate = playbackRate,
                 volume = playback?.volume ?: 1.0,
@@ -2520,7 +2981,11 @@ internal fun describeTrackOrigin(track: CoreTrackView, desktopLabel: String?): S
         val provider = src.removePrefix("provider://").substringBefore('/').ifBlank { "插件" }
         return "流媒体音源 ($provider)"
     }
-    val fromPickedFolder = track.id.startsWith("folder:") || (src.startsWith("content://") && "/tree/" in src)
+    val fromPickedFolder = track.id.startsWith("folder:") || track.id.startsWith("local:saf:") ||
+        track.id.startsWith("local:sacd:") || (src.startsWith("content://") && "/tree/" in src)
+    SacdTrackSource.decode(src)?.let { selected ->
+        return "SACD · ${if (selected.area == "stereo") "立体声" else "多声道"} · 第 ${selected.track} 轨"
+    }
     if (track.cueRange != null) {
         return if (fromPickedFolder) "CUE 分轨 · 本机音乐文件夹" else "CUE 分轨 · 本机存储"
     }

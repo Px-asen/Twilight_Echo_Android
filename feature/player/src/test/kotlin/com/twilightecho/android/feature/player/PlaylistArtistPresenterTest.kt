@@ -21,10 +21,10 @@ class PlaylistArtistPresenterTest {
         return when (method) {
             "checkLogin" -> Json.parseToJsonElement("""{"loggedIn":true,"profile":{"userId":42}}""")
             "fetchUserLibrary" -> Json.parseToJsonElement("""{"playlists":[]}""")
-            "readPlaylistImportPage", "fetchLikedTracksPage" -> {
-                val offset = args[if (method == "readPlaylistImportPage") 1 else 0].jsonPrimitive.int
+            "fetchPlaylistTracksPage", "fetchLikedTracksPage" -> {
+                val offset = args[if (method == "fetchPlaylistTracksPage") 1 else 0].jsonPrimitive.int
                 buildJsonObject {
-                    put(if (method == "readPlaylistImportPage") "songs" else "tracks", JsonArray((offset until minOf(offset + 100, 205)).map(::song)))
+                    put("tracks", JsonArray((offset until minOf(offset + 100, 205)).map(::song)))
                     put("total", 205); put("nextOffset", minOf(offset + 100, 205)); put("hasMore", offset + 100 < 205)
                 }
             }
@@ -77,7 +77,7 @@ class PlaylistArtistPresenterTest {
     @Test fun typingDuringWholePlaylistLoadingUsesTheLatestQueryWithoutRestartingTheRead() = runTest {
         val gate = CompletableDeferred<Unit>()
         val presenter = StreamingPresenter(backgroundScope) { method, args ->
-            if (method == "readPlaylistImportPage" && args[1].jsonPrimitive.int == 100) gate.await()
+            if (method == "fetchPlaylistTracksPage" && args[1].jsonPrimitive.int == 100) gate.await()
             respond(method, args)
         }
         presenter.availability(true, true); runCurrent(); presenter.openCollection(playlist); runCurrent()
@@ -87,13 +87,13 @@ class PlaylistArtistPresenterTest {
         gate.complete(Unit); runCurrent()
         assertEquals("晚风", presenter.state.value.detail!!.query)
         assertEquals(1, presenter.state.value.detail!!.matchingTotal)
-        assertEquals(1, calls.count { it.first == "readPlaylistImportPage" && it.second[1].jsonPrimitive.int == 100 })
+        assertEquals(1, calls.count { it.first == "fetchPlaylistTracksPage" && it.second[1].jsonPrimitive.int == 100 })
     }
 
     @Test fun failedWholePlaylistReadDoesNotExposePartialSearchResultsAndCanRetry() = runTest {
         var fail = true
         val presenter = StreamingPresenter(backgroundScope) { method, args ->
-            if (method == "readPlaylistImportPage" && args[1].jsonPrimitive.int == 100 && fail) error("网络中断")
+            if (method == "fetchPlaylistTracksPage" && args[1].jsonPrimitive.int == 100 && fail) error("网络中断")
             respond(method, args)
         }
         presenter.availability(true, true); runCurrent(); presenter.openCollection(playlist); runCurrent()
@@ -109,7 +109,7 @@ class PlaylistArtistPresenterTest {
     @Test fun lateWholePlaylistReadCannotReopenADisabledOrDifferentCollection() = runTest {
         val gate = CompletableDeferred<Unit>()
         val presenter = StreamingPresenter(backgroundScope) { method, args ->
-            if (method == "readPlaylistImportPage" && args[1].jsonPrimitive.int == 100) withContext(NonCancellable) { gate.await() }
+            if (method == "fetchPlaylistTracksPage" && args[1].jsonPrimitive.int == 100) withContext(NonCancellable) { gate.await() }
             respond(method, args)
         }
         presenter.availability(true, true); runCurrent(); presenter.openCollection(playlist); runCurrent()

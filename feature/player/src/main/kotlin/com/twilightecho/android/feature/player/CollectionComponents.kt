@@ -8,7 +8,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,24 +23,48 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import com.twilightecho.android.coreclient.CollectionSort
 import com.twilightecho.android.coreclient.CollectionSortField
+import com.twilightecho.android.coreclient.EntityMetadataDetail
+import com.twilightecho.android.coreclient.artworkPreview
 import com.twilightecho.android.ui.components.*
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
+
+@Composable
+internal fun rememberArtistPortrait(id: String?, name: String, metadata: EntityMetadataDetail?,
+    size: Int = 1024, extractColors: Boolean = true): TrackArtworkVisual {
+    var now by remember(metadata) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(metadata, now) {
+        val expiry = metadata?.artwork.orEmpty().mapNotNull { it.usage?.expiresAt }.filter { it > now }.minOrNull()
+        if (expiry != null) { delay(expiry - now); now = System.currentTimeMillis() }
+    }
+    return rememberTrackArtwork(id, name, null, null, previewDataUrl = metadata?.artworkPreview(now),
+        previewOnly = true, cachePreview = false, maxSize = size, extractColors = extractColors)
+}
 
 @Composable
 internal fun LibraryArtistOverview(name: String, summary: String, profile: LibraryArtistProfile?, onBack: () -> Unit, retry: () -> Unit) {
@@ -51,15 +75,10 @@ internal fun LibraryArtistOverview(name: String, summary: String, profile: Libra
         if (expiry != null) { delay(expiry - now); now = System.currentTimeMillis() }
     }
     val external = metadata?.artwork?.firstOrNull { it.usage?.canDisplay(now) != false }
-    val preview = when (metadata?.artworkOverride?.mode) {
-        "clear" -> null
-        "value" -> metadata.manualArtwork?.dataUrl
-        else -> metadata?.manualArtwork?.dataUrl ?: external?.dataUrl
-    }
-    val artwork = rememberTrackArtwork(metadata?.entityId, name, null, null, previewDataUrl = preview,
-        previewOnly = true, cachePreview = false)
+    val preview = metadata?.artworkPreview(now)
+    val artwork = rememberArtistPortrait(metadata?.entityId, name, metadata)
     val intro = metadata?.introduction
-    ImmersiveArtistHero(metadata?.name?.ifBlank { null } ?: name, summary, artwork, onBack, "返回音乐库")
+    ImmersiveArtistHero(metadata?.name?.ifBlank { null } ?: name, summary, artwork, onBack, LocalCollectionBackLabel.current)
     external?.attribution?.takeIf { preview != null && preview == external.dataUrl }?.let {
         SupportingText(listOf("图片来源", it.provider, it.license, it.attribution).filter { it.isNotBlank() }.joinToString(" · "),
             Modifier.padding(start = 24.dp, end = 24.dp, bottom = 12.dp))
@@ -139,46 +158,86 @@ private fun sortLabel(sort: CollectionSort): String = if (sort.field == Collecti
     if (sort.descending) "倒序" else "正序"
     else "${sortFieldLabel(sort.field)} · ${if (sort.descending) "倒序" else "正序"}"
 
-/** The portrait is the page, not a circular thumbnail. The lower scrim meets the page's actual surface. */
+/** Fade the portrait itself away so the actual cover, custom image or solid canvas shows through. */
 @Composable
 internal fun ImmersiveArtistHero(name: String, subtitle: String, artwork: TrackArtworkVisual?, onBack: () -> Unit,
     backLabel: String, imageTag: String = "artistPortrait", trailing: @Composable RowScope.() -> Unit = {}) {
-    val base = MaterialTheme.colorScheme.background
+    val colors = MaterialTheme.colorScheme
+    val portrait = artwork?.takeIf { it.isRealEmbeddedArt }
     val motionEnabled = rememberMotionEnabled()
     val backInteraction = remember { MutableInteractionSource() }
     BoxWithConstraints(Modifier.fillMaxWidth().testTag("immersiveArtistHero")) {
-        Box(Modifier.fillMaxWidth().height((maxWidth * 1.02f).coerceIn(300.dp, 440.dp))) {
+        // Keep space for a real portrait, not a full-size blank image when metadata has no photo.
+        val portraitSpace by animateDpAsState(
+            if (portrait != null) (maxWidth * 0.68f).coerceIn(200.dp, 300.dp) else 76.dp,
+            tween(if (motionEnabled) 260 else 0), label = "artistPortraitSpace"
+        )
+        Box(Modifier.fillMaxWidth()) {
             Crossfade(
-                targetState = artwork?.takeIf { it.isRealEmbeddedArt },
+                targetState = portrait,
+                modifier = Modifier.matchParentSize(),
                 animationSpec = tween(if (motionEnabled) 260 else 0),
                 label = "artistHeroPortrait"
-            ) { portrait ->
-                if (portrait != null) Image(portrait.imageBitmap, name,
-                    Modifier.fillMaxSize().testTag(imageTag), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
-                else Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
-                    Icon(TwilightIcons.ArtistMic, null, Modifier.size(100.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f))
+            ) { image ->
+                // Draw and mask on one canvas; child Image render nodes can leave an unmasked
+                // edge when the measured stage ends between physical pixels.
+                Canvas(Modifier.fillMaxSize()
+                    .then(if (image != null) Modifier.testTag(imageTag).semantics { contentDescription = name } else Modifier)
+                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                    .drawWithCache {
+                        val mask = Brush.verticalGradient(
+                            0f to Color.White, 0.38f to Color.White,
+                            0.55f to Color.White.copy(alpha = 0.88f),
+                            0.72f to Color.White.copy(alpha = 0.40f),
+                            0.87f to Color.White.copy(alpha = 0.04f),
+                            0.96f to Color.Transparent, 1f to Color.Transparent
+                        )
+                        val topShade = Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.18f), 0.45f to Color.Transparent, 1f to Color.Transparent)
+                        onDrawBehind {
+                            // The final part is already transparent; clip it explicitly so no
+                            // antialiased layer edge can reintroduce portrait-colored pixels.
+                            clipRect(bottom = size.height * 0.96f) {
+                                if (image != null) {
+                                    val bitmap = image.imageBitmap
+                                    val scale = maxOf(size.width / bitmap.width, size.height / bitmap.height)
+                                    val crop = IntSize((size.width / scale).roundToInt().coerceIn(1, bitmap.width),
+                                        (size.height / scale).roundToInt().coerceIn(1, bitmap.height))
+                                    drawImage(bitmap, srcOffset = IntOffset((bitmap.width - crop.width) / 2, 0), srcSize = crop,
+                                        dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()))
+                                    drawRect(topShade)
+                                } else drawRect(colors.onBackground.copy(alpha = 0.04f))
+                                drawRect(mask, topLeft = Offset(-1f, -1f), size = Size(size.width + 2f, size.height + 2f),
+                                    blendMode = BlendMode.DstIn)
+                            }
+                        }
+                    }) {
                 }
             }
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
-                0f to Color.Black.copy(alpha = 0.25f), 0.42f to Color.Transparent,
-                0.7f to base.copy(alpha = 0.45f), 1f to base)))
-            Row(Modifier.fillMaxWidth().align(Alignment.TopStart).padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = onBack,
-                    interactionSource = backInteraction,
-                    modifier = Modifier.tactilePress(backInteraction, pressedScale = 0.90f)
-                        .size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.35f))
-                ) {
-                    Icon(TwilightIcons.ArrowBack, backLabel, tint = Color.White)
+            Column(Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onBack,
+                        interactionSource = backInteraction,
+                        modifier = Modifier.tactilePress(backInteraction, pressedScale = 0.90f)
+                            .size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.35f))
+                    ) {
+                        Icon(TwilightIcons.ArrowBack, backLabel, tint = Color.White)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    trailing()
                 }
-                Spacer(Modifier.weight(1f))
-                trailing()
-            }
-            Column(Modifier.align(Alignment.BottomStart).padding(start = 24.dp, end = 24.dp, bottom = 20.dp)) {
-                Text(name, style = MaterialTheme.typography.headlineLarge.copy(fontSize = 36.sp, fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onBackground, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                if (subtitle.isNotBlank()) Text(subtitle, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(Modifier.fillMaxWidth().height(portraitSpace), contentAlignment = Alignment.Center) {
+                    if (portrait == null) Icon(TwilightIcons.ArtistMic, null, Modifier.size(48.dp),
+                        tint = colors.onSurfaceVariant.copy(alpha = 0.22f))
+                }
+                Column(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 20.dp)) {
+                    Text(name, style = MaterialTheme.typography.headlineLarge.copy(fontSize = 36.sp,
+                        lineHeight = 42.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.8).sp),
+                        color = colors.onBackground, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    if (subtitle.isNotBlank()) Text(subtitle, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSurfaceVariant)
+                }
             }
         }
     }

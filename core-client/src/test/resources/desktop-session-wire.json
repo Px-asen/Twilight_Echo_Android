@@ -1,0 +1,588 @@
+{
+  "format": "twilight-session-queue-wire",
+  "version": 1,
+  "samples": {
+    "catalog.query": {
+      "revision": 3,
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "id": "music_ecc445fb-e434-4821-a1c2-9d3e27fb34cb",
+          "kind": "recording",
+          "title": "静默测试",
+          "artist": "Unknown Artist",
+          "identity": "source",
+          "sourceCount": 1
+        }
+      ]
+    },
+    "tags.list": {
+      "token": {
+        "tagsRevision": 0,
+        "linkRevision": 0,
+        "catalogRevision": 3,
+        "contentRevision": 1
+      },
+      "offset": 0,
+      "total": 0,
+      "items": []
+    },
+    "playlists.catalog": {
+      "revision": 1,
+      "total": 2,
+      "offset": 0,
+      "items": [
+        {
+          "id": "pl_favorites",
+          "name": "我收藏的音乐",
+          "count": 0,
+          "isDefault": true,
+          "createdAt": "2026-11-04T09:35:52.813Z",
+          "imported": false,
+          "cover": null
+        },
+        {
+          "id": "pl_d99b7b9c-496e-4037-8ce0-0272e6c6f5ba",
+          "name": "Session playlist",
+          "count": 0,
+          "createdAt": "2026-11-04T09:35:57.616Z",
+          "imported": false,
+          "cover": null
+        }
+      ]
+    },
+    "catalog.sources": {
+      "revision": 4,
+      "total": 1,
+      "offset": 0,
+      "items": [
+        {
+          "id": "source_5f44db47-d6eb-43ac-975f-19b40f31d326",
+          "provider": "local",
+          "recordingId": "music_ecc445fb-e434-4821-a1c2-9d3e27fb34cb",
+          "releaseId": "music_31d844f6-4c62-4b36-b8ce-0a410cac78ad",
+          "availability": "indexed",
+          "inLibrary": true,
+          "preferred": false,
+          "track": {
+            "title": "静默测试",
+            "artist": "Unknown Artist",
+            "album": "Unknown Album",
+            "duration": 3,
+            "artists": [
+              "Unknown Artist"
+            ],
+            "source": "local",
+            "size": 48044,
+            "format": "WAVE",
+            "sampleRate": 8000,
+            "bitrate": 128000,
+            "bitDepth": 16,
+            "addedAt": 1793784952981
+          }
+        }
+      ]
+    },
+    "zones.list": {
+      "revision": 1,
+      "limit": 4,
+      "zones": [
+        {
+          "id": "local",
+          "name": "此电脑主会话",
+          "groupId": null,
+          "revision": 5,
+          "playback": {
+            "dspActive": true,
+            "gaplessBlockedReason": "",
+            "state": "paused",
+            "position": 0,
+            "duration": 3,
+            "volume": 0.7,
+            "playbackRate": 1,
+            "playMode": "sequential",
+            "queueIndex": -1,
+            "requestedConfigRevision": 0,
+            "appliedConfigRevision": 0,
+            "nativePlaybackActive": false,
+            "codec": "未知",
+            "bitrate": 0,
+            "sourceSampleRate": 0,
+            "sourceChannels": 0,
+            "sourceBitDepth": 0,
+            "decodedSampleRate": 0,
+            "decodedBitDepth": 0,
+            "decodedChannels": 0,
+            "decodedSampleFormat": "",
+            "outputBackend": "wasapi",
+            "actualSampleRate": 0,
+            "actualBitDepth": 0,
+            "actualChannels": 0,
+            "outputPerfect": false,
+            "sourceExact": false,
+            "pcmPassthrough": false,
+            "isDsd": false,
+            "dsdMode": "pcm",
+            "dsdRate": 0,
+            "actualDsdRate": 0,
+            "dsdRatePolicy": "pcm-fallback",
+            "dsdConversion": "exact",
+            "dsdConversionReason": "",
+            "gaplessActive": false,
+            "preloadReady": false,
+            "crossfadeActive": false,
+            "crossfadeSeconds": 0,
+            "upcomingTrack": null
+          },
+          "track": {
+            "id": "remote-track:977dc521-3a7e-4dfa-a3dd-69288311f107",
+            "referenceScope": "session",
+            "title": "静默测试",
+            "artist": "Unknown Artist",
+            "album": "Unknown Album",
+            "duration": 3,
+            "artists": [
+              "Unknown Artist"
+            ],
+            "source": "local",
+            "queueEntryId": "5529c34b-9d01-4ac1-95b5-419a8617c223:0000000000000000",
+            "size": 48044,
+            "format": "WAVE",
+            "sampleRate": 8000,
+            "bitrate": 128000,
+            "bitDepth": 16
+          },
+          "queue": {
+            "id": "5529c34b-9d01-4ac1-95b5-419a8617c223",
+            "revision": 1,
+            "total": 1,
+            "index": 0,
+            "occurrenceId": "5529c34b-9d01-4ac1-95b5-419a8617c223:0000000000000000",
+            "canUndo": false,
+            "undoLabel": null
+          },
+          "output": {
+            "supported": true,
+            "hosting": false,
+            "receiving": false,
+            "selected": true,
+            "connected": false,
+            "peerName": null,
+            "error": "音频服务已重启；请重新连接输出桥或明确选择此电脑",
+            "receiver": null,
+            "timing": null,
+            "synchronization": null,
+            "revision": 0,
+            "zoneId": "local",
+            "groupId": null,
+            "selectedOutputId": "bridge",
+            "outputs": [
+              {
+                "id": "local",
+                "name": "此电脑",
+                "available": false
+              }
+            ]
+          },
+          "error": "音频服务已重启；请重新连接输出桥或明确选择此电脑"
+        },
+        {
+          "id": "zone-52f1e4ac-582d-4dd9-9bb7-65e175565030",
+          "name": "Remote test",
+          "groupId": null,
+          "revision": 4,
+          "playback": {
+            "streamTitle": "",
+            "dspActive": true,
+            "gaplessBlockedReason": "",
+            "state": "paused",
+            "position": 0.59,
+            "duration": 3,
+            "volume": 0.7,
+            "playbackRate": 1,
+            "playMode": "sequential",
+            "queueIndex": 0,
+            "queueToken": "a9a6200b-3445-47a7-bfc4-0d68c10ba82f",
+            "queueRevision": 1,
+            "upcomingQueueIndex": -1,
+            "requestedConfigRevision": 7,
+            "appliedConfigRevision": 7,
+            "nativePlaybackActive": true,
+            "codec": "pcm_s16le",
+            "bitrate": 128000,
+            "sourceSampleRate": 8000,
+            "sourceChannels": 1,
+            "sourceBitDepth": 16,
+            "decodedSampleRate": 48000,
+            "decodedBitDepth": 32,
+            "decodedChannels": 2,
+            "decodedSampleFormat": "float32",
+            "outputBackend": "wasapi",
+            "actualSampleRate": 0,
+            "actualBitDepth": 0,
+            "actualChannels": 0,
+            "outputPerfect": false,
+            "sourceExact": false,
+            "pcmPassthrough": false,
+            "isDsd": false,
+            "dsdMode": "pcm",
+            "dsdRate": 0,
+            "actualDsdRate": 0,
+            "dsdRatePolicy": "pcm-fallback",
+            "dsdConversion": "exact",
+            "dsdConversionReason": "",
+            "gaplessActive": false,
+            "preloadReady": false,
+            "crossfadeActive": false,
+            "crossfadeSeconds": 0,
+            "crossfadeMixActive": false,
+            "crossfadeEffectiveSeconds": 0,
+            "crossfadeCurve": "linear",
+            "crossfadeBlockedReason": "disabled",
+            "autoMixMode": "off",
+            "autoMixState": "off",
+            "autoMixDurationSeconds": 0,
+            "autoMixStemEnhanced": false,
+            "autoMixDecodeMs": 0,
+            "autoMixPrepareMs": 0,
+            "autoMixReason": "dsp_changed",
+            "autoMixStrategy": "",
+            "autoMixPlanId": 0,
+            "autoMixOutputSeconds": 0,
+            "autoMixNextSourceSeconds": 0,
+            "renderPerformance": {
+              "callbackCount": 0,
+              "totalCallbackNanoseconds": 0,
+              "meanCallbackNanoseconds": 0,
+              "peakCallbackNanoseconds": 0,
+              "p999DeadlineRatioUpper": 0,
+              "totalDeadlineNanoseconds": 0,
+              "deadlineMissCount": 0,
+              "callbackDeadlineLoadPercent": 0
+            },
+            "naturalBoundaries": {
+              "trackSerial": 0,
+              "queueSerial": 0,
+              "trackTimeMs": 0,
+              "queueTimeMs": 0
+            },
+            "upcomingTrack": null
+          },
+          "track": {
+            "id": "remote-track:977dc521-3a7e-4dfa-a3dd-69288311f107",
+            "referenceScope": "session",
+            "title": "静默测试",
+            "artist": "Unknown Artist",
+            "album": "Unknown Album",
+            "duration": 3,
+            "artists": [
+              "Unknown Artist"
+            ],
+            "source": "local",
+            "queueEntryId": "f0f4dd1f-b94d-4be0-ad83-979b517c54de:0000000000000000",
+            "size": 48044,
+            "format": "WAVE",
+            "sampleRate": 8000,
+            "bitrate": 128000,
+            "bitDepth": 16,
+            "addedAt": 1793784952981
+          },
+          "queue": {
+            "id": "f0f4dd1f-b94d-4be0-ad83-979b517c54de",
+            "revision": 1,
+            "total": 1,
+            "index": 0,
+            "occurrenceId": "f0f4dd1f-b94d-4be0-ad83-979b517c54de:0000000000000000",
+            "canUndo": false,
+            "undoLabel": null
+          },
+          "output": {
+            "supported": true,
+            "hosting": false,
+            "receiving": false,
+            "selected": true,
+            "connected": true,
+            "peerName": "Software receiver",
+            "error": null,
+            "receiver": {
+              "sampleRate": 48000,
+              "channels": 2,
+              "bufferedFrames": 0,
+              "capacityFrames": 12000,
+              "prebufferFrames": 1920,
+              "consumedFrames": 0,
+              "underruns": 0,
+              "actualSampleRate": 48000,
+              "actualBitDepth": 24,
+              "actualChannels": 2,
+              "started": false,
+              "failed": false,
+              "exclusive": true,
+              "backend": "wasapi-exclusive",
+              "deviceName": "Simulated DAC",
+              "actualOutputFormat": "int24",
+              "clock": null,
+              "timedStart": null,
+              "adaptiveSupported": false,
+              "adaptive": null
+            },
+            "timing": {
+              "network": {
+                "state": "ready",
+                "samples": 6,
+                "offsetMs": 0.032499998807907104,
+                "roundTripMs": 0.2670000195503235,
+                "uncertaintyMs": 0.13350000977516174
+              },
+              "output": {
+                "state": "unsupported",
+                "source": "unsupported",
+                "streamGeneration": 0,
+                "epoch": 0,
+                "sampleRate": 0,
+                "positionFrames": null,
+                "sampledAtCoreMs": null,
+                "ageMs": null,
+                "callbackRequestedFrames": 0,
+                "driftPpm": null,
+                "windowMs": 0,
+                "samples": 0,
+                "residualFrames": null
+              }
+            },
+            "synchronization": null
+          },
+          "error": null
+        }
+      ],
+      "error": null
+    },
+    "zones.queue.page": {
+      "items": [
+        {
+          "position": 0,
+          "queueEntryId": "5529c34b-9d01-4ac1-95b5-419a8617c223:0000000000000000",
+          "track": {
+            "id": "remote-track:977dc521-3a7e-4dfa-a3dd-69288311f107",
+            "referenceScope": "session",
+            "title": "静默测试",
+            "artist": "Unknown Artist",
+            "album": "Unknown Album",
+            "duration": 3,
+            "artists": [
+              "Unknown Artist"
+            ],
+            "source": "local",
+            "queueEntryId": "5529c34b-9d01-4ac1-95b5-419a8617c223:0000000000000000",
+            "size": 48044,
+            "format": "WAVE",
+            "sampleRate": 8000,
+            "bitrate": 128000,
+            "bitDepth": 16
+          }
+        }
+      ],
+      "lastPlayablePosition": 0,
+      "total": 1,
+      "revision": 1,
+      "libraryRevision": 1,
+      "offset": 0
+    },
+    "tags.members": {
+      "token": {
+        "tagsRevision": 2,
+        "linkRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1
+      },
+      "tag": {
+        "id": "tag:abe7ded1-1b84-45e0-89d4-5e7dcce85797",
+        "name": "Session tag",
+        "nameRevision": 1,
+        "membersRevision": 1,
+        "memberCount": 1,
+        "updatedAt": 1793784957606
+      },
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "id": "music_ecc445fb-e434-4821-a1c2-9d3e27fb34cb",
+          "kind": "recording",
+          "title": "静默测试",
+          "artist": "Unknown Artist",
+          "sourceCount": 1,
+          "inLibrary": true
+        }
+      ]
+    },
+    "focus.query": {
+      "token": {
+        "savedRevision": 0,
+        "catalogRevision": 4,
+        "contentRevision": 1,
+        "genresRevision": 3,
+        "metadataRevision": 0,
+        "ratingsRevision": 0,
+        "preferencesRevision": 0,
+        "tagsRevision": 2,
+        "linkRevision": 0,
+        "historyRevision": 0,
+        "queryKey": "{\"entity\":\"recording\",\"scope\":\"library\",\"version\":1,\"where\":{\"tag\":{\"id\":\"tag:abe7ded1-1b84-45e0-89d4-5e7dcce85797\"}}}",
+        "asOf": 1793784957758,
+        "contextKey": "485e2f62-1970-495c-8d22-9f48a3acf18d",
+        "expiresAt": null
+      },
+      "offset": 0,
+      "total": 1,
+      "items": [
+        {
+          "id": "music_ecc445fb-e434-4821-a1c2-9d3e27fb34cb",
+          "kind": "recording",
+          "title": "静默测试",
+          "artist": "Unknown Artist",
+          "sourceCount": 1,
+          "inLibrary": true,
+          "playable": true,
+          "sourceId": "source_5f44db47-d6eb-43ac-975f-19b40f31d326",
+          "provider": "local",
+          "personalRating": null,
+          "lastPlayed": null,
+          "releaseYear": null
+        }
+      ]
+    },
+    "core.getSnapshot": {
+      "protocolVersion": 1,
+      "epoch": "2bcc27ef-d54d-4471-81c8-e790716adb2f",
+      "sequence": 135,
+      "phase": "ready",
+      "playback": {
+        "dspActive": true,
+        "gaplessBlockedReason": "",
+        "state": "paused",
+        "position": 0,
+        "duration": 3,
+        "volume": 0.7,
+        "playbackRate": 1,
+        "playMode": "sequence",
+        "queueIndex": -1,
+        "requestedConfigRevision": 0,
+        "appliedConfigRevision": 0,
+        "nativePlaybackActive": false,
+        "codec": "未知",
+        "bitrate": 0,
+        "sourceSampleRate": 0,
+        "sourceChannels": 0,
+        "sourceBitDepth": 0,
+        "decodedSampleRate": 0,
+        "decodedBitDepth": 0,
+        "decodedChannels": 0,
+        "decodedSampleFormat": "",
+        "outputBackend": "wasapi",
+        "actualSampleRate": 0,
+        "actualBitDepth": 0,
+        "actualChannels": 0,
+        "outputPerfect": false,
+        "sourceExact": false,
+        "pcmPassthrough": false,
+        "isDsd": false,
+        "dsdMode": "pcm",
+        "dsdRate": 0,
+        "actualDsdRate": 0,
+        "dsdRatePolicy": "pcm-fallback",
+        "dsdConversion": "exact",
+        "dsdConversionReason": "",
+        "gaplessActive": false,
+        "preloadReady": false,
+        "crossfadeActive": false,
+        "crossfadeSeconds": 0,
+        "upcomingTrack": null
+      },
+      "track": {
+        "id": "remote-track:977dc521-3a7e-4dfa-a3dd-69288311f107",
+        "referenceScope": "session",
+        "title": "静默测试",
+        "artist": "Unknown Artist",
+        "album": "Unknown Album",
+        "duration": 3,
+        "artists": [
+          "Unknown Artist"
+        ],
+        "source": "local",
+        "queueEntryId": "087e5351-75d9-4a42-8007-9ed262387726:0000000000000000",
+        "size": 48044,
+        "format": "WAVE",
+        "sampleRate": 8000,
+        "bitrate": 128000,
+        "bitDepth": 16
+      },
+      "queue": {
+        "id": "087e5351-75d9-4a42-8007-9ed262387726",
+        "revision": 1,
+        "total": 1,
+        "index": 0,
+        "occurrenceId": "087e5351-75d9-4a42-8007-9ed262387726:0000000000000000",
+        "canUndo": false,
+        "undoLabel": null
+      },
+      "error": null,
+      "isStreamBuffering": false,
+      "loading": false,
+      "migrationRequired": false,
+      "mute": {
+        "muted": false,
+        "userVolume": 0.7,
+        "lastAudibleVolume": 0.7
+      },
+      "libraryRevision": 1,
+      "catalogRevision": 5,
+      "entityMetadataRevision": 13,
+      "entityMetadataContentRevision": 12,
+      "ratingsRevision": null,
+      "preferencesRevision": null,
+      "tagsRevision": 2,
+      "tagsLinkRevision": 0,
+      "focusRevision": 0,
+      "focusHistoryRevision": 0,
+      "presentationRevision": 16,
+      "playlistsRevision": 2,
+      "versionsRevision": 1,
+      "audioRevision": 4,
+      "settingsRevision": 3,
+      "lyricsRevision": 0,
+      "lyricsContentRevision": 7
+    },
+    "playlists.members": {
+      "revision": 2,
+      "total": 1,
+      "offset": 0,
+      "items": [
+        {
+          "id": "remote-member:9866255d-ed0b-4275-81f9-fea8a36f1193",
+          "position": 0,
+          "track": {
+            "id": "remote-track:977dc521-3a7e-4dfa-a3dd-69288311f107",
+            "referenceScope": "session",
+            "title": "静默测试",
+            "artist": "Unknown Artist",
+            "album": "Unknown Album",
+            "duration": 3,
+            "artists": [
+              "Unknown Artist"
+            ],
+            "source": "local",
+            "size": 48044,
+            "format": "WAVE",
+            "sampleRate": 8000,
+            "bitrate": 128000,
+            "bitDepth": 16,
+            "addedAt": 1793784952981
+          },
+          "imported": false
+        }
+      ]
+    }
+  }
+}

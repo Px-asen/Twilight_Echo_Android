@@ -11,6 +11,26 @@ val jniCmakeLists = rootProject.file("../Twilight_Echo/sdk/android/CMakeLists.tx
 val nativeJniEnabled = jniCmakeLists.exists() && providers.gradleProperty("enableNativeJni").orNull != "false"
 val sharedRoot = jniCmakeLists.parentFile.parentFile.parentFile
 val autoMixAssets = layout.buildDirectory.dir("generated/automix-assets")
+val usbLicenseAssets = layout.buildDirectory.dir("generated/usb-license-assets")
+val loudnessLicenseAssets = layout.buildDirectory.dir("generated/loudness-license-assets")
+val crossfeedLicenseAssets = layout.buildDirectory.dir("generated/crossfeed-license-assets")
+val stageCrossfeedLicenseAssets by tasks.registering(Sync::class) {
+    from(sharedRoot.resolve("audio-engine/third_party/bs2b/upstream/COPYING"))
+    from(sharedRoot.resolve("audio-engine/third_party/bs2b/README.md"))
+    into(crossfeedLicenseAssets.map { it.dir("licenses/libbs2b-3.1.0") })
+}
+val stageLoudnessLicenseAssets by tasks.registering(Sync::class) {
+    from(sharedRoot.resolve("audio-engine/third_party/ebur128/upstream/COPYING"))
+    from(sharedRoot.resolve("audio-engine/third_party/ebur128/upstream/doc/license/queue.txt"))
+    from(sharedRoot.resolve("audio-engine/third_party/ebur128/upstream/doc/license/R128Scan.txt"))
+    from(sharedRoot.resolve("audio-engine/third_party/ebur128/README.md"))
+    into(loudnessLicenseAssets.map { it.dir("licenses/libebur128-1.2.6") })
+}
+val stageUsbLicenseAssets by tasks.registering(Sync::class) {
+    from(sharedRoot.resolve("audio-engine/third_party/libusb/upstream/COPYING"))
+    from(sharedRoot.resolve("audio-engine/third_party/libusb/README.md"))
+    into(usbLicenseAssets.map { it.dir("licenses/libusb-1.0.29") })
+}
 val stageAutoMixAssets by tasks.registering(Exec::class) {
     group = "twilightCore"
     description = "Stages only the locked public AutoMix graphs, manifest and licenses."
@@ -28,7 +48,12 @@ android {
     namespace = "com.twilightecho.android.nativeintegration"
     compileSdk = 35
     buildFeatures { buildConfig = true }
-    if (nativeJniEnabled) sourceSets.getByName("main").assets.srcDir(autoMixAssets)
+    if (nativeJniEnabled) {
+        sourceSets.getByName("main").assets.srcDir(autoMixAssets)
+        sourceSets.getByName("main").assets.srcDir(usbLicenseAssets)
+        sourceSets.getByName("main").assets.srcDir(loudnessLicenseAssets)
+        sourceSets.getByName("main").assets.srcDir(crossfeedLicenseAssets)
+    }
 
     defaultConfig {
         minSdk = 26
@@ -63,7 +88,7 @@ android {
     }
 }
 
-if (nativeJniEnabled) tasks.named("preBuild") { dependsOn(stageAutoMixAssets) }
+if (nativeJniEnabled) tasks.named("preBuild") { dependsOn(stageAutoMixAssets, stageUsbLicenseAssets, stageLoudnessLicenseAssets, stageCrossfeedLicenseAssets) }
 
 dependencies {
     api(project(":core-client"))

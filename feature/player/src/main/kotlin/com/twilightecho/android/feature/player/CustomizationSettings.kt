@@ -97,6 +97,9 @@ internal fun LazyListScope.appearanceSettings(state: PlayerUiState, actions: Pla
     }
     item {
         PreferenceGroup("界面") {
+            SettingsSwitch("沉浸模式", "隐藏顶部状态栏，下滑可临时显示", settings.immersiveMode) {
+                edit { it.copy(immersiveMode = !it.immersiveMode) }
+            }
             val scale = settings.densityScale
             val systemDensity = LocalDensity.current.density / scale
             PreferenceSlider("界面缩放", scale * 100, 80f..125f, "${(scale * 100).roundToInt()}% · ${(systemDensity * scale * 160).roundToInt()} DPI",

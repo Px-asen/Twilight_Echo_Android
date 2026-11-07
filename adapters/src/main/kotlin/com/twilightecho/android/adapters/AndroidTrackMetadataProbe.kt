@@ -9,6 +9,8 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.twilightecho.android.coreclient.CoreTrackView
+import com.twilightecho.android.coreclient.AudioFileMetadata
+import com.twilightecho.android.coreclient.SacdTrackSource
 import com.twilightecho.android.coreclient.TrackInspectionDetails
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -20,12 +22,14 @@ import java.nio.ByteBuffer
  * Probes local audio files on demand for detailed tag metadata, exact audio header specs
  * (sample rate, bit depth, channels, bitrate), file size, and human-readable storage location.
  */
-class AndroidTrackMetadataProbe(context: Context) {
+class AndroidTrackMetadataProbe(context: Context, private val readNativeMetadata: ((String) -> AudioFileMetadata)? = null) {
     private val appContext = context.applicationContext
     private val resolver = appContext.contentResolver
 
     suspend fun inspect(track: CoreTrackView): TrackInspectionDetails = withContext(Dispatchers.IO) {
-        val rawSource = track.source?.takeIf { it.isNotBlank() }
+        val trackSource = track.source?.takeIf { it.isNotBlank() }
+        val sacd = trackSource?.let(SacdTrackSource::decode)
+        val rawSource = sacd?.source ?: trackSource
         val base = TrackInspectionDetails(
             title = track.title.takeIf { it.isNotBlank() },
             artist = track.artists.filter { it.isNotBlank() }.joinToString(" / ")
@@ -45,15 +49,30 @@ class AndroidTrackMetadataProbe(context: Context) {
         )
         if (rawSource == null) return@withContext base
 
-        val uri = runCatching { Uri.parse(rawSource) }.getOrNull() ?: return@withContext base
+        val uri = Uri.parse(resourceUriString(rawSource))
         val scheme = uri.scheme?.lowercase().orEmpty()
         if (scheme != "content" && scheme != "file" && !rawSource.startsWith("/")) {
             return@withContext base.copy(displayPath = rawSource)
         }
 
         val resolvedInfo = if (scheme == "content") queryContentMeta(uri) else queryFileMeta(uri, rawSource)
-        val headerAndChannels = probeHeaderAndChannels(uri, scheme, rawSource)
-        val retrieverTags = probeRetrieverTags(uri, scheme, rawSource)
+        val wavPack = resolvedInfo.fileName?.substringAfterLast('.').equals("wv", ignoreCase = true) ||
+            track.format in setOf("WV", "WavPack DSD")
+        val native = if (sacd != null || track.bitDepth == 1 || track.format == "DSD" || wavPack) {
+            readNativeMetadata?.invoke(trackSource!!)?.let { metadata ->
+                if (sacd == null) metadata else metadata.isoTracks.single { it.source == trackSource }
+            }
+        } else null
+        val headerAndChannels = native?.let { AudioHeader(it.duration, it.sampleRate, it.bitDepth, it.isDsd) to it.channelCount }
+            ?: probeHeaderAndChannels(uri, scheme, rawSource)
+        val retrieverTags = native?.let {
+            RetrieverTags(title = it.title.ifBlank { null }, artist = it.artist.ifBlank { null }, album = it.album.ifBlank { null },
+                albumArtist = it.albumArtist.ifBlank { null }, composer = it.composer.ifBlank { null }, durationSeconds = it.duration,
+                trackNumber = it.trackNumber.substringBefore('/').toIntOrNull(), discNumber = it.discNumber.substringBefore('/').toIntOrNull(),
+                year = it.year.ifBlank { null }, genre = it.genre.ifBlank { null }, bitrateKbps = it.bitrate.takeIf { b -> b > 0 }?.let { b -> b / 1000.0 },
+                mimeType = when { sacd != null -> "application/x-sacd-iso"; wavPack -> "audio/x-wavpack"; else -> "audio/dsd" }, sampleRate = it.sampleRate,
+                bitDepth = it.bitDepth, channels = it.channelCount)
+        } ?: probeRetrieverTags(uri, scheme, rawSource)
 
         val header = headerAndChannels?.first
         val channels = headerAndChannels?.second ?: retrieverTags?.channels
@@ -65,7 +84,7 @@ class AndroidTrackMetadataProbe(context: Context) {
             ?: retrieverTags?.durationSeconds
             ?: base.durationSeconds
         val size = base.fileSize ?: resolvedInfo.size
-        val computedBitrate = if (size != null && fullFileDuration != null && fullFileDuration > 0.0) {
+        val computedBitrate = if (sacd == null && size != null && fullFileDuration != null && fullFileDuration > 0.0) {
             (size * 8.0) / fullFileDuration / 1000.0
         } else null
         val mime = resolvedInfo.mimeType ?: retrieverTags?.mimeType
@@ -81,7 +100,7 @@ class AndroidTrackMetadataProbe(context: Context) {
             discNumber = base.discNumber ?: retrieverTags?.discNumber,
             releaseDate = base.releaseDate ?: retrieverTags?.year,
             genre = base.genre ?: retrieverTags?.genre,
-            format = base.format ?: audioFormat(mime, fileName).takeIf { it != "AUDIO" },
+            format = if (wavPack && header?.isDsd == true) "WavPack DSD" else base.format ?: audioFormat(mime, fileName).takeIf { it != "AUDIO" },
             mimeType = mime,
             durationSeconds = duration,
             sampleRate = header?.sampleRate?.takeIf { it > 0 } ?: base.sampleRate ?: retrieverTags?.sampleRate,
@@ -90,7 +109,8 @@ class AndroidTrackMetadataProbe(context: Context) {
             bitrateKbps = base.bitrateKbps ?: retrieverTags?.bitrateKbps ?: computedBitrate,
             fileSize = size,
             fileName = fileName,
-            displayPath = resolvedInfo.displayPath ?: rawSource
+            displayPath = (resolvedInfo.displayPath ?: rawSource) +
+                (sacd?.let { " · ${if (it.area == "stereo") "立体声" else "多声道"} 第 ${it.track} 轨" } ?: "")
         )
     }
 

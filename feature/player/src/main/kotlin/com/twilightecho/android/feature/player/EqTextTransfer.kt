@@ -25,7 +25,7 @@ private const val SHOWN_ISSUES = 6
 
 /** The EQ an import replaced, so one tap restores it. */
 private data class EqImportRecord(val summary: String, val sceneName: String, val saved: Boolean,
-    val enabled: Boolean, val preampDb: Double, val eqMode: String, val bands: List<CoreParametricEqBand>)
+    val before: CoreEqConfigView)
 
 /** AutoEQ and Equalizer APO text in and out of the current EQ; an import applies completely or not at all. */
 @OptIn(ExperimentalLayoutApi::class)
@@ -38,38 +38,50 @@ internal fun EqTextTransfer(config: CoreEqConfigView, actions: PlayerActions) {
     var issues by remember { mutableStateOf<List<EqTextIssue>>(emptyList()) }
     var record by remember { mutableStateOf<EqImportRecord?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
+    var pending by remember { mutableStateOf<String?>(null) }
+    val busy = pending != null
 
-    fun importText(text: String, fileName: String?) {
+    suspend fun importText(text: String, fileName: String?) {
         val profile = try {
             EqualizerApoText.parse(text, fileName)
         } catch (error: EqTextImportException) {
             issues = error.issues
             return
         }
-        val before = current
-        record = EqImportRecord("已导入 ${profile.format.label}：${profile.bands.size} 个滤波器，前级 ${signedDb(profile.preampDb)}",
-            sceneName(fileName, profile.format), false, before.enabled, before.preampDb, before.dsp.eqMode, before.dsp.parametricBands)
+        pending = "正在应用均衡器…"
         notice = null
-        actions.editAudio { it.withImportedEq(profile) }
+        try {
+            actions.commitAudioEdit { it.withImportedEq(profile) }.fold({ receipt ->
+                record = EqImportRecord("已导入 ${profile.format.label}：${receipt.committed.dsp.parametricBands.size} 个滤波器，前级 ${signedDb(receipt.committed.preampDb)}",
+                    sceneName(fileName, profile.format), false, receipt.before)
+                notice = null
+            }, { error -> notice = "未能确认导入：${error.message ?: "未收到提交结果"}" })
+        } finally { pending = null }
     }
     val open = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
-            val document = withContext(Dispatchers.IO) { runCatching { readDocument(context, uri) }.getOrNull() }
-            when {
-                document == null -> notice = "无法读取文件"
-                document.second.size > EqualizerApoText.MAX_FILE_BYTES -> issues = listOf(EqTextIssue(0, "文件超过 256 KB"))
-                else -> importText(EqualizerApoText.decode(document.second), document.first)
-            }
+            pending = "正在读取文件…"
+            try {
+                val document = withContext(Dispatchers.IO) { runCatching { readDocument(context, uri) }.getOrNull() }
+                when {
+                    document == null -> notice = "无法读取文件"
+                    document.second.size > EqualizerApoText.MAX_FILE_BYTES -> issues = listOf(EqTextIssue(0, "文件超过 256 KB"))
+                    else -> importText(EqualizerApoText.decode(document.second), document.first)
+                }
+            } finally { pending = null }
         }
     }
     val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         if (uri != null) {
             val text = EqualizerApoText.format(current)
             scope.launch {
-                val saved = withContext(Dispatchers.IO) {
-                    runCatching { context.contentResolver.openOutputStream(uri)!!.use { it.write(text.toByteArray()) } }.isSuccess
-                }
-                notice = if (saved) "已导出 EqualizerAPO 文本" else "导出失败"
+                pending = "正在导出文件…"
+                try {
+                    val saved = withContext(Dispatchers.IO) {
+                        runCatching { context.contentResolver.openOutputStream(uri)!!.use { it.write(text.toByteArray()) } }.isSuccess
+                    }
+                    notice = if (saved) "已导出 EqualizerAPO 文本" else "导出失败"
+                } finally { pending = null }
             }
         }
     }
@@ -78,35 +90,48 @@ internal fun EqTextTransfer(config: CoreEqConfigView, actions: PlayerActions) {
         Text(imported.summary, Modifier.padding(horizontal = 18.dp, vertical = 6.dp).testTag("eq-import-summary"),
             style = MaterialTheme.typography.bodyLarge)
         Row(Modifier.padding(horizontal = 18.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MiniAction("撤销导入", Modifier.testTag("eq-import-undo")) {
-                actions.editAudio { it.copy(enabled = imported.enabled, preampDb = imported.preampDb,
-                    dsp = it.dsp.copy(eqMode = imported.eqMode, parametricBands = imported.bands)) }
-                record = null
-                notice = "已恢复导入前的均衡器"
+            MiniAction("撤销导入", Modifier.testTag("eq-import-undo"), enabled = !busy) {
+                scope.launch {
+                    pending = "正在撤销导入…"
+                    notice = null
+                    try {
+                        actions.commitAudioEdit { it.withRestoredEq(imported.before) }
+                            .fold({ record = null; notice = "已恢复导入前的均衡器" },
+                                { error -> notice = "未能确认撤销：${error.message ?: "未收到提交结果"}" })
+                    } finally { pending = null }
+                }
             }
-            if (!imported.saved) MiniAction("存为场景", enabled = config.scenes.size < 32) {
-                actions.saveDspScene(imported.sceneName)
-                record = imported.copy(saved = true)
-                notice = "已保存场景“${imported.sceneName}”"
+            if (!imported.saved) MiniAction("存为场景", Modifier.testTag("eq-import-save-scene"), enabled = !busy && config.scenes.size < DspScenePackage.MAX_SCENES) {
+                scope.launch {
+                    pending = "正在保存场景…"
+                    notice = null
+                    try {
+                        actions.commitAudioEdit { it.withSavedDspScene(imported.sceneName) }.fold({
+                            record = imported.copy(saved = true)
+                            notice = "已保存场景“${imported.sceneName}”"
+                        }, { error -> notice = "未能确认保存：${error.message ?: "未收到提交结果"}" })
+                    } finally { pending = null }
+                }
             }
         }
     }
     FlowRow(Modifier.padding(horizontal = 18.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        MiniAction("导入文件", Modifier.testTag("eq-import-file"), highlighted = true) {
+        MiniAction("导入文件", Modifier.testTag("eq-import-file"), highlighted = true, enabled = !busy) {
             open.launch(arrayOf("text/plain", "text/*", "application/octet-stream"))
         }
-        MiniAction("粘贴导入", Modifier.testTag("eq-import-paste")) {
+        MiniAction("粘贴导入", Modifier.testTag("eq-import-paste"), enabled = !busy) {
             val text = clipboard.getText()?.text
-            if (text.isNullOrBlank()) notice = "剪贴板中没有文本" else importText(text, null)
+            if (text.isNullOrBlank()) notice = "剪贴板中没有文本" else scope.launch { importText(text, null) }
         }
-        MiniAction("导出文件", Modifier.testTag("eq-export-file")) { save.launch("Twilight Echo EQ.txt") }
-        MiniAction("复制文本", Modifier.testTag("eq-export-copy")) {
+        MiniAction("导出文件", Modifier.testTag("eq-export-file"), enabled = !busy) { save.launch("Twilight Echo EQ.txt") }
+        MiniAction("复制文本", Modifier.testTag("eq-export-copy"), enabled = !busy) {
             clipboard.setText(AnnotatedString(EqualizerApoText.format(current)))
             notice = "已复制 EqualizerAPO 文本"
         }
     }
-    notice?.let { SupportingText(it, Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
+    pending?.let { SupportingText(it, Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("eq-import-pending")) }
+    notice?.let { SupportingText(it, Modifier.padding(horizontal = 18.dp, vertical = 4.dp).testTag("eq-import-notice")) }
 
     if (issues.isNotEmpty()) AlertDialog(onDismissRequest = { issues = emptyList() }, title = { Text("无法导入") }, text = {
         Column(Modifier.testTag("eq-import-issues"), verticalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -31,6 +31,7 @@ import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -196,9 +197,13 @@ object TwilightMotion {
             fadeOut(tween(120))
 }
 
+/** A theme shares one settings subscription with its cards, rows and nested themes. */
+internal val LocalMotionEnabled = compositionLocalOf<Boolean?> { null }
+
 /** Observes Android's global animator duration scale so all transitions honor Reduce Motion. */
 @Composable
 fun rememberMotionEnabled(): Boolean {
+    LocalMotionEnabled.current?.let { return it }
     val resolver = LocalContext.current.contentResolver
     fun readMotionEnabled() =
         runCatching { Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f }

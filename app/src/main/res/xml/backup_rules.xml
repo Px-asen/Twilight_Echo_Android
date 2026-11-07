@@ -1,4 +1,5 @@
 <full-backup-content>
+    <exclude domain="file" path="offline-music/" />
     <exclude domain="file" path="plugins-v1/" />
     <!-- Paired-computer tokens and pinned certificates; sealed by a Keystore key that a restore cannot bring. -->
     <exclude domain="file" path="twilight_core_state/remote_desktops.bin" />

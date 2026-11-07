@@ -13,6 +13,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.twilightecho.android.ui.components.LocalMotionEnabled
+import com.twilightecho.android.ui.components.rememberMotionEnabled
 
 /** Fixed colors that do not follow the cover: status signals and the deep stage behind artwork. */
 object TwilightTokens {
@@ -74,6 +76,7 @@ fun TwilightEchoTheme(darkTheme: Boolean = true, seed: Color = Monet.FallbackSee
     customAccent: Color? = null, backgroundColor: Color? = null, contentOpacity: Float = 0.86f,
     imageBackground: Boolean = false,
     content: @Composable () -> Unit) {
+    val motionEnabled = rememberMotionEnabled()
     val target = remember(seed, customAccent, backgroundColor, contentOpacity, imageBackground) {
         var palette = Monet.darkScheme(seed)
         if (imageBackground) palette = palette.copy(onSurfaceVariant = AppleGrey.Label.copy(alpha = 0.80f))
@@ -121,7 +124,8 @@ fun TwilightEchoTheme(darkTheme: Boolean = true, seed: Color = Monet.FallbackSee
     val accents = TwilightAccents(
         glow = animated(accentsTarget.glow), glowSoft = animated(accentsTarget.glowSoft),
         companion = animated(accentsTarget.companion), deep = animated(accentsTarget.deep), seed = effectiveSeed)
-    CompositionLocalProvider(LocalTwilightAccents provides accents, LocalContentSurfaceOpacity provides contentOpacity) {
+    CompositionLocalProvider(LocalTwilightAccents provides accents, LocalContentSurfaceOpacity provides contentOpacity,
+        LocalMotionEnabled provides motionEnabled) {
         MaterialTheme(colorScheme = scheme, typography = TwilightTypography, shapes = TwilightShapes) {
             // Pages draw on AmbientBackground rather than a Surface, so set the default text color here.
             CompositionLocalProvider(LocalContentColor provides scheme.onSurface, content = content)

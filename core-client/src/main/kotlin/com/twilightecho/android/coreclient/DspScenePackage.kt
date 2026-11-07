@@ -7,7 +7,6 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
-import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
 import java.util.zip.CRC32
@@ -20,13 +19,6 @@ import kotlin.math.roundToInt
 
 /** A file the phone cannot read as scenes at all; problems with single scenes are reported per scene. */
 class DspPackageException(message: String) : IllegalArgumentException(message)
-
-/** An impulse response a phone scene uses, described the way the desktop asset library stores it. */
-data class DspImpulseFile(val sha256: String, val byteSize: Long, val sampleRate: Int? = null, val channels: Int? = null) {
-    val assetId: String get() = "impulseResponse:$sha256"
-    /** The desktop's `assetArchivePath`: kind folder, the ID with unsafe characters replaced, and the extension. */
-    val archivePath: String get() = "assets/impulseResponse/impulseResponse_$sha256.wav"
-}
 
 class DspPackageExport(
     val manifest: JsonObject,
@@ -71,7 +63,7 @@ class DspSceneMerge(
 /**
  * Phone scenes as a desktop DSP profile (`.tedsp`, the desktop's `dspProfileArchive.ts`). Each scene's graph
  * carries the sound in the desktop's terms; phone settings with no place in a graph ride in a per-scene
- * `android` object, which the desktop drops. Import reads `.tedsp` manifests and the same JSON as a profile,
+ * `android` object, which the desktop preserves without applying. Import reads `.tedsp` manifests and the same JSON as a profile,
  * a scene list, one scene, or a desktop settings backup. Nothing is clamped silently: a scene whose EQ the
  * phone cannot hold is rejected with the parameters, and anything left out of an accepted scene is noted.
  */
@@ -154,7 +146,7 @@ object DspScenePackage {
                         put("fileName", file.archivePath.substringAfterLast('/'))
                         put("sha256", file.sha256)
                         put("byteSize", file.byteSize)
-                        put("mediaType", "audio/wav")
+                        put("mediaType", file.format.mediaType)
                         put("createdAt", stamp)
                         file.sampleRate?.let { put("sourceSampleRate", it) }
                         file.channels?.let { put("sourceChannels", it) }
@@ -222,6 +214,8 @@ object DspScenePackage {
             put("sampleRateFamilySync", dsp.sampleRateFamilySync)
             put("allowedSampleRates", JsonArray(dsp.allowedSampleRates.map(::JsonPrimitive)))
             put("playbackRate", dsp.playbackRate)
+            put("dsdOutputMode", dsp.dsdOutputMode)
+            put("dsdRatePolicy", dsp.dsdRatePolicy)
         })
     }
 
@@ -347,6 +341,16 @@ object DspScenePackage {
         }
         val graphic = eq?.graphic ?: savedGraphic ?: FLAT
         val defaults = base.dsp
+        val dsdMode = phone?.string("dsdOutputMode") ?: "pcm"
+        val dsdPolicy = phone?.string("dsdRatePolicy") ?: "pcm-fallback"
+        if (dsdMode !in setOf("pcm", "auto", "native", "dop") ||
+            dsdPolicy !in setOf("pcm-fallback", "exact", "downrate") ||
+            (phone != null && "dsdOutputMode" in phone && phone.string("dsdOutputMode") == null) ||
+            (phone != null && "dsdRatePolicy" in phone && phone.string("dsdRatePolicy") == null)) {
+            issues += "DSD 输出模式或倍率策略无效"
+            return null
+        }
+        if (dsdMode == "dop") notes += "DoP 需先在“DSD 输出”中确认当前 DAC 支持；场景不携带设备确认"
         if (phone != null && "usbPcmPassthrough" in phone && phone.bool("usbPcmPassthrough") == null) {
             issues += "USB 原样 PCM 请求无效"
             return null
@@ -395,6 +399,8 @@ object DspScenePackage {
                 continuitySampleRate = phone?.number("continuitySampleRate")?.takeIf { it in setOf(44100.0, 48000.0, 96000.0) }?.toInt()
                     ?: defaults.continuitySampleRate,
                 playbackRate = phone?.number("playbackRate")?.takeIf { it in 0.5..2.0 } ?: defaults.playbackRate,
+                dsdOutputMode = dsdMode,
+                dsdRatePolicy = dsdPolicy,
                 usbPcmPassthrough = phone?.bool("usbPcmPassthrough") ?: false,
                 sampleRateFamilySync = familySync,
                 allowedSampleRates = allowedRates.sorted()
@@ -475,7 +481,7 @@ object DspScenePackage {
             return CoreDspNode(id, type, enabled, JsonObject(params + ("impulseResponsePath" to JsonPrimitive(path))))
         }
         if (enabled || assetId != null || "impulseResponsePath" in source) {
-            notes += "${moduleName(type)}没有随文件提供的 WAV 脉冲响应，已关闭"
+            notes += "${moduleName(type)}没有随文件提供的可读取脉冲响应，已关闭"
         }
         enabled = false
         return CoreDspNode(id, type, enabled, JsonObject(params))
@@ -562,6 +568,25 @@ object DspPackageArchive {
 
     /** The manifest, or the scene JSON, and each asset extracted under the caller's temporary directory. */
     class Contents(val root: JsonElement, val files: Map<String, File>)
+
+    /** Verifies package IR identities and copies only files used by accepted scenes into app storage. */
+    fun importScenes(contents: Contents, base: CoreEqConfigView, directory: File,
+                     moduleName: (String) -> String = { it }): DspPackageImport {
+        val verified = DspScenePackage.assets(contents.root).mapNotNull { asset ->
+            val file = contents.files[asset.archivePath]
+            if (file == null || asset.kind != "impulseResponse" || asset.id != "impulseResponse:${asset.sha256}") return@mapNotNull null
+            val described = describeImpulseFile(file)?.takeIf { it.sha256 == asset.sha256 } ?: return@mapNotNull null
+            Triple(asset.id, file, File(directory, "${asset.sha256}.${described.format.extension}"))
+        }
+        val imported = DspScenePackage.import(contents.root, base,
+            verified.associate { (id, _, target) -> id to target.absolutePath }, moduleName)
+        val used = imported.scenes.flatMapTo(HashSet()) { it.impulseAssetIds }
+        directory.mkdirs()
+        verified.filter { it.first in used }.forEach { (_, file, target) ->
+            if (!target.isFile || target.length() != file.length()) file.copyTo(target, overwrite = true)
+        }
+        return imported
+    }
 
     /** Reads a `.tedsp` package or a scene JSON file. */
     fun read(input: InputStream, directory: File): Contents {
@@ -668,52 +693,6 @@ object DspPackageArchive {
         this.crc = crc
     }
 }
-
-/** Hash, size and format of a RIFF/WAVE impulse response; null once the file is gone or is not WAVE. */
-fun describeImpulseFile(file: File): DspImpulseFile? {
-    if (!file.isFile) return null
-    val digest = MessageDigest.getInstance("SHA-256")
-    val head = ByteArray(64 * 1024)
-    var headSize = 0
-    var size = 0L
-    file.inputStream().use { input ->
-        val buffer = ByteArray(64 * 1024)
-        while (true) {
-            val read = input.read(buffer)
-            if (read < 0) break
-            if (headSize < head.size) {
-                val copied = minOf(read, head.size - headSize)
-                System.arraycopy(buffer, 0, head, headSize, copied)
-                headSize += copied
-            }
-            digest.update(buffer, 0, read)
-            size += read
-        }
-    }
-    if (!isWave(head, headSize)) return null
-    var channels: Int? = null
-    var sampleRate: Int? = null
-    var offset = 12L
-    while (offset + 8 <= headSize) {
-        val at = offset.toInt()
-        val chunkSize = littleEndian(head, at + 4, 4)
-        if (String(head, at, 4, Charsets.US_ASCII) == "fmt " && at + 16 <= headSize) {
-            channels = littleEndian(head, at + 10, 2).toInt()
-            sampleRate = littleEndian(head, at + 12, 4).toInt()
-            break
-        }
-        offset += 8 + chunkSize + (chunkSize and 1L)
-    }
-    val sha256 = digest.digest().joinToString("") { "%02x".format(it) }
-    return DspImpulseFile(sha256, size, sampleRate?.takeIf { it > 0 }, channels?.takeIf { it > 0 })
-}
-
-/** The header the phone requires of impulse responses. */
-fun isWave(head: ByteArray, size: Int = head.size): Boolean =
-    size >= 12 && String(head, 0, 4, Charsets.US_ASCII) == "RIFF" && String(head, 8, 4, Charsets.US_ASCII) == "WAVE"
-
-private fun littleEndian(bytes: ByteArray, offset: Int, length: Int): Long =
-    (0 until length).fold(0L) { value, index -> value or ((bytes[offset + index].toLong() and 0xFF) shl (8 * index)) }
 
 private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 

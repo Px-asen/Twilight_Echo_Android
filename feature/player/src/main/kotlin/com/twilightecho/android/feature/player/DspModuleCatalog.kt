@@ -62,11 +62,11 @@ internal val dspModules = listOf(
         DspControl.Number("fallbackDb", "缺少标签时的增益", 0.0, -24.0, 24.0, "dB"),
         DspControl.Toggle("clip", "防止削波", true))),
     DspModuleSpec("crossfeed", "耳机交叉馈送", "混入少量对侧声道，缓解过度分离。", listOf(
-        DspControl.Choice("algorithm", "算法", "bs2b", listOf("custom" to "自定义", "bauer" to "Bauer", "bs2b" to "BS2B", "meier" to "Meier")),
+        DspControl.Choice("algorithm", "算法", "bs2b", listOf("custom" to "自定义", "bauer" to "Bauer（BS2B）", "bs2b" to "BS2B", "meier" to "Meier（BS2B 预设）")),
         DspControl.Number("strength", "强度", 0.3, 0.0, 1.0),
-        DspControl.Number("delayMs", "延迟", 0.35, 0.05, 2.0, "ms"),
-        DspControl.Number("cutoffHz", "截止频率", 700.0, 80.0, 4000.0, "Hz", true))),
-    DspModuleSpec("convolver", "卷积校正", "导入 WAV 脉冲响应，用于耳机或房间校正。", listOf(
+        DspControl.Number("delayMs", "自定义延迟", 0.35, 0.05, 2.0, "ms"),
+        DspControl.Number("cutoffHz", "自定义截止频率", 700.0, 80.0, 4000.0, "Hz", true))),
+    DspModuleSpec("convolver", "卷积校正", "导入 WAV、FLAC 或 AIFF 脉冲响应，用于耳机或房间校正。", listOf(
         DspControl.Number("wet", "湿声", 1.0, 0.0, 1.0), DspControl.Number("dry", "干声", 0.0, 0.0, 1.0),
         DspControl.Number("gainDb", "增益", 0.0, -60.0, 24.0, "dB"),
         DspControl.Number("delayMs", "延迟", 0.0, 0.0, 250.0, "ms"),

@@ -12,6 +12,9 @@ class AudioHeaderProbeTest {
     private fun le(value: Long, bytes: Int) = ByteArray(bytes) { (value ushr (8 * it)).toByte() }
     private fun be(value: Long, bytes: Int) = ByteArray(bytes) { (value ushr (8 * (bytes - 1 - it))).toByte() }
     private fun ascii(text: String) = text.toByteArray(Charsets.ISO_8859_1)
+    private fun wv(samples: Long, flags: Long, extra: ByteArray = ByteArray(0), high: Int = 0, blockSamples: Long = 1024) =
+        ascii("wvpk") + le(24L + extra.size, 4) + le(0x410, 2) + byteArrayOf(0, high.toByte()) + le(samples, 4) +
+            le(0, 4) + le(blockSamples, 4) + le(flags, 4) + le(0, 4) + extra
 
     @Test
     fun `FLAC STREAMINFO gives the exact length, after any ID3 tag`() {
@@ -57,20 +60,61 @@ class AudioHeaderProbeTest {
 
     @Test
     fun `WavPack counts 40-bit sample totals and rates outside the table`() {
-        fun block(samplesHigh: Int, samplesLow: Long, flags: Long, extra: ByteArray = ByteArray(0)) =
-            ascii("wvpk") + le(24L + extra.size, 4) + le(0x410, 2) + byteArrayOf(0, samplesHigh.toByte()) + le(samplesLow, 4) +
-                le(0, 4) + le(0, 4) + le(flags, 4) + le(0, 4) + extra
-        assertEquals(AudioHeader(600.0, 44100, null), probe(block(0, 26_460_000, 9L shl 23)))
+        assertEquals(AudioHeader(600.0, 44100, 16), probe(wv(26_460_000, (9L shl 23) or 1)))
         // 2^32 + 5 samples are written as 6 with an upper byte of 1.
-        assertEquals((4_294_967_296.0 + 5) / 96000, probe(block(1, 6, 13L shl 23))!!.durationSeconds, 0.0)
+        assertEquals((4_294_967_296.0 + 5) / 96000, probe(wv(6, 13L shl 23, high = 1))!!.durationSeconds, 0.0)
         // The sample-rate sub-block: ID 0x27 with the odd-size flag, two words holding three bytes.
         val rate = byteArrayOf((0x27 or 0x40).toByte(), 2) + le(50_000, 3) + byteArrayOf(0)
-        assertEquals(AudioHeader(10.0, 50_000, null), probe(block(0, 500_000, 15L shl 23, rate)))
-        assertNull(probe(block(0, 0xFFFFFFFFL, 9L shl 23)))
-        // DSD counts are not PCM samples.
-        assertNull(probe(block(0, 1000, (9L shl 23) or 0x80000000L)))
+        assertEquals(AudioHeader(10.0, 50_000, 8), probe(wv(500_000, 15L shl 23, rate)))
+        // Four-byte rates use only seven bits of their last byte.
+        val largeRate = byteArrayOf(0xA7.toByte(), 2, 0, 0) + le(0x81000000, 4)
+        assertEquals(AudioHeader(1.0, 16_777_216, 8), probe(wv(16_777_216, 15L shl 23, largeRate)))
+        assertNull(probe(wv(0xFFFFFFFFL, 9L shl 23)))
         assertNull(probe(ascii("OggS") + ByteArray(60)))
         assertNull(probe(ByteArray(0)))
+    }
+
+    @Test
+    fun `WavPack bit depth excludes container padding but keeps extended integer and floating data`() {
+        for ((stored, bits) in listOf(0L to 8, 1L to 16, 2L to 24, 3L to 32)) {
+            assertEquals(bits, probe(wv(44100, (9L shl 23) or stored))!!.bitDepth)
+        }
+        assertEquals(20, probe(wv(44100, (9L shl 23) or 2 or (4L shl 13)))!!.bitDepth)
+        assertEquals(32, probe(wv(44100, (9L shl 23) or 3 or 0x100))!!.bitDepth)
+        assertEquals(32, probe(wv(44100, (9L shl 23) or 3 or 0x80))!!.bitDepth)
+    }
+
+    @Test
+    fun `WavPack metadata after large payloads is read positionally within its block`() {
+        val payload = byteArrayOf(0xA1.toByte(), 0, 0x10, 0) + ByteArray(8192)
+        val rate = byteArrayOf(0x67, 2) + le(50_000, 3) + byteArrayOf(0)
+        val bytes = wv(500_000, 15L shl 23, payload + rate)
+        val reads = mutableListOf<Pair<Long, Int>>()
+        val result = AudioHeaderProbe.probe { offset, length ->
+            reads += offset to length
+            bytes.copyOfRange(offset.toInt(), minOf(bytes.size, offset.toInt() + length))
+        }
+        assertEquals(AudioHeader(10.0, 50_000, 8), result)
+        org.junit.Assert.assertTrue(reads.all { it.second <= 64 })
+        // A rate physically present after the declared block is not part of that block.
+        val outside = bytes.copyOf().apply { le(24L + payload.size, 4).copyInto(this, 4) }
+        assertNull(probe(outside))
+        assertNull(probe(bytes.copyOf(bytes.size - 2)))
+        val wrapper = wv(0, 0, byteArrayOf(0x21, 1, 0, 0), blockSamples = 0)
+        assertEquals(result, probe(wrapper + bytes))
+    }
+
+    @Test
+    fun `WavPack DSD publishes a one-bit clock and uses byte-frame totals for duration`() {
+        val dsd = byteArrayOf(0x0E, 1, 3, 0)
+        val flags = (12L shl 23) or 0x80000000L // 88.2 kHz * 8 bytes * 8 bits = DSD128.
+        assertEquals(AudioHeader(10.0, 5_644_800, 1, isDsd = true), probe(wv(7_056_000, flags, dsd)))
+        val customRate = byteArrayOf(0x67, 2) + le(48_000, 3) + byteArrayOf(0)
+        assertEquals(AudioHeader(10.0, 3_072_000, 1, isDsd = true),
+            probe(wv(3_840_000, (15L shl 23) or 0x80000000L, dsd + customRate)))
+        assertNull(probe(wv(1000, flags)))
+        assertNull(probe(wv(1000, flags, byteArrayOf(0x0E, 1, 31, 0))))
+        assertNull(probe(wv(1000, flags, byteArrayOf(0x0E, 1, 30, 0))))
     }
 
     @Test
@@ -79,7 +123,9 @@ class AudioHeaderProbeTest {
         val dsfChunk = ascii("DSD ") + le(28, 8) + le(10_000_000, 8) + le(0, 8)
         val fmtChunk = ascii("fmt ") + le(52, 8) + le(1, 4) + le(0, 4) + le(2, 4) + le(2, 4) +
             le(2_822_400, 4) + le(1, 4) + le(28_224_000, 8) + le(4096, 4) + le(0, 4)
-        assertEquals(AudioHeader(10.0, 2_822_400, 1), probe(dsfChunk + fmtChunk))
+        assertEquals(AudioHeader(10.0, 2_822_400, 1, isDsd = true), probe(dsfChunk + fmtChunk))
+        val msbFmt = fmtChunk.copyOf().apply { this[60 - 28] = 8 }
+        assertEquals(AudioHeader(10.0, 2_822_400, 1, isDsd = true), probe(dsfChunk + msbFmt))
 
         // DSDIFF (FRM8 / DSD ): 2 channels, 2 822 400 Hz, 20 seconds -> (20 * 2_822_400 * 2) / 8 = 14_112_000 bytes.
         fun dffChunk(id: String, body: ByteArray) = ascii(id) + be(body.size.toLong(), 8) + body
@@ -88,6 +134,6 @@ class AudioHeaderProbeTest {
         val prop = dffChunk("PROP", ascii("SND ") + fsSub + chnlSub)
         val dsdHeader = ascii("DSD ") + be(14_112_000L, 8)
         val dff = ascii("FRM8") + be(0, 8) + ascii("DSD ") + prop + dsdHeader
-        assertEquals(AudioHeader(20.0, 2_822_400, 1), probe(dff))
+        assertEquals(AudioHeader(20.0, 2_822_400, 1, isDsd = true), probe(dff))
     }
 }

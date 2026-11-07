@@ -133,13 +133,18 @@ class MediaButtonPlaybackTest {
         } finally {
             device.wakeUp()
             device.executeShellCommand("wm dismiss-keyguard")
-            client.executeCommand(CoreTypedCommand.Stop)
-            client.executeCommand(CoreTypedCommand.ReplaceQueue(tracks = queue,
-                startIndex = original.queue?.index?.coerceAtLeast(0) ?: 0, play = false))
+            if (queue.isEmpty()) clearTestPlaybackQueue(client)
+            else {
+                check(client.executeCommand(CoreTypedCommand.Stop).isSuccess)
+                check(client.executeCommand(CoreTypedCommand.ReplaceQueue(tracks = queue,
+                    startIndex = original.queue?.index?.coerceAtLeast(0) ?: 0, play = false)).isSuccess)
+            }
             original.playback?.let {
                 client.executeCommand(CoreTypedCommand.SetVolume(it.volume))
                 client.executeCommand(CoreTypedCommand.SetPlayMode(PlayMode.fromWireValue(it.playMode)))
-                client.executeCommand(CoreTypedCommand.Seek(it.position))
+                if (queue.isNotEmpty() && original.track != null) {
+                    check(client.executeCommand(CoreTypedCommand.Seek(it.position)).isSuccess)
+                }
             }
             if (oldMode is CoreOperatingMode.RemoteDesktopCore) host.selectPlaybackTarget(false)
             context.startActivity(Intent(context, MainActivity::class.java)

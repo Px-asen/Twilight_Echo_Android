@@ -11,6 +11,16 @@ class NcmSearchPresenterTest {
     private val calls = mutableListOf<Pair<String, JsonArray>>()
     private fun json(value: String) = Json.parseToJsonElement(value)
 
+    @Test fun clearingTheQueryRestoresSongsForTheNextSearch() = runTest {
+        val presenter = NcmSearchPresenter(backgroundScope, ::respond)
+        presenter.availability(true); presenter.active(true)
+        presenter.query("夜航"); presenter.category(NcmSearchCategory.ALBUMS); runCurrent()
+        presenter.query(" "); runCurrent()
+        assertEquals(NcmSearchCategory.SONGS, presenter.state.value.category)
+        assertFalse(presenter.state.value.searched)
+        assertTrue(presenter.state.value.collections.isEmpty())
+    }
+
     @Test fun collectionArtworkPrefersTheFullCoverAndRetainsSmallOnlyCompatibility() {
         val album = streamingCollection(json("""{"id":11,"name":"夜航","cover":"https://p1.music.126.net/full.jpg",
             "coverSmall":"https://p1.music.126.net/small.jpg"}""").jsonObject, "album")

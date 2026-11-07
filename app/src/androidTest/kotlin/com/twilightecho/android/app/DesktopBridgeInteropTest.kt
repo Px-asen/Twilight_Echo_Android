@@ -47,8 +47,8 @@ class DesktopBridgeInteropTest {
             rule.onNodeWithText("连接电脑 Core").performScrollTo().performClick()
             rule.waitUntil(15000) { (host.librarySource.value as? LibrarySource.Desktop)?.connected == true &&
                 host.libraryCoreClient.snapshot.value?.epoch?.startsWith("desktop-interop") == true }
+            rule.onNodeWithTag("coreOutputDesktop").performScrollTo().performClick()
             rule.onNodeWithTag("nav-LIBRARY").performClick()
-            rule.onNodeWithTag("targetDesktop").performClick()
             rule.waitUntil(15000) { host.primaryCoreClient.snapshot.value?.epoch?.startsWith("desktop-interop") == true }
             rule.waitUntil(15000) { rule.onAllNodes(librarySong("来自电脑的音乐")).fetchSemanticsNodes().isNotEmpty() }
             rule.onNode(librarySong("来自电脑的音乐")).assertIsDisplayed()
@@ -84,8 +84,9 @@ class DesktopBridgeInteropTest {
                 assertTrue(host.primaryCoreClient.snapshot.value!!.queue!!.occurrenceId!!.startsWith("desktop-entry:"))
             } finally { rule.runOnUiThread { mediaPlayer.release() } }
             rule.onNodeWithText("艺术家", substring = false).performClick()
-            rule.waitUntil(15000) { rule.onAllNodesWithTag("catalog-artist-1").fetchSemanticsNodes().isNotEmpty() }
-            rule.onNodeWithTag("catalog-artist-1").performClick()
+            rule.onNodeWithTag("artistGrid").assertExists()
+            // Explicit Catalog-source browsing remains available separately from merged artist collections.
+            rule.runOnUiThread { viewModel.onOpenEntity(CatalogEntity("artist-1", "artist", "共享艺术家")) }
             rule.waitUntil(15000) { rule.onAllNodesWithText("整理后的共享艺术家", substring = false).fetchSemanticsNodes().isNotEmpty() }
             rule.onNodeWithText("这段简介来自电脑已整理的音乐资料。", substring = false).performScrollTo().assertIsDisplayed()
             rule.onNodeWithTag("desktopMetadataArtwork").performScrollTo().assertIsDisplayed()

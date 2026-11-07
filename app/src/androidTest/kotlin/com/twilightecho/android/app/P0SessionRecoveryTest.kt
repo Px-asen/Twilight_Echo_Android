@@ -138,6 +138,33 @@ class P0SessionRecoveryTest {
         } finally { directory.deleteRecursively() }
     }
 
+    @Test fun queueClearRemovesTheNativeSelectionAndCannotRestoreItsDeletedFixture() = runBlocking {
+        val directory = File(context.cacheDir, "p1-empty-session-${System.nanoTime()}").apply { mkdirs() }
+        val file = File(directory, "source.flac")
+        instrumentation.context.assets.open("music/01-Golden-Hour.flac").use { input -> file.outputStream().use { input.copyTo(it) } }
+        try {
+            Session(directory).use { first ->
+                first.start()
+                first.command(CoreTypedCommand.ReplaceQueue(tracks = listOf(
+                    CoreTrackView("clear-session-source", title = "Queue cleanup", source = file.absolutePath, duration = 42.0)), play = false))
+                first.command(CoreTypedCommand.Play(1.0))
+                await { first.audio.getSnapshot().positionMs > 1100 }
+                clearTestPlaybackQueue(first.client)
+                assertEquals(-1, first.audio.getSnapshot().queueIndex)
+                assertEquals(0L, first.audio.getSnapshot().durationMs ?: 0L)
+            }
+            assertTrue(file.delete())
+            Session(directory).use { restored ->
+                restored.start()
+                val snapshot = restored.client.snapshot.value!!
+                assertNull(snapshot.track)
+                assertEquals(0, snapshot.queue?.total ?: 0)
+                assertEquals(-1, restored.audio.getSnapshot().queueIndex)
+                assertNull(snapshot.error)
+            }
+        } finally { directory.deleteRecursively() }
+    }
+
     private suspend fun await(condition: suspend () -> Boolean) {
         withTimeout(15000) { while (!condition()) delay(50) }
     }

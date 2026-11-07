@@ -1,6 +1,7 @@
 package com.twilightecho.android.nativeintegration
 
 import com.twilightecho.android.coreclient.*
+import com.twilightecho.android.nativeintegration.usb.AndroidUsbDirectHost
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 
@@ -31,6 +32,10 @@ internal fun nativeDspConfig(config: String, json: Json): String {
 /** Compile phone controls into the same serial graph consumed by the desktop engine. */
 internal fun nativeDspState(config: CoreEqConfigView, json: Json, revision: Long, outputConfig: String? = null): String {
     val dsp = config.dsp
+    require(dsp.dsdOutputMode in setOf("pcm", "auto", "native", "dop") &&
+        dsp.dsdRatePolicy in setOf("pcm-fallback", "exact", "downrate")) { "DSD 输出模式或倍率策略无效" }
+    require(dsp.dsdOutputMode != "dop" || !AndroidUsbDirectHost.isDirect(dsp.outputDeviceId) ||
+        dsp.dopConfirmedDeviceKey.isNotBlank()) { "请先在 DSD 输出中确认当前 DAC 支持 DoP" }
     require(dsp.eqMode in setOf("graphic", "parametric")) { "均衡器模式无效" }
     require(dsp.parametricBands.size <= 32 && dsp.parametricBands.all {
         it.frequency.isFinite() && it.frequency in 10.0..96000.0 && it.gain.isFinite() && it.gain in -24.0..24.0 &&
@@ -55,8 +60,8 @@ internal fun nativeDspState(config: CoreEqConfigView, json: Json, revision: Long
             put("crossfadeSeconds", dsp.crossfadeSeconds)
             put("crossfadeCurve", dsp.crossfadeCurve)
             put("crossfadeContent", dsp.crossfadeContent)
-            // AAudio is a PCM path; do not offer an unverified DoP/native DSD mode.
-            put("dsdOutputMode", "pcm")
+            put("dsdOutputMode", dsp.dsdOutputMode)
+            put("dsdRatePolicy", dsp.dsdRatePolicy)
         })
         put("graph", buildJsonObject {
             put("version", 2)
@@ -79,6 +84,9 @@ internal fun nativeDspState(config: CoreEqConfigView, json: Json, revision: Long
 
 internal fun nativeOutputConfig(config: CoreEqConfigView, deviceSampleRates: List<Int> = emptyList()): String {
     val dsp = config.dsp
+    require(!AndroidUsbDirectHost.isDirect(dsp.outputDeviceId) || !dsp.usbPcmPassthrough) {
+        "USB 直连独占与系统原样 PCM 是两种输出方式，请先关闭系统原样 PCM"
+    }
     require(dsp.allowedSampleRates.size <= 32 && dsp.allowedSampleRates.all { it in PcmSampleRates.range } &&
         dsp.allowedSampleRates.distinct().size == dsp.allowedSampleRates.size) { "允许采样率集合无效" }
     require(!dsp.sampleRateFamilySync || (config.bitPerfect && dsp.outputStage.targetSampleRate == 0)) {
@@ -114,4 +122,36 @@ internal fun nativeOutputConfig(config: CoreEqConfigView, deviceSampleRates: Lis
         put("allowedSampleRates", JsonArray(dsp.allowedSampleRates.sorted().map(::JsonPrimitive)))
         put("deviceSampleRates", JsonArray(rates.map(::JsonPrimitive)))
     }.toString()
+}
+
+internal data class NativeOutputRoute(val backend: String, val device: String)
+
+internal fun nativeOutputRoute(config: CoreEqConfigView): NativeOutputRoute =
+    if (AndroidUsbDirectHost.isDirect(config.dsp.outputDeviceId)) NativeOutputRoute("usb-direct", config.dsp.outputDeviceId)
+    else NativeOutputRoute("oboe", config.dsp.outputDeviceId + if (config.dsp.exclusive) ":exclusive" else "")
+
+/** Route setters prepare native desired state; a rejected graph must not leave that route armed. */
+internal fun applyNativeOutputRoute(previous: NativeOutputRoute, next: NativeOutputRoute,
+    pause: () -> Unit, select: (NativeOutputRoute) -> Unit, apply: () -> Unit, restore: () -> Unit) {
+    if (previous == next) {
+        apply()
+        return
+    }
+    if (previous.backend == "usb-direct" || next.backend == "usb-direct") pause()
+    try {
+        select(next)
+        apply()
+    } catch (error: Exception) {
+        try {
+            // Recovery restores settings, never the sound of a rejected route change.
+            pause()
+            select(previous)
+            restore()
+        } catch (recovery: Exception) {
+            throw java.io.IOException("${error.message}；恢复原音频设置失败：${recovery.message}", error).apply {
+                addSuppressed(recovery)
+            }
+        }
+        throw error
+    }
 }

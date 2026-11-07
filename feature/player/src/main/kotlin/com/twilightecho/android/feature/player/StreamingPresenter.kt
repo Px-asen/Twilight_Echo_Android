@@ -30,12 +30,15 @@ data class StreamingDetail(val key: String, val title: String, val subtitle: Str
     val collection: StreamingCollection? = null, val recommendation: StreamingRecommendation? = null,
     val group: StreamingLibraryGroup? = null, val tracks: List<CoreTrackView> = emptyList(),
     val collections: List<StreamingCollection> = emptyList(), val total: Int = 0, val offset: Int = 0,
+    val pageSize: Int = 100,
     val nextOffset: Int? = null, val loading: Boolean = true, val error: String? = null,
     val artistAlbums: Boolean = false, val artistProfile: StreamingArtistProfile? = null,
     val query: String = "", val sort: CollectionSort = CollectionSort(),
     /** A complete occurrence list, loaded only when whole-playlist search or sorting is requested. */
     val playlistTracks: List<CoreTrackView>? = null, val matchingTotal: Int? = null,
-    val loadingPlaylist: Boolean = false)
+    val loadingPlaylist: Boolean = false,
+    /** Upstream count, which can include entries absent from the returned occurrence IDs. */
+    val reportedTotal: Int? = null)
 data class StreamingUiState(val access: StreamingAccess = StreamingAccess.LOADING, val nickname: String = "",
     val accountId: String? = null, val accountError: String? = null,
     val sections: Map<StreamingRecommendation, StreamingSection> = emptyMap(),
@@ -189,7 +192,8 @@ internal class StreamingPresenter(private val scope: CoroutineScope,
                 val all = detail.playlistTracks
                 val removed = (all ?: detail.tracks).count { it.ncmSongId == track.ncmSongId }
                 val updated = detail.copy(tracks = detail.tracks.filterNot { it.ncmSongId == track.ncmSongId },
-                    playlistTracks = all?.filterNot { it.ncmSongId == track.ncmSongId }, total = (detail.total - removed).coerceAtLeast(0))
+                    playlistTracks = all?.filterNot { it.ncmSongId == track.ncmSongId }, total = (detail.total - removed).coerceAtLeast(0),
+                    reportedTotal = detail.reportedTotal?.let { (it - removed).coerceAtLeast(0) })
                 if (all != null) projectPlaylist(updated) else updated
             }
         }) }
@@ -375,10 +379,11 @@ internal class StreamingPresenter(private val scope: CoroutineScope,
                 val result = when {
                     wholePlaylist -> readWholePlaylist(target)
                     target.collection?.kind == "playlist" -> {
-                        val raw = call("readPlaylistImportPage", JsonPrimitive(target.collection.id), JsonPrimitive(offset), JsonPrimitive(100)).jsonObject
-                        target.copy(tracks = raw["songs"].array().mapIndexed { index, song -> providerTrack(song.jsonObject)
+                        val raw = call("fetchPlaylistTracksPage", JsonPrimitive(target.collection.id), JsonPrimitive(offset), JsonPrimitive(100)).jsonObject
+                        target.copy(tracks = raw["tracks"].array().mapIndexed { index, song -> providerTrack(song.jsonObject)
                             .copy(queueEntryId = "provider-playlist-${target.collection.id}-$offset-$index") },
-                            total = raw["total"].number(), nextOffset = raw["nextOffset"].number().takeIf { raw["hasMore"]?.jsonPrimitive?.booleanOrNull == true })
+                            total = raw["total"].number(), reportedTotal = (raw["reportedTotal"] as? JsonPrimitive)?.intOrNull,
+                            nextOffset = raw["nextOffset"].number().takeIf { raw["hasMore"]?.jsonPrimitive?.booleanOrNull == true })
                     }
                     target.collection?.kind == "album" -> withTracks(target, call("fetchAlbumTracks", JsonPrimitive(target.collection.id)))
                     target.collection?.kind == "artist" -> {
@@ -431,8 +436,12 @@ internal class StreamingPresenter(private val scope: CoroutineScope,
             currentCoroutineContext().ensureActive()
             val liked = target.group == StreamingLibraryGroup.LIKED
             val raw = if (liked) call("fetchLikedTracksPage", JsonPrimitive(offset), JsonPrimitive(100)).jsonObject
-                else call("readPlaylistImportPage", JsonPrimitive(target.collection!!.id), JsonPrimitive(offset), JsonPrimitive(100)).jsonObject
-            val songs = raw[if (liked) "tracks" else "songs"].array()
+                else call("fetchPlaylistTracksPage", JsonPrimitive(target.collection!!.id), JsonPrimitive(offset), JsonPrimitive(100)).jsonObject
+            val songs = raw["tracks"].array()
+            val reportedTotal = (raw["reportedTotal"] as? JsonPrimitive)?.intOrNull
+            check(reportedTotal == null || reportedTotal == raw["total"].number()) {
+                "网易云未返回完整歌单，暂时无法搜索或排序，请刷新后重试"
+            }
             all += songs.mapIndexed { index, item -> providerTrack(item.jsonObject)
                 .copy(queueEntryId = "provider-${target.key}-$offset-$index") }
             total = raw["total"].number()
@@ -445,7 +454,7 @@ internal class StreamingPresenter(private val scope: CoroutineScope,
             offset = next
         } while (true)
         if (target.collection?.kind == "playlist") check(all.size == total) { "歌单尚未完整载入，请重试" }
-        return target.copy(playlistTracks = all, total = total)
+        return target.copy(playlistTracks = all, total = total, reportedTotal = null)
     }
 
     private fun projectPlaylist(target: StreamingDetail): StreamingDetail {
