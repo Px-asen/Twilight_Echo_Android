@@ -33,5 +33,6 @@ include(
     ":ui",
     ":feature:player",
     ":app",
-    ":plugin-host"
+    ":plugin-host",
+    ":third-party:quickjs-android"
 )

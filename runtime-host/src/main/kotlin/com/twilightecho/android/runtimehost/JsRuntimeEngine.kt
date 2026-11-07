@@ -21,7 +21,7 @@ interface JsRuntimeEngine : Closeable {
 }
 
 /**
- * Production QuickJS implementation backed by `app.cash.quickjs:quickjs-android`.
+ * Production QuickJS implementation backed by the source-built Cash QuickJS 0.9.2 module.
  * Must be created, accessed, and closed exclusively on `CoreRuntimeThreadDispatcher`.
  */
 class CashQuickJsRuntimeEngine(
