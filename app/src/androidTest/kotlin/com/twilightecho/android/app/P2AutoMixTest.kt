@@ -26,10 +26,11 @@ class P2AutoMixTest {
 
     @Test fun realModelsPrepareSafFileTransitionAndCancelWithoutBlockingTransport() = transition(null)
     @Test fun realModelsKeepMinimumPhaseAfterSafTransition() = transition("minimum-smooth")
+    @Test fun sleepBoundaryCancelsASubmittedRealAutoMixPlanAndPausesAtEof() = transition(null, sleepAtEnd = true)
 
-    private fun transition(phase: String?) = runBlocking {
+    private fun transition(phase: String?, sleepAtEnd: Boolean = false) = runBlocking {
         val directory = File(context.cacheDir, "p2-automix-${System.nanoTime()}").apply { mkdirs() }
-        val reports = File(context.getExternalFilesDir(null), if (phase == null) "p2-automix" else "p2-minimum-automix").apply { mkdirs() }
+        val reports = File(context.getExternalFilesDir(null), if (sleepAtEnd) "sleep-automix" else if (phase == null) "p2-automix" else "p2-minimum-automix").apply { mkdirs() }
         val next = File(directory, "next.flac").also { file -> instrumentation.context.assets.open("music/02-A-Quiet-Return.flac").use { input -> file.outputStream().use { input.copyTo(it) } } }
         val resolver = context.contentResolver
         val uri = checkNotNull(resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, ContentValues().apply {
@@ -97,6 +98,21 @@ class P2AutoMixTest {
             assertTrue(ready.autoMixPlanId > 0)
             assertFalse(audio.submitAutoMix(ready.autoMixPlanId + 1))
             assertTrue(audio.submitAutoMix(ready.autoMixPlanId))
+            if (sleepAtEnd) {
+                assertTrue(audio.setPauseAtTrackEnd(true))
+                audio.play(null)
+                await(25000) {
+                    val snapshot = audio.getSnapshot()
+                    assertEquals("The successor must never be selected", 0, snapshot.queueIndex)
+                    assertNotEquals("A sleep boundary must block the submitted mix", "mixing", snapshot.autoMixState)
+                    snapshot.state == "paused" && snapshot.positionMs >= 41_000
+                }
+                val paused = audio.getSnapshot()
+                assertEquals(1.0, paused.volume, 0.001)
+                File(reports, "sleep-boundary.txt").writeText("submittedPlan=${ready.autoMixPlanId}\npaused=$paused\n")
+                assertTrue(audio.setPauseAtTrackEnd(false))
+                return@runBlocking
+            }
             // POSIX cannot deny other writers. An observed change while Armed
             // must revoke the plan, without changing the paused transport.
             java.io.RandomAccessFile(next, "rw").use { file ->

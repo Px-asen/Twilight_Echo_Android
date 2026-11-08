@@ -108,6 +108,7 @@ class CorePortBridge(
                 engine.play(position)
             }
             "pause" -> engine.pause()
+            "setPauseAtTrackEnd" -> return JsonPrimitive(engine.setPauseAtTrackEnd((args["enabled"] as? JsonPrimitive)?.booleanOrNull ?: invalid("enabled must be a boolean")))
             "stop" -> engine.stop()
             "seek" -> engine.seek(args.requireLong("positionMs").coerceAtLeast(0L))
             "setVolume" -> {

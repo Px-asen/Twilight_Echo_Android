@@ -6,11 +6,13 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -32,7 +34,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
@@ -270,19 +274,38 @@ fun TagChip(text: String, modifier: Modifier = Modifier, highlighted: Boolean = 
 }
 
 /** Square or round artwork with title and subtitle beneath, for carousels and grids. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ArtworkTile(artwork: TrackArtworkVisual, title: String, subtitle: String?, onClick: () -> Unit,
-    modifier: Modifier = Modifier, round: Boolean = false, centered: Boolean = false) {
+    modifier: Modifier = Modifier, round: Boolean = false, centered: Boolean = false,
+    onLongClick: (() -> Unit)? = null, onLongClickLabel: String? = null, badge: String? = null) {
     val shape = if (round) CircleShape else RoundedCornerShape(16.dp)
     val interaction = remember { MutableInteractionSource() }
+    val haptics = LocalHapticFeedback.current
+    val click = if (onLongClick == null) {
+        Modifier.clickable(interactionSource = interaction, indication = LocalIndication.current, role = Role.Button, onClick = onClick)
+    } else {
+        Modifier.combinedClickable(interactionSource = interaction, indication = LocalIndication.current,
+            role = Role.Button, onClick = onClick, onLongClickLabel = onLongClickLabel,
+            onLongClick = {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onLongClick()
+            })
+    }
     // Bottom padding keeps the subtitle clear of the rounded corner of the click/ripple clip.
     Column(modifier.tactilePress(interaction, pressedScale = 0.96f)
         .clip(RoundedCornerShape(16.dp))
-        .clickable(interactionSource = interaction, indication = LocalIndication.current, role = Role.Button, onClick = onClick)
+        .then(click)
         .padding(bottom = 6.dp),
         horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start) {
-        ArtworkImage(artwork, Modifier.fillMaxWidth().aspectRatio(1f).clip(shape)
-            .border(1.dp, Color.White.copy(alpha = 0.06f), shape), ContentScale.Crop)
+        Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
+            ArtworkImage(artwork, Modifier.matchParentSize().clip(shape)
+                .border(1.dp, Color.White.copy(alpha = 0.06f), shape), ContentScale.Crop)
+            if (badge != null) Text(badge,
+                Modifier.align(Alignment.TopStart).padding(8.dp).clip(RoundedCornerShape(50))
+                    .background(Color.Black.copy(alpha = 0.72f)).padding(horizontal = 8.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelMedium, color = Color.White, maxLines = 1)
+        }
         Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(top = 10.dp))
         if (subtitle != null) SupportingText(subtitle, Modifier.padding(top = 1.dp), maxLines = 1)

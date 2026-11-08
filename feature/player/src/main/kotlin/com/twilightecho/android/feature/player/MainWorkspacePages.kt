@@ -34,6 +34,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,6 +71,7 @@ private fun greeting(): String = when (LocalTime.now().hour) {
 internal fun HomeTabScreen(state: PlayerUiState, actions: PlayerActions) {
     val streaming = state.streaming
     val open = actions.streaming
+    val pinnedIds = state.preferences.homePlaylistPinsFor(NCM_PLUGIN_ID, streaming.accountId)
     val (own, collected) = remember(streaming.playlists) { streaming.playlists.partition { it.owned == true } }
     var creating by rememberSaveable { mutableStateOf(false) }
     LazyColumn(contentPadding = PaddingValues(bottom = LocalDockInset.current + 24.dp),
@@ -88,7 +91,8 @@ internal fun HomeTabScreen(state: PlayerUiState, actions: PlayerActions) {
                 state = state.providerHome,
                 currentTrackId = state.currentTrack?.id,
                 isPlaying = state.playbackButtonPlaying,
-                actions = actions.providerHome
+                actions = actions.providerHome,
+                pinnedIds = state.preferences.homePlaylistPinsFor(state.providerHome.pluginId, state.providerHome.profile?.userId)
             )
             return@LazyColumn
         }
@@ -105,16 +109,17 @@ internal fun HomeTabScreen(state: PlayerUiState, actions: PlayerActions) {
                 EmptyState("歌单未载入", libraryError, actionLabel = "重试", onAction = open.refresh)
             }
             else -> {
-                item(key = "own-playlists", contentType = "shelf") { PlaylistShelf("我的歌单", own, open, "home-own",
+                item(key = "own-playlists", contentType = "shelf") { HomePlaylistShelf("我的歌单", own, pinnedIds,
+                    open.collection, open.togglePlaylistPin, "home-own",
                     more = { open.group(StreamingLibraryGroup.CREATED) }, create = { creating = true }) }
                 if (collected.isNotEmpty()) item(key = "collected-playlists", contentType = "shelf") {
-                    PlaylistShelf("收藏的歌单", collected, open, "home-collected",
+                    HomePlaylistShelf("收藏的歌单", collected, pinnedIds, open.collection, open.togglePlaylistPin, "home-collected",
                         more = { open.group(StreamingLibraryGroup.PLAYLISTS) })
                 }
             }
         }
         if (streaming.recommendedPlaylists.isNotEmpty()) item(key = "recommended-playlists", contentType = "shelf") {
-            PlaylistShelf("推荐歌单", streaming.recommendedPlaylists, open, "home-recommended")
+            HomePlaylistShelf("推荐歌单", streaming.recommendedPlaylists, pinnedIds, open.collection, open.togglePlaylistPin, "home-recommended")
         }
     }
     if (creating) StreamingPlaylistNameDialog({ creating = false }) { name ->
@@ -165,17 +170,37 @@ private fun HomeShortcut(icon: ImageVector, tint: Color, title: String, subtitle
 
 /** A row of playlist covers. The title opens the whole list when there is one; [create] ends the row with a new playlist. */
 @Composable
-private fun PlaylistShelf(title: String, playlists: List<StreamingCollection>, actions: StreamingActions, tag: String,
-    more: (() -> Unit)? = null, create: (() -> Unit)? = null) {
-    val uniquePlaylists = remember(playlists) { playlists.distinctBy { it.id } }
+internal fun HomePlaylistShelf(title: String, playlists: List<StreamingCollection>, pinnedIds: List<String>,
+    onOpen: (StreamingCollection) -> Unit, onTogglePin: (StreamingCollection) -> Unit, tag: String,
+    more: (() -> Unit)? = null, create: (() -> Unit)? = null,
+    itemTagPrefix: String = "home-playlist",
+    subtitle: (StreamingCollection) -> String? = { it.count.takeIf { count -> count > 0 }?.let { count -> "$count 首" } }) {
+    val uniquePlaylists = remember(playlists, pinnedIds) { orderHomePlaylists(playlists, pinnedIds) }
+    val listState = rememberLazyListState()
+    var revealPin by remember { mutableStateOf(false) }
+    val motionEnabled = rememberMotionEnabled()
+    LaunchedEffect(pinnedIds) {
+        if (revealPin) {
+            if (motionEnabled) listState.animateScrollToItem(0) else listState.scrollToItem(0)
+            revealPin = false
+        }
+    }
     val heading = Modifier.padding(horizontal = 20.dp).padding(top = 24.dp)
     if (more != null) SectionLink(title, more, heading)
     else SectionHeading(title, modifier = heading.padding(vertical = 6.dp))
     LazyRow(Modifier.padding(top = 8.dp).testTag(tag), contentPadding = PaddingValues(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        state = listState, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         items(uniquePlaylists, key = { it.id }, contentType = { "playlist" }) { item ->
-            ArtworkTile(rememberStreamingArtwork(item, size = 512, extractColors = false), item.title, item.count.takeIf { it > 0 }?.let { "$it 首" },
-                { actions.collection(item) }, Modifier.width(148.dp).testTag("home-playlist-${item.id}"))
+            val pinned = item.id in pinnedIds
+            ArtworkTile(rememberStreamingArtwork(item, size = 512, extractColors = false), item.title, subtitle(item),
+                { onOpen(item) }, Modifier.width(148.dp).testTag("$itemTagPrefix-${item.id}")
+                    .semantics { stateDescription = if (pinned) "已置顶" else "未置顶" },
+                onLongClick = {
+                    revealPin = !pinned
+                    onTogglePin(item)
+                },
+                onLongClickLabel = if (pinned) "取消置顶" else "置顶歌单",
+                badge = if (pinned) "置顶" else null)
         }
         if (create != null) item(key = "create", contentType = "create") {
             val createInteraction = remember { MutableInteractionSource() }
@@ -191,6 +216,12 @@ private fun PlaylistShelf(title: String, playlists: List<StreamingCollection>, a
             }
         }
     }
+}
+
+/** Keep the provider's order for all unpinned playlists, including after a pin is removed. */
+internal fun orderHomePlaylists(playlists: List<StreamingCollection>, pinnedIds: List<String>): List<StreamingCollection> {
+    val ranks = pinnedIds.withIndex().associate { it.value to it.index }
+    return playlists.distinctBy { it.id }.sortedBy { ranks[it.id] ?: Int.MAX_VALUE }
 }
 
 /** Three bars that bounce while playing and rest flat when paused. */

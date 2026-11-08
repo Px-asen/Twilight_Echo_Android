@@ -14,6 +14,7 @@ import com.twilightecho.android.coreclient.CoreEqConfigView
 import com.twilightecho.android.coreclient.CoreAudioEditReceipt
 import com.twilightecho.android.coreclient.commitAudioEdit
 import com.twilightecho.android.coreclient.withSavedDspScene
+import com.twilightecho.android.coreclient.toggleHomePlaylistPin
 import com.twilightecho.android.coreclient.CoreDspConfig
 import com.twilightecho.android.coreclient.CoreDspStatus
 import com.twilightecho.android.coreclient.CoreDspScene
@@ -155,6 +156,10 @@ enum class SearchFilterCategory(val label: String) {
 }
 
 data class PlayerUiState(
+    val sleepTimer: com.twilightecho.android.coreclient.CoreSleepTimerState = com.twilightecho.android.coreclient.CoreSleepTimerState(),
+    val sleepTimerOpen: Boolean = false,
+    val sleepTimerBusy: Boolean = false,
+    val sleepTimerError: String? = null,
     val epoch: String = "epoch-boot",
     val sequence: Long = 0L,
     val queueRevision: Long = 0L,
@@ -350,7 +355,8 @@ class PlayerViewModel(
     }
     internal val providerSearchPresenter = ProviderSearchPresenter(viewModelScope, playbackHost.plugins::call)
     // The phone's own songs; computer songs come from the lists the playback host remembers per computer.
-    private val libraryLoader = LibraryContentLoader(viewModelScope, search = { playbackHost.phoneLibraryClient.searchTracks(it) })
+    private val libraryLoader = LibraryContentLoader(viewModelScope, awaitReady = playbackHost::awaitStarted,
+        search = { playbackHost.phoneLibraryClient.searchTracks(it) })
     private val desktopLibrary = DesktopLibraryPresenter(viewModelScope, playbackHost.desktopLibrary, ::desktopArtwork)
     private val libraryArtist = LibraryArtistPresenter(viewModelScope) { artist ->
         val online = playbackHost.connectedDesktops.value
@@ -494,7 +500,23 @@ class PlayerViewModel(
     private val attemptedAutoLyricsTrackIds: MutableSet<String> =
         java.util.Collections.synchronizedSet(LinkedHashSet())
 
+    fun onSleepTimerOpen(open: Boolean) { _uiState.update { it.copy(sleepTimerOpen = open, sleepTimerError = null) } }
+    fun onStartSleepCountdown(minutes: Int, finish: Boolean) = sleepEdit { playbackHost.sleepTimer.countdown(minutes, finish) }
+    fun onStartSleepAtTime(hour: Int, minute: Int, finish: Boolean) = sleepEdit { playbackHost.sleepTimer.atTime(hour, minute, finish) }
+    fun onCancelSleepTimer() = sleepEdit { playbackHost.sleepTimer.cancel() }
+    private fun sleepEdit(action: suspend () -> Unit) {
+        if (_uiState.value.sleepTimerBusy) return
+        _uiState.update { it.copy(sleepTimerBusy = true, sleepTimerError = null) }
+        viewModelScope.launch {
+            try { playbackHost.awaitStarted(); action() }
+            catch (cancel: CancellationException) { throw cancel }
+            catch (error: Exception) { _uiState.update { it.copy(sleepTimerError = error.message ?: "定时设置失败，请重试") } }
+            finally { _uiState.update { it.copy(sleepTimerBusy = false) } }
+        }
+    }
+
     init {
+        viewModelScope.launch { playbackHost.sleepTimer.state.collect { timer -> _uiState.update { it.copy(sleepTimer = timer) } } }
         pluginPresenter.onChanged = {
             streamingPresenter.refreshAccount()
             providerHomePresenter.refreshActive(force = true)
@@ -720,7 +742,11 @@ class PlayerViewModel(
         }
         viewModelScope.launch {
             playbackHost.phoneLibraryClient.snapshot.collect { snapshot ->
-                if (snapshot == null) return@collect
+                if (snapshot == null) {
+                    // Observe startup failure even if Core never publishes its first snapshot.
+                    libraryLoader.refresh()
+                    return@collect
+                }
                 val revision = "${snapshot.epoch}:${snapshot.libraryRevision}"
                 if (phoneLibraryRevision != revision) {
                     phoneLibraryRevision = revision
@@ -1423,6 +1449,16 @@ class PlayerViewModel(
         val key = providerSortKey(home.pluginId, home.profile?.userId, detail.key)
         playbackHost.userPreferences.update { it.copy(collectionSorts = it.collectionSorts + (key to sort)) }
         providerHomePresenter.playlistSort(sort)
+    }
+
+    internal fun onToggleStreamingPlaylistPin(playlist: StreamingCollection) {
+        val accountId = streamingPresenter.state.value.accountId
+        playbackHost.userPreferences.update { it.toggleHomePlaylistPin(NCM_PLUGIN_ID, accountId, playlist.id) }
+    }
+
+    internal fun onToggleProviderHomePlaylistPin(playlist: StreamingCollection) {
+        val home = providerHomePresenter.state.value
+        playbackHost.userPreferences.update { it.toggleHomePlaylistPin(home.pluginId, home.profile?.userId, playlist.id) }
     }
 
     internal fun onSelectHomeProvider(pluginId: String) {

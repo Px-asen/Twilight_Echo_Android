@@ -111,10 +111,10 @@ internal fun ImmersiveNowPlayingScreen(state: PlayerUiState, actions: PlayerActi
     val immersive = immersiveRequested && state.isLyricsMode && hasLyrics
     var touches by remember { mutableIntStateOf(0) }
     val accessibility = LocalContext.current.getSystemService(AccessibilityManager::class.java)
-    LaunchedEffect(state.isLyricsMode, immersive, touches, state.isPlaying, hasLyrics, moreOpen, state.isQueueDrawerOpen) {
+    LaunchedEffect(state.isLyricsMode, immersive, touches, state.isPlaying, hasLyrics, moreOpen, state.isQueueDrawerOpen, state.sleepTimerOpen) {
         if (!state.isLyricsMode) { immersiveRequested = false; return@LaunchedEffect }
         // Controls never vanish under a screen reader, where they cannot be found by sight again.
-        if (immersive || !state.isPlaying || !hasLyrics || moreOpen || state.isQueueDrawerOpen ||
+        if (immersive || !state.isPlaying || !hasLyrics || moreOpen || state.isQueueDrawerOpen || state.sleepTimerOpen ||
             accessibility?.isTouchExplorationEnabled == true) return@LaunchedEffect
         delay(LyricsMotionSpec.IdleImmersiveMillis)
         immersiveRequested = true
@@ -147,6 +147,13 @@ internal fun ImmersiveNowPlayingScreen(state: PlayerUiState, actions: PlayerActi
                             }
                             PressableIcon(TwilightIcons.More, "更多播放操作", { moreOpen = true }, iconSize = 22.dp)
                         }
+                    }
+                }
+                if (!immersive && state.sleepTimer.timer != null) {
+                    TextButton({ actions.sleepTimerOpen(true) }, modifier = Modifier.align(Alignment.CenterHorizontally).testTag("playerSleepTimer")) {
+                        Icon(TwilightIcons.Sleep, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text((if (state.operatingMode is CoreOperatingMode.RemoteDesktopCore) "此手机 · " else "") + sleepTimerLabel(state.sleepTimer.timer))
                     }
                 }
                 AnimatedContent(
@@ -199,6 +206,7 @@ internal fun ImmersiveNowPlayingScreen(state: PlayerUiState, actions: PlayerActi
             Spacer(Modifier.height(8.dp))
             if (track.ncmSongId != null && state.streaming.access == StreamingAccess.READY)
                 SheetAction(TwilightIcons.Plus, "加入歌单") { moreOpen = false; picking = true }
+            SheetAction(TwilightIcons.Sleep, "睡眠与定时", sleepTimerLabel(state.sleepTimer.timer)) { moreOpen = false; actions.sleepTimerOpen(true) }
             SheetAction(TwilightIcons.Equalizer, "音频详情与 DSP") { moreOpen = false; openAudio() }
             if (state.operatingMode is CoreOperatingMode.StandaloneLocal) {
                 SheetAction(TwilightIcons.Bookmark, "添加当前位置书签", formatDurationSeconds(LocalPlayerProgress.current.positionSeconds.value)) {

@@ -22,6 +22,7 @@ internal data class LibraryContent(
 internal class LibraryContentLoader(
     private val scope: CoroutineScope,
     private val pageSearch: (suspend (String, Int) -> Result<CoreLibrarySearchPage>)? = null,
+    private val awaitReady: suspend () -> Unit = {},
     private val search: suspend (String) -> Result<CoreLibrarySearchPage>
 ) {
     private val mutable = MutableStateFlow(LibraryContent())
@@ -44,7 +45,7 @@ internal class LibraryContentLoader(
         libraryJob?.cancel()
         mutable.update { it.copy(loading = true, error = null) }
         libraryJob = scope.launch {
-            val result = pageSearch?.invoke("", offset) ?: search("")
+            val result = loadPage("", offset)
             if (origin != source || request != libraryRequest) return@launch
             result.fold(
                 onSuccess = { page ->
@@ -75,7 +76,7 @@ internal class LibraryContentLoader(
         if (value.isBlank()) return
         searchJob = scope.launch {
             if (debounce) delay(180)
-            val result = pageSearch?.invoke(value, offset) ?: search(value)
+            val result = loadPage(value, offset)
             if (origin != source || request != searchRequest) return@launch
             result.fold(
                 onSuccess = { page -> mutable.update { it.copy(results = page.items, searching = false,
@@ -85,6 +86,16 @@ internal class LibraryContentLoader(
                 } }
             )
         }
+    }
+
+    private suspend fun loadPage(query: String, offset: Int): Result<CoreLibrarySearchPage> = try {
+        // Core can publish snapshots before its library queries are ready.
+        awaitReady()
+        pageSearch?.invoke(query, offset) ?: search(query)
+    } catch (cancel: CancellationException) {
+        throw cancel
+    } catch (error: Exception) {
+        Result.failure(error)
     }
 }
 
@@ -186,6 +197,10 @@ internal fun sourceQualityLabel(state: PlayerUiState): String? {
 
 /** Event boundary for the complete UI. Previews and tests supply only the actions they exercise. */
 data class PlayerActions(
+    val sleepTimerOpen: (Boolean) -> Unit = {},
+    val startSleepCountdown: (Int, Boolean) -> Unit = { _, _ -> },
+    val startSleepAtTime: (Int, Int, Boolean) -> Unit = { _, _, _ -> },
+    val cancelSleepTimer: () -> Unit = {},
     val offlineDownloadsOpen: (Boolean) -> Unit = {},
     val downloadTrack: (CoreTrackView) -> Unit = {},
     val offlineDownloadAction: (String, String) -> Unit = { _, _ -> },

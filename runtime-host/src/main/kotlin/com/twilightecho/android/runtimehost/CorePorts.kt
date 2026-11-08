@@ -217,6 +217,7 @@ sealed class AudioEvent {
 }
 
 interface AudioEnginePort : Closeable {
+    suspend fun setPauseAtTrackEnd(enabled: Boolean): Boolean = false
     suspend fun load(source: AudioSourceDescriptor)
     suspend fun play(startTimeSeconds: Double? = null)
     suspend fun pause()

@@ -17,6 +17,21 @@ import androidx.compose.ui.unit.dp
  * Other icons retain the custom 24x24 grid and rounded strokes.
  */
 object TwilightIcons {
+    val Sleep: ImageVector by lazy {
+        strokeIcon("TwilightSleep") {
+            path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.85f,
+                strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+                moveTo(20.6f, 14f)
+                curveTo(17.3f, 15.5f, 13.5f, 14.1f, 12f, 10.8f)
+                curveTo(11.1f, 8.7f, 11.3f, 6.3f, 12.5f, 4.4f)
+                curveTo(7.6f, 4.1f, 3.8f, 8.2f, 4.3f, 13.1f)
+                curveTo(4.8f, 17.5f, 8.9f, 20.6f, 13.2f, 20.1f)
+                curveTo(16.7f, 19.7f, 19.5f, 17.3f, 20.6f, 14f)
+                close()
+            }
+        }
+    }
+
 
     val Play: ImageVector by lazy {
         roundedSymbol("TwilightPlay",
