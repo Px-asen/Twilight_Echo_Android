@@ -123,7 +123,8 @@ internal fun LazyListScope.providerHomeItems(
     state: ProviderHomeUiState,
     currentTrackId: String?,
     isPlaying: Boolean,
-    actions: ProviderHomeActions
+    actions: ProviderHomeActions,
+    pinnedIds: List<String>
 ) {
     val ready = state.access == StreamingAccess.READY
     val name = state.providerName.ifBlank { "在线音源" }
@@ -248,12 +249,16 @@ internal fun LazyListScope.providerHomeItems(
                 EmptyState("歌单未载入", state.libraryError, actionLabel = "重试", onAction = actions.refresh)
             }
             state.playlists.isNotEmpty() -> item(key = "provider-own-playlists-${state.pluginId}") {
-                ProviderPlaylistShelf(
+                HomePlaylistShelf(
                     title = "我的歌单",
                     playlists = state.playlists,
+                    pinnedIds = pinnedIds,
                     tag = "provider-home-playlists",
                     onOpen = actions.openCollection,
-                    more = actions.openAllPlaylists
+                    onTogglePin = actions.togglePlaylistPin,
+                    more = actions.openAllPlaylists,
+                    itemTagPrefix = "provider-playlist",
+                    subtitle = ::providerPlaylistSubtitle
                 )
             }
         }
@@ -261,11 +266,15 @@ internal fun LazyListScope.providerHomeItems(
 
     if (state.recommendedPlaylists.isNotEmpty()) {
         item(key = "provider-recommended-playlists-${state.pluginId}") {
-            ProviderPlaylistShelf(
+            HomePlaylistShelf(
                 title = "推荐歌单",
                 playlists = state.recommendedPlaylists,
+                pinnedIds = pinnedIds,
                 tag = "provider-home-recommended",
-                onOpen = actions.openCollection
+                onOpen = actions.openCollection,
+                onTogglePin = actions.togglePlaylistPin,
+                itemTagPrefix = "provider-playlist",
+                subtitle = ::providerPlaylistSubtitle
             )
         }
     }
@@ -595,31 +604,5 @@ private fun ProviderShortcutCard(
     }
 }
 
-@Composable
-private fun ProviderPlaylistShelf(
-    title: String,
-    playlists: List<StreamingCollection>,
-    tag: String,
-    onOpen: (StreamingCollection) -> Unit,
-    more: (() -> Unit)? = null
-) {
-    val heading = Modifier.padding(horizontal = 20.dp).padding(top = 24.dp)
-    if (more != null) SectionLink(title, more, heading)
-    else SectionHeading(title, modifier = heading.padding(vertical = 6.dp))
-    LazyRow(
-        Modifier.padding(top = 8.dp).testTag(tag),
-        contentPadding = PaddingValues(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        items(playlists.distinctBy { it.id }, key = { it.id }) { item ->
-            val sub = item.subtitle.ifBlank { item.count.takeIf { it > 0 }?.let { "$it 首" }.orEmpty() }.takeIf { it.isNotBlank() }
-            ArtworkTile(
-                rememberStreamingArtwork(item, size = 512, extractColors = false),
-                item.title,
-                sub,
-                { onOpen(item) },
-                Modifier.width(148.dp).testTag("provider-playlist-${item.id}")
-            )
-        }
-    }
-}
+private fun providerPlaylistSubtitle(item: StreamingCollection): String? =
+    item.subtitle.ifBlank { item.count.takeIf { it > 0 }?.let { "$it 首" }.orEmpty() }.takeIf { it.isNotBlank() }

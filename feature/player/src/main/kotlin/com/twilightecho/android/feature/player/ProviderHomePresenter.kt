@@ -91,7 +91,8 @@ data class ProviderHomeActions(
     val page: (Int) -> Unit = {},
     val playlistQuery: (String) -> Unit = {},
     val playlistSort: (CollectionSort) -> Unit = {},
-    val root: () -> Unit = {}
+    val root: () -> Unit = {},
+    val togglePlaylistPin: (StreamingCollection) -> Unit = {}
 )
 
 /**

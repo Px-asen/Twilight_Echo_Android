@@ -60,6 +60,7 @@ class QuickJsRuntimeHostOutboxTest {
             val arg = DefaultCoreClient.DefaultJson.parseToJsonElement(argJson).jsonObject
             calls += method to arg
             return when (method) {
+                "updateHostClock" -> """{"ok":true}"""
                 "bootHost" -> {
                     port("boot", "sessionStore", "load", JsonObject(emptyMap()))
                     """{"ok":true,"epoch":"scripted","protocolVersion":1,"hostApiVersion":2}"""
@@ -340,7 +341,8 @@ class QuickJsRuntimeHostOutboxTest {
         Fixture().use { f ->
             f.host.start()
             assertEquals(listOf("globalThis.__TWILIGHT_HOST_EVENT_LOOP__ = true;", BUNDLE), f.core.scripts.toList())
-            assertEquals("bootHost", f.core.calls.first().first)
+            assertEquals(listOf("updateHostClock", "bootHost"), f.core.calls.take(2).map { it.first })
+            assertTrue(f.core.calls.first().second["monotonicMs"]!!.jsonPrimitive.longOrNull!! >= 0)
         }
     }
 

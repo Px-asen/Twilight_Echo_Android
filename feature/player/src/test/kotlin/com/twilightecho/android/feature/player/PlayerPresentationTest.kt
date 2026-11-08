@@ -45,6 +45,105 @@ class PlayerPresentationTest {
         assertEquals(tracks, loader.state.value.results)
     }
 
+    @Test fun coldStartKeepsLoadingUntilCoreIsReadyThenLoadsWithoutAnotherRefresh() = runTest {
+        val startup = CompletableDeferred<Unit>()
+        var reads = 0
+        val loader = LibraryContentLoader(backgroundScope, awaitReady = { startup.await() }) { query ->
+            reads++
+            page(query, tracks)
+        }
+        loader.refresh(); runCurrent()
+        advanceTimeBy(5_000); runCurrent()
+        assertEquals(0, reads)
+        assertTrue(loader.state.value.loading)
+        assertNull(loader.state.value.error)
+
+        startup.complete(Unit); runCurrent()
+        assertEquals(1, reads)
+        assertEquals(tracks, loader.state.value.tracks)
+        assertFalse(loader.state.value.loading)
+        assertNull(loader.state.value.error)
+    }
+
+    @Test fun failedStartupLeavesLoadingAndReportsTheFailureWithoutReadingLibrary() = runTest {
+        val startup = CompletableDeferred<Unit>()
+        var reads = 0
+        val loader = LibraryContentLoader(backgroundScope, awaitReady = { startup.await() }) { query ->
+            reads++
+            page(query, tracks)
+        }
+        loader.refresh(); runCurrent()
+        startup.completeExceptionally(IllegalStateException("Core failed to boot")); runCurrent()
+        assertEquals(0, reads)
+        assertFalse(loader.state.value.loading)
+        assertEquals("Core failed to boot", loader.state.value.error)
+
+        loader.refresh(); runCurrent()
+        assertEquals(0, reads)
+        assertFalse(loader.state.value.loading)
+        assertEquals("Core failed to boot", loader.state.value.error)
+    }
+
+    @Test fun refreshingDuringStartupCancelsOnlyTheOldLoadAndReadsOnceWhenReady() = runTest {
+        val startup = CompletableDeferred<Unit>()
+        var reads = 0
+        val loader = LibraryContentLoader(backgroundScope, awaitReady = { startup.await() }) { query ->
+            reads++
+            page(query, tracks)
+        }
+        loader.refresh(); runCurrent()
+        loader.refresh(); runCurrent()
+        assertTrue(startup.isActive)
+        assertEquals(0, reads)
+        assertTrue(loader.state.value.loading)
+        assertNull(loader.state.value.error)
+
+        startup.complete(Unit); runCurrent()
+        assertEquals(1, reads)
+        assertEquals(tracks, loader.state.value.tracks)
+        assertFalse(loader.state.value.loading)
+        assertNull(loader.state.value.error)
+    }
+
+    @Test fun searchDuringStartupWaitsForCoreAndKeepsOnlyTheLatestQuery() = runTest {
+        val startup = CompletableDeferred<Unit>()
+        val queries = mutableListOf<String>()
+        val loader = LibraryContentLoader(backgroundScope, awaitReady = { startup.await() }) { query ->
+            queries += query
+            page(query, tracks.take(1))
+        }
+        loader.query("old", debounce = false); runCurrent()
+        loader.query("A", debounce = false); runCurrent()
+        assertTrue(queries.isEmpty())
+        assertTrue(loader.state.value.searching)
+        assertNull(loader.state.value.searchError)
+
+        startup.complete(Unit); runCurrent()
+        assertEquals(listOf("A"), queries)
+        assertEquals(tracks.take(1), loader.state.value.results)
+        assertFalse(loader.state.value.searching)
+        assertNull(loader.state.value.searchError)
+    }
+
+    @Test fun closingWhileWaitingDoesNotPublishAnErrorOrCancelCoreStartup() = runTest {
+        val startup = CompletableDeferred<Unit>()
+        val loadingScope = CoroutineScope(backgroundScope.coroutineContext + Job(backgroundScope.coroutineContext[Job]))
+        var reads = 0
+        val loader = LibraryContentLoader(loadingScope, awaitReady = { startup.await() }) { query ->
+            reads++
+            page(query, tracks)
+        }
+        loader.refresh(); runCurrent()
+        val waiting = loader.state.value
+        loadingScope.cancel(); runCurrent()
+        assertTrue(startup.isActive)
+        assertEquals(waiting, loader.state.value)
+
+        startup.complete(Unit); runCurrent()
+        assertEquals(0, reads)
+        assertEquals(waiting, loader.state.value)
+    }
+
     @Test fun lateNonCancellableSearchCannotOverwriteNewQuery() = runTest {
         val slow = CompletableDeferred<Result<CoreLibrarySearchPage>>()
         val fast = CompletableDeferred<Result<CoreLibrarySearchPage>>()

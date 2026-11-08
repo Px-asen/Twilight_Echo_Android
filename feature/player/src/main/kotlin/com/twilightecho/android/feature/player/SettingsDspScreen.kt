@@ -94,6 +94,9 @@ internal fun SettingsTabScreen(state: PlayerUiState, actions: PlayerActions,
                         GroupDivider()
                         SettingsItem(TwilightIcons.SignalWave, "插件与音源", "插件仓库、网易云音乐与账号", onClick = actions.openPlugins)
                         GroupDivider()
+                        SettingsItem(TwilightIcons.Sleep, "睡眠与定时", sleepTimerLabel(state.sleepTimer.timer),
+                            onClick = { actions.sleepTimerOpen(true) }, modifier = Modifier.testTag("openSleepTimerSettings"))
+                        GroupDivider()
                         SettingsItem(TwilightIcons.Equalizer, "音频与 DSP", "输出、参数均衡器、DSP 处理链与场景",
                             onClick = { navigate(SettingsDestination.AUDIO) })
                         GroupDivider()

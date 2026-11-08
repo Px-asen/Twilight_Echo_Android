@@ -61,7 +61,8 @@ data class StreamingActions(val account: () -> Unit = {}, val library: () -> Uni
     val createPlaylist: (String, List<CoreTrackView>) -> Unit = { _, _ -> },
     val deletePlaylist: (StreamingCollection) -> Unit = {},
     val addToPlaylist: (StreamingCollection, List<CoreTrackView>) -> Unit = { _, _ -> },
-    val removeFromPlaylist: (StreamingCollection, CoreTrackView) -> Unit = { _, _ -> })
+    val removeFromPlaylist: (StreamingCollection, CoreTrackView) -> Unit = { _, _ -> },
+    val togglePlaylistPin: (StreamingCollection) -> Unit = {})
 
 /** Presentation only. All NCM reads and normalization remain in the shared desktop provider. */
 internal class StreamingPresenter(private val scope: CoroutineScope,

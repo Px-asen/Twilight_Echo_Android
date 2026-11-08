@@ -77,6 +77,8 @@ class QuickJsRuntimeHost(
 
     private val bridge = CorePortBridge(ports, json)
     private val epoch: String = "epoch-android-${UUID.randomUUID().toString().take(8)}"
+    private val hostBootId = appContext?.let { android.provider.Settings.Global.getInt(it.contentResolver,
+        android.provider.Settings.Global.BOOT_COUNT, 0).toString() } ?: "test"
 
     // Runtime-thread state.
     private var engine: JsRuntimeEngine? = null
@@ -100,6 +102,7 @@ class QuickJsRuntimeHost(
                 engine = created
                 created.evaluate("globalThis.__TWILIGHT_HOST_EVENT_LOOP__ = true;", "host-event-loop.js")
                 created.evaluate(loadPortableCoreScript(), PORTABLE_CORE_ASSET)
+                updateHostClock()
                 val ack = parseObject(created.callCore("bootHost", buildJsonObject { put("epoch", JsonPrimitive(epoch)) }.toString()))
                 if (ack.bool("ok") != true) throw PortableCoreException("bootHost failed: ${ack.string("error") ?: ack}")
                 val protocol = (ack["protocolVersion"] as? JsonPrimitive)?.longOrNull
@@ -198,6 +201,7 @@ class QuickJsRuntimeHost(
             return response
         }
         pending[envelope.requestId] = response
+        updateHostClock()
         val ack = callCore("handleRequest", json.encodeToString(CoreRequestEnvelope.serializer(), envelope))
             ?.let(::parseObject)
         if (ack != null && ack.bool("accepted") != true) {
@@ -221,6 +225,7 @@ class QuickJsRuntimeHost(
     }
 
     private fun pump() {
+        updateHostClock()
         repeat(MAX_DRAIN_ROUNDS) {
             val drained = callCore("drain", "{}")?.let(::parseObject) ?: return
             val messages = drained["messages"] as? JsonArray ?: JsonArray(emptyList())
@@ -228,6 +233,13 @@ class QuickJsRuntimeHost(
             scheduleTimer((drained["nextTimerDelayMs"] as? JsonPrimitive)?.longOrNull)
             if (messages.isEmpty()) return
         }
+    }
+
+    private fun updateHostClock() {
+        callCore("updateHostClock", buildJsonObject {
+            put("monotonicMs", JsonPrimitive(ports.clock.nowMonotonicMs()))
+            put("bootId", JsonPrimitive(hostBootId))
+        }.toString())
     }
 
     private fun handleMessage(message: JsonObject) {

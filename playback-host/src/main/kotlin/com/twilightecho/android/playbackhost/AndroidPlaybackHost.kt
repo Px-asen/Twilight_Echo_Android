@@ -308,6 +308,8 @@ class AndroidPlaybackHost private constructor(
         identity = CoreClientIdentity.androidPrimaryClient("android-local-host"),
         transport = runtimeHost, scope = hostScope
     )
+    val sleepTimer = SleepTimerCoordinator(appContext, runtimeHost, localCoreClient, hostScope) { mutablePlaybackNotices.tryEmit(it) }
+
     val desktopLibrary = DesktopLibraryClient(libraryTransport) {
         libraryCoreClient.snapshot.value?.epoch ?: "epoch-boot"
     }
@@ -376,6 +378,7 @@ class AndroidPlaybackHost private constructor(
                 primaryCoreClient.reconcileState()
                 mediaSessionCoreClient.reconcileState()
                 libraryCoreClient.reconcileState()
+                sleepTimer.start()
                 startup.complete(Unit)
                 audioDeviceAdapter.subscribeRouteChanges { route -> outputPresets.outputChanged { audioDeviceAdapter.outputIdentity(route) } }
                 audioDeviceAdapter.subscribeRemovedOutputs(outputPresets::outputsRemoved)
@@ -1617,6 +1620,7 @@ class AndroidPlaybackHost private constructor(
             artworkSyncJobs.clear()
             connections.values.forEach { it.transport.close() }
             connections.clear()
+            sleepTimer.close()
             audioFocusCoordinator.close()
             focusActions.close()
             outputRouteSubscription.cancel()

@@ -57,7 +57,9 @@ import com.twilightecho.android.feature.player.zones.ZonesTabScreen
 
 @Composable
 fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) {
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val modelState by viewModel.uiState.collectAsStateWithLifecycle()
+    var sleepTimerOpen by rememberSaveable { mutableStateOf(false) }
+    val state = modelState.withSleepTimerSheet(sleepTimerOpen)
     val latestState = rememberUpdatedState(state)
     LifecycleStartEffect(viewModel) {
         viewModel.onPresentationActive(true)
@@ -90,6 +92,8 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
     }
     val actions = remember(viewModel) {
         PlayerActions(
+            sleepTimerOpen = { sleepTimerOpen = it; viewModel.onSleepTimerOpen(it) }, startSleepCountdown = viewModel::onStartSleepCountdown,
+            startSleepAtTime = viewModel::onStartSleepAtTime, cancelSleepTimer = viewModel::onCancelSleepTimer,
             desktopDspLibrary = viewModel.desktopDspLibraryActions, openDesktopDspLibrary = viewModel::onOpenDesktopDspLibrary,
             desktopPlugins = viewModel.desktopPluginsActions, openDesktopPlugins = viewModel::onOpenDesktopPlugins,
             offlineDownloadsOpen = viewModel::onOfflineDownloadsOpen, downloadTrack = viewModel::onDownloadTrack,
@@ -209,7 +213,8 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
         play = { tracks, track ->
             if (latestState.value.streaming.access == StreamingAccess.READY) viewModel.onPlayProviderTracks(tracks, track) else openStreamingAccount()
         }, createPlaylist = viewModel::onCreateStreamingPlaylist, deletePlaylist = viewModel::onDeleteStreamingPlaylist,
-        addToPlaylist = viewModel::onAddToStreamingPlaylist, removeFromPlaylist = viewModel::onRemoveFromStreamingPlaylist) }
+        addToPlaylist = viewModel::onAddToStreamingPlaylist, removeFromPlaylist = viewModel::onRemoveFromStreamingPlaylist,
+        togglePlaylistPin = viewModel::onToggleStreamingPlaylistPin) }
     val providerHomeActions = remember(viewModel, openPluginModal) {
         ProviderHomeActions(
             account = { openPluginModal(latestState.value.activeHomePluginId, true) },
@@ -225,7 +230,8 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
             page = providerHome::page,
             playlistQuery = providerHome::playlistQuery,
             playlistSort = viewModel::onProviderHomePlaylistSort,
-            root = providerHome::root
+            root = providerHome::root,
+            togglePlaylistPin = viewModel::onToggleProviderHomePlaylistPin
         )
     }
     val providerSearchActions = remember(viewModel, openPluginModal) {
@@ -295,6 +301,9 @@ fun NowPlayingScreen(viewModel: PlayerViewModel, modifier: Modifier = Modifier) 
 
 
 /** The actual application UI: no host, native engine, or service required by its callers. */
+private fun PlayerUiState.withSleepTimerSheet(open: Boolean): PlayerUiState =
+    if (sleepTimerOpen == open) this else copy(sleepTimerOpen = open)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PlayerAppContent(state: PlayerUiState, actions: PlayerActions, modifier: Modifier = Modifier) {
@@ -692,6 +701,7 @@ private fun PlayerAppSurface(state: PlayerUiState, actions: PlayerActions, modif
         DesktopQueueSheet(state.desktopQueue, actions.desktopQueue)
         DesktopDspLibrarySheet(state.desktopDspLibrary, actions.desktopDspLibrary)
         DesktopPluginsSheet(state.desktopPlugins, actions.desktopPlugins)
+        if (state.sleepTimerOpen) SleepTimerSheet(state, actions)
         if (state.offlineDownloadsOpen) OfflineDownloadsSheet(state, actions)
         DesktopQueueSheet(state.desktopLibraryQueue, actions.desktopLibraryQueue)
         if (!state.desktopLibraryQueue.open && !state.desktopPlugins.open)

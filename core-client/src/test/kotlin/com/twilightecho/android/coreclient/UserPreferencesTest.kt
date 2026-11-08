@@ -6,6 +6,31 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class UserPreferencesTest {
+    @Test fun homePlaylistPinsPersistInPinOrderAndStaySeparateForEachProviderAndAccount() {
+        val original = UserPreferences(ncmQuality = NcmPlaybackQuality.LOSSLESS)
+        val pinned = original.toggleHomePlaylistPin("ncm", "alice", "11")
+            .toggleHomePlaylistPin("ncm", "alice", "22")
+            .toggleHomePlaylistPin("qq", "alice", "11")
+            .toggleHomePlaylistPin("ncm", "bob", "33")
+        val restored = Json.decodeFromString<UserPreferences>(Json.encodeToString(pinned))
+        assertEquals(listOf("22", "11"), restored.homePlaylistPinsFor("ncm", "alice"))
+        assertEquals(listOf("11"), restored.homePlaylistPinsFor("qq", "alice"))
+        assertEquals(listOf("33"), restored.homePlaylistPinsFor("ncm", "bob"))
+        assertTrue(restored.homePlaylistPinsFor("ncm", null).isEmpty())
+        assertTrue(Json.decodeFromString<UserPreferences>("{}").homePlaylistPins.isEmpty())
+        assertEquals(original.ncmQuality, restored.ncmQuality)
+    }
+
+    @Test fun unpinningRemovesOnlyTheSelectedPlaylistAndRepinningMovesItFirst() {
+        val pinned = UserPreferences().toggleHomePlaylistPin("provider", null, "11")
+            .toggleHomePlaylistPin("provider", null, "22")
+        val unpinned = pinned.toggleHomePlaylistPin("provider", null, "11")
+        assertEquals(listOf("22"), unpinned.homePlaylistPinsFor("provider", null))
+        assertEquals(listOf("11", "22"), unpinned.toggleHomePlaylistPin("provider", null, "11")
+            .homePlaylistPinsFor("provider", null))
+        assertTrue(unpinned.toggleHomePlaylistPin("provider", null, "22").homePlaylistPins.isEmpty())
+    }
+
     @Test fun mobilePolicyAndExternalAddressPersistWithoutChangingOldPlaybackDefault() {
         val defaults = Json.decodeFromString<UserPreferences>("{}")
         assertTrue(defaults.mobileNetwork.allowMeteredStreaming)

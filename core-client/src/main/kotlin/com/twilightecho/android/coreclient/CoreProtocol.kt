@@ -110,6 +110,7 @@ data class CoreSnapshot(
     val sequence: Long,
     val phase: CorePhase = CorePhase.READY,
     val playback: CorePlaybackView? = null,
+    val sleepTimer: CoreSleepTimerState? = null,
     val track: CoreTrackView? = null,
     val queue: CoreQueueReference? = null,
     val error: String? = null,

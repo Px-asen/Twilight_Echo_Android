@@ -82,10 +82,22 @@ data class UserPreferences(
     /** Source evidence for exclusions; old ID-only records retain their original provider-wide scope. */
     val excludedLocalTrackSources: Map<String, String> = emptyMap(),
     val mobileNetwork: MobileNetworkPreferences = MobileNetworkPreferences(),
-    val desktopExternalUrls: Map<String, String> = emptyMap()
+    val desktopExternalUrls: Map<String, String> = emptyMap(),
+    /** Home playlist IDs, most recently pinned first, scoped to provider plugin and account. */
+    val homePlaylistPins: Map<String, List<String>> = emptyMap()
 ) {
     fun normalized() = copy(appearance = appearance.normalized(), lyrics = lyrics.normalized(),
         outputPresets = outputPresets.normalized(), mobileNetwork = mobileNetwork.normalized())
+}
+
+fun UserPreferences.homePlaylistPinsFor(pluginId: String, accountId: String?): List<String> =
+    homePlaylistPins["provider:$pluginId:${accountId.orEmpty()}"].orEmpty()
+
+fun UserPreferences.toggleHomePlaylistPin(pluginId: String, accountId: String?, playlistId: String): UserPreferences {
+    val key = "provider:$pluginId:${accountId.orEmpty()}"
+    val pins = homePlaylistPinsFor(pluginId, accountId)
+    val updated = if (playlistId in pins) pins - playlistId else listOf(playlistId) + pins
+    return copy(homePlaylistPins = if (updated.isEmpty()) homePlaylistPins - key else homePlaylistPins + (key to updated))
 }
 
 private fun Float.finiteOr(default: Float) = if (isFinite()) this else default

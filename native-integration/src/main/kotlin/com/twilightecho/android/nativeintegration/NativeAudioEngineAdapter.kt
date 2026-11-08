@@ -463,6 +463,13 @@ class NativeAudioEngineAdapter(
         applyGain()
     }
 
+    override suspend fun setPauseAtTrackEnd(enabled: Boolean): Boolean = withContext(controlDispatcher) {
+        if (engineHandle != 0L && (nativeSourceLoaded || !enabled)) {
+            requireNativeSuccess(jni.nativeSetPauseAtTrackEnd(engineHandle, enabled))
+            true
+        } else platformMediaPlayer != null
+    }
+
     private fun applyGain() {
         val handle = engineHandle
         if (jni.isNativeLibraryLoaded && handle != 0L) {

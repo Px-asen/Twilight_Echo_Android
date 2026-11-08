@@ -24,6 +24,7 @@ class TwilightAudioEngineJni {
     external fun nativeLoad(handle: Long, source: String, startTimeSeconds: Double): Int
     external fun nativePause(handle: Long): Int
     external fun nativeSetPaused(handle: Long, paused: Boolean): Int
+    external fun nativeSetPauseAtTrackEnd(handle: Long, enabled: Boolean): Int
     external fun nativeStop(handle: Long): Int
     external fun nativeSeek(handle: Long, positionSeconds: Double): Int
     external fun nativeSetVolume(handle: Long, volume: Double): Int
