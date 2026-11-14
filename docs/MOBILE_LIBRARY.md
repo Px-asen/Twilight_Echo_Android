@@ -36,15 +36,3 @@
 车载媒体浏览入口提供 **此手机的音乐** 和已连接电脑，支持按歌曲、艺人、专辑文字搜索。下载完成的歌曲属于手机曲库，可在断网时选播。选歌明确切换为手机发声，继续使用原生 FFmpeg／DSP 与手机 Core 队列；系统通知、锁屏和耳机按键保留原入口。
 
 浏览器只取得本次服务发出的歌曲标识。外部客户端提供的任意 URL 或文件路径不会成为播放来源。电脑离线时先在手机连接，或从手机曲库选择已经下载的副本。
-
-## 2026-11-05 验证与交付
-
-交付：`app/build/outputs/apk/debug/app-debug.apk`。配套 Windows Server：`D:/Project/Twilight_Echo/dist/TwilightEchoServer-1.4.0-win32-x64-plugins-20261105-r2.zip`。Server 扩展入口与管理方式见桌面仓库 `docs/server-extensions.md`。
-
-- Android JVM 回归：Core client 176 项、Playback host 25 项、Player 209 项全部通过，见 `.mobile-acceptance-build.log` 与各模块 XML 报告。覆盖版本固定、部分下载恢复、额度、删除竞态、损坏记录、计费网络读取与旧设置兼容。
-- `OfflinePlaybackTest` 使用生产 TLS／Range Server：下载真实 FLAC，复用配对身份从 `127.0.0.1` 换到 `localhost`，拒绝错误 Server ID，忘记电脑后从本地文件播放、跳转至 20 秒，扫描保留下载，播放中拒绝删除。
-- `CarMediaLibraryTest` 通过真实 MediaBrowser 浏览、搜索、选播并观察原生引擎播放；未知歌曲 ID 不改变队列。耳机按键重建服务后恢复播放的回归通过。
-- `OfflineDownloadsUiTest` 验证计费下载默认关闭、显式移除确认、外网地址保存及保留电脑身份；两张最终截图已检查，见 `.artifacts/mobile-shots-final/`。
-- `.tep` 页面两项模拟器交互通过；Windows ZIP 解压后的 5 项独立运行检查全部通过，见桌面仓库 `.server-plugins-package-validation.log`。
-
-真实 WAN／VPN、Android Auto 车机、手机／DAC及 Windows 服务账号部署验收按原计划后置。Linux x86_64 的容器与 CI 构建入口已提供；用户确认没有 Linux 环境，镜像构建和运行验收保留为环境依赖，见桌面仓库 `docs/server-linux.md`。

@@ -124,3 +124,13 @@ CLAUDE.md
 .workbuddy/
 .omo/
 
+# Documentation: only public feature & developer guides are tracked.
+/docs/**
+!/docs/README.md
+!/docs/MOBILE_LIBRARY.md
+!/docs/SLEEP_TIMER.md
+!/docs/DESKTOP_CORE.md
+!/docs/PLUGINS.md
+!/docs/NATIVE_AUDIO.md
+!/docs/UI_REDESIGN.md
+

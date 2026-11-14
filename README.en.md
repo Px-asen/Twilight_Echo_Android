@@ -30,6 +30,7 @@
 
 ## Highlights
 
+- **Offline Downloads, Remote Access & Android Auto**: Long-press any desktop track to download it to your phone with pause/resume, storage quotas, and metered-network policies under **Library → Offline Music**. Save external/VPN addresses for paired computers, and browse, search, and play on your phone from Android Auto. See [the mobile library guide](./docs/MOBILE_LIBRARY.md).
 - **Shared Core & Native Audio Engine**: Runs the exact same portable Music Core (on QuickJS) and C++ audio engine (`FFmpeg → C++ DSP → AAudio`) as the [Twilight Echo Desktop](https://github.com/Px-asen/Twilight_Echo) player. Local files, online streams, and desktop LAN streams all travel through the same native decoding and DSP pipeline.
 - **Roon-Style Desktop Core LAN Bridge**: Automatically discovers computers running Twilight Echo on your home Wi-Fi and pairs with a single tap of approval on the desktop—no IP addresses or PIN codes required. Browse your desktop library, artist bios, and high-res artwork on your phone, and freely route audio to **This Phone** (authenticated FLAC/MP3 streaming) or **Computer** (remote playback control).
 - **Immersive Artwork Stage & Wave-Spring Lyrics**: Built around a refined neutral dark palette (`#1C1C1E`) with Monet artwork accent extraction, multi-quadrant rotating ambient artwork backgrounds, line-by-line focus scaling, depth-of-field blur (Android 12+), and under-damped wave-spring lyric transitions.
@@ -37,8 +38,6 @@
 - **10-Band EQ, AutoEQ Import & Transparent Signal Path**: Shape your sound with a 10-band graphic EQ, 32-band parametric EQ support, preamp headroom, EqualizerAPO / AutoEQ text import & export, JSON scene packages, and per-device presets—backed by an honest signal-path inspector showing source specs, active DSP, engine request, AAudio stream, and hardware format.
 
 ## Download & Installation
-
-Mobile library support now includes explicit desktop-track downloads with resume, storage limits and metered-network controls, saved external/VPN addresses for paired computers, and Android Auto browsing, search and playback on the phone. See [the mobile library guide](./MOBILE_LIBRARY.md) for usage and validation status.
 
 **[Download Latest APK from Releases →](https://github.com/Px-asen/Twilight_Echo_Android/releases)**
 
@@ -53,7 +52,7 @@ Mobile library support now includes explicit desktop-track downloads with resume
 **Listen to Local Collections** — Once scanned, browse your music by Songs, Albums, Artists, or Playlists. Every playlist (including *Liked Songs*) supports instant in-playlist filtering by title, artist, or album and remembers its own sort order. `.cue` sheets are automatically split into virtual tracks, and you can import bilingual `.lrc` files directly from the player's **More Actions → Import LRC Lyrics** menu.
 
 **Discover Online Streaming** — No local files required to get started. Enable the built-in NetEase Cloud Music provider from the Home card or **Settings → Plugins & Sources** and sign in via QR code or account credentials:
-- **Home** automatically loads Daily Recommendations, Personal FM, and Personal Radar;
+- **Home** automatically loads Daily Recommendations, Personal FM, and Personal Radar; playlists on Home support long-press pinning and unpinning, remembering order per source and account;
 - **Library → Streaming** organizes your liked tracks, created/collected playlists, saved albums, followed artists, recent plays, and weekly listening rankings;
 - **Search** lets you choose your local library or an enabled provider and browse Songs, Artists, or Albums. NetEase Cloud also supports playlists; unavailable plugin categories are clearly indicated;
 - **Settings → Streaming Quality** lets you choose Auto, Hi-Res Lossless, Lossless, Extreme, or Standard quality. Additional mobile-compatible `.tep` providers can be installed from **Settings → Plugins & Sources**.
@@ -65,6 +64,8 @@ Mobile library support now includes explicit desktop-track downloads with resume
 - **Background**: Switch between ambient flowing artwork, custom gallery photos, or solid dark/light backgrounds (light backgrounds automatically switch to dark typography and system bar icons);
 - **UI Scale & Opacity**: App-independent DPI scaling (80%–125%) and container surface opacity (20%–100%).
 Open **Settings → Lyrics** for a live preview where you can tune lyric font size (22–46), font weight, line spacing, depth blur strength (0–8), and bilingual translation visibility.
+
+**Fall Asleep to Music, Pause on Schedule** — Open **Player → More Actions → Sleep Timer** (or from Settings). Pick a 15 / 30 / 45 / 60 / 90-minute preset, enter a custom 1–720 minute countdown, or schedule a specific clock time today or tomorrow; enable **Pause after current track** so the active song finishes naturally. The timer always targets *This Phone*—locking the screen, switching to the background, or controlling a desktop session won't alter its target, and pausing preserves your queue, position, and volume. On Android 12+, grant *Alarms & Reminders* on first use, then tap **Start Timer**. See [the sleep timer guide](./docs/SLEEP_TIMER.md).
 
 **Tune Audio & Inspect the Signal Path** — Open **Settings → Audio & DSP** to adjust the 10-band EQ and preamp gain, import/export EqualizerAPO or AutoEQ text profiles and JSON scene packages, or configure output device presets. While playing, expand the signal path cards (**Source → Audio Processing → Playback Output**) to verify decoded format, active DSP stages, engine request, actual AAudio stream, and hardware sample rate.
 
@@ -134,10 +135,11 @@ Twilight Echo for Android decouples **Library Source** (which catalog you are br
 | **Lossless & Hi-Res** | FLAC, ALAC (`.m4a`), WAV / PCM, APE, WavPack (`.wv`) |
 | **Lossy Audio** | MP3, AAC (`.m4a` / `.aac`), OGG Vorbis, Opus |
 | **Cue Sheets & Lyrics** | `.cue` virtual track splitting, local `.lrc` bilingual synchronized lyrics, online YRC / LRC lyrics |
-| **Audio Output** | Native Android AAudio output (Shared / Exclusive mode requests) with real-time routing tracking across speaker, wired headset, Bluetooth, and USB DAC |
+| **DSD Audio** | DSF, DFF / DST, SACD ISO track splitting; WavPack DSD recognized and decoded to PCM |
+| **Audio Output** | Android AAudio (Shared / Exclusive mode requests), plus explicit USB Host + libusb Direct Exclusive output |
 
 > [!NOTE]
-> On Android, audio currently outputs PCM through the shared `FFmpeg → C++ DSP → AAudio` pipeline, reporting verified *Engine Request*, *AAudio Stream*, and *System Hardware* formats separately. Dedicated USB Exclusive drivers, DoP / Native DSD output, and the full AutoMix UI are planned in upcoming milestones—see [POWERAMP_HIFI_COMPARISON.md](./POWERAMP_HIFI_COMPARISON.md).
+> By default, audio outputs PCM through `FFmpeg → C++ DSP → AAudio`. When a USB DAC is connected, you can select **USB Exclusive** under **Settings → Audio & DSP → Output Mode** to authorize and play directly, releasing the interface on pause. DSF / DFF / SACD support explicit DoP or Native DSD on compatible DACs, while WavPack DSD currently decodes to PCM. Software integration for USB Direct, DSD, and AutoMix is complete; unified compatibility and listening verification across target phones and DACs remains ongoing—see [the native audio guide](./docs/NATIVE_AUDIO.md).
 
 ## Frequently Asked Questions
 
@@ -154,6 +156,13 @@ No. Scanning and playing local audio files, splitting CUE sheets, importing loca
 1. Connect both your phone and computer to the **same trusted LAN / Wi-Fi**, and enable **LAN Remote Control** in the desktop app's Settings.
 2. Open **Settings → Desktop Core** on your phone to discover the computer automatically via mDNS (`UDP 5353`, no location permission required).
 3. If guest Wi-Fi, AP isolation, VPNs, or firewall rules block multicast discovery, expand **Can't find your computer? Connect manually** and enter the desktop's LAN address (e.g. `192.168.1.20:18492`) along with the 6-digit pairing code shown on your desktop.
+
+</details>
+
+<details>
+<summary>Does switching between "This Phone" and "Computer" interrupt active playback?</summary>
+
+No. Switching **Library Source** or **Audio Output** only changes which session the phone UI is browsing or controlling; the other device continues playing uninterrupted. Whenever your phone is actively producing sound, the system media notification and lock-screen card continue controlling the phone's own playback even while you browse or control your computer; when the phone is idle, the media card can follow the selected computer target.
 
 </details>
 
@@ -195,7 +204,7 @@ Found a bug or have a feature request? Please [open an Issue](https://github.com
 
 Detailed design notes, protocol specifications, and verification guides are available in this repository:
 
-- [Phone UI & Immersive Lyrics (`UI_REDESIGN.md`)](./UI_REDESIGN.md) · [Plugins & Streaming Providers (`PLUGINS.md`)](./PLUGINS.md) · [Desktop Core & LAN Streaming (`DESKTOP_CORE.md`)](./DESKTOP_CORE.md) · [Native Audio & FFmpeg Build (`NATIVE_AUDIO.md`)](./NATIVE_AUDIO.md) · [HiFi Roadmap (`POWERAMP_HIFI_COMPARISON.md`)](./POWERAMP_HIFI_COMPARISON.md)
+- [Docs Index (`docs/README.md`)](./docs/README.md) · [Mobile Library & Android Auto (`MOBILE_LIBRARY.md`)](./docs/MOBILE_LIBRARY.md) · [Sleep Timer (`SLEEP_TIMER.md`)](./docs/SLEEP_TIMER.md) · [Phone UI & Immersive Lyrics (`UI_REDESIGN.md`)](./docs/UI_REDESIGN.md) · [Plugins & Streaming Providers (`PLUGINS.md`)](./docs/PLUGINS.md) · [Desktop Core & LAN Streaming (`DESKTOP_CORE.md`)](./docs/DESKTOP_CORE.md) · [Native Audio & Build Guide (`NATIVE_AUDIO.md`)](./docs/NATIVE_AUDIO.md) · [Release Packaging (`RELEASING.md`)](./RELEASING.md)
 
 <details>
 <summary>Module Layout & Build Instructions (For Developers)</summary>
